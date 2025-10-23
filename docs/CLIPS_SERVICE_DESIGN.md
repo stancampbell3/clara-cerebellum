@@ -1,4 +1,4 @@
-# CLIPS Rust REST API Service Wrapper Plan
+ CLIPS Rust REST API Service Wrapper Plan
 
 ## 1. Architecture Overview
 
