@@ -1,0 +1,20 @@
+[package]
+name = "clara-metrics"
+version = "0.1.0"
+edition = "2021"
+description = "Metrics and exporters for Clara Cerebrum"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+metrics = "0.24.2"
+metrics-exporter-prometheus = { version = "0.17.2", optional = true }
+prometheus = { version = "0.14", optional = true }
+tracing = { version = "0.1", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[features]
+default = ["prometheus"]
+with-prometheus = ["metrics-exporter-prometheus", "prometheus"]
+with-tracing = ["tracing"]
+with-serde = ["serde"]

@@ -1,0 +1,25 @@
+# toml
+[workspace]
+members = [
+  "clara-api",
+  "clara-clips",
+  "clara-config",
+  "clara-core",
+  "clara-metrics",
+  "clara-persistence",
+  "clara-security",
+  "clara-session"
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+license-file = "LICENSE"
+description = "Workspace for Clara Cerebrum crates"
+publish = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

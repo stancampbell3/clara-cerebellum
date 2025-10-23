@@ -1,0 +1,70 @@
+[package]
+name = "clara-session"
+version = "0.1.0"
+edition = "2021"
+description = "Session management (in-memory, redis, SQL, JWT/cookie) for Clara Cerebrum"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0.17"
+log = "0.4"
+
+# Optional async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+
+# Optional SQL backend (enable via features)
+sqlx = { version = "0.8.6", default-features = false, optional = true, features = ["macros", "runtime-tokio-rustls"] }
+
+# Redis session backend
+redis = { version = "0.32.7", optional = true }
+
+# Cookie/JWT support
+cookie = { version = "0.18.1", optional = true }
+jsonwebtoken = { version = "10.1.0", optional = true }
+time = { version = "0.3", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+
+# Workspace integrations (optional)
+clara-core = { path = "../clara-core", optional = true }
+clara-security = { path = "../clara-security", optional = true }
+clara-persistence = { path = "../clara-persistence", optional = true }
+
+# Small helpers for examples/tests
+anyhow = { version = "1.0", optional = true }
+
+# Optional C FFI / build helpers
+libc = { version = "0.2", optional = true }
+cc = { version = "1.0", optional = true }
+
+[features]
+default = ["in-memory"]
+
+# Simple in-process session store
+in-memory = []
+
+# Redis-backed sessions (async)
+with-redis = ["redis", "tokio"]
+
+# SQL-backed sessions and convenience passes through to clara-persistence
+db = ["sqlx", "tokio", "clara-persistence/db"]
+sqlite = ["sqlx/sqlite", "db"]
+postgres = ["sqlx/postgres", "db"]
+mysql = ["sqlx/mysql", "db"]
+
+# Token/cookie support
+jwt = ["jsonwebtoken", "clara-security/jwt"]
+with-cookie = ["cookie", "time", "uuid"]
+
+# Async runtime helper
+async = ["tokio"]
+
+# Workspace integration helpers
+integration = ["clara-core", "clara-security", "clara-persistence"]
+
+# C FFI support
+ffi = ["libc", "cc"]
+
+# Test/debug ergonomics
+with-anyhow = ["anyhow"]

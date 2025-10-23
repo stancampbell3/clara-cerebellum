@@ -1,0 +1,38 @@
+[package]
+name = "clara-persistence"
+version = "0.1.0"
+edition = "2021"
+description = "Persistence layer and DB adapters for Clara Cerebrum"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0.17"
+log = "0.4"
+
+# Optional async runtime and SQL support (enable via features)
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+sqlx = { version = "0.8.6", default-features = false, optional = true, features = ["macros", "runtime-tokio-rustls"] }
+
+# Shared core types/traits (feature toggles DB integration in clara-core)
+clara-core = { path = "../clara-core", optional = true }
+
+# Optional C FFI helpers / build support
+libc = { version = "0.2", optional = true }
+cc = { version = "1.0", optional = true }
+
+[features]
+default = []
+# Base DB feature pulls in sqlx + tokio and enables clara-core's db feature
+db = ["sqlx", "tokio", "clara-core/db"]
+# Backend-specific convenience features
+sqlite = ["sqlx/sqlite", "db"]
+postgres = ["sqlx/postgres", "db"]
+mysql = ["sqlx/mysql", "db"]
+
+# FFI support for C bindings
+ffi = ["libc", "cc", "clara-core"]
+
+# Helper for examples/tests
+with-anyhow = ["clara-core/with-anyhow"]

@@ -1,0 +1,64 @@
+[package]
+name = "clara-security"
+version = "0.1.0"
+edition = "2021"
+description = "Authentication, crypto and security utilities for Clara Cerebrum"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0.17"
+log = "0.4"
+
+# Secret-wrapper types (optional)
+secrecy = { version = "0.10.3", optional = true }
+
+# Async runtime (optional)
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+
+# JWT support
+jsonwebtoken = { version = "10.1.0", optional = true }
+
+# Password hashing / key derivation (optional backends)
+argon2 = { version = "0.5", optional = true }
+bcrypt = { version = "0.17.1", optional = true }
+
+# Crypto primitives (choose one or both)
+ring = { version = "0.17.14", optional = true }
+openssl = { version = "0.10", optional = true }
+
+# Optional C FFI helpers / build support
+libc = { version = "0.2", optional = true }
+cc = { version = "1.0", optional = true }
+
+# Optional integration with other workspace crates
+clara-core = { path = "../clara-core", optional = true }
+clara-persistence = { path = "../clara-persistence", optional = true }
+
+[features]
+# default enables secret support and ring
+default = ["with-secrecy", "ring"]
+
+# Toggle secret handling types (renamed to avoid self-dependency)
+with-secrecy = ["secrecy"]
+
+# Crypto backends (pick one or many)
+crypto-ring = ["ring"]
+crypto-openssl = ["openssl"]
+
+# Password hashing backends
+hash-argon2 = ["argon2"]
+hash-bcrypt = ["bcrypt"]
+
+# JWT support
+jwt = ["jsonwebtoken"]
+
+# Async support
+async = ["tokio"]
+
+# C FFI support
+ffi = ["libc", "cc"]
+
+# Workspace integrations
+integration = ["clara-core", "clara-persistence"]
