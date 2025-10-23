@@ -5,6 +5,8 @@ Cargo.lock
 
 # CLIPS binaries
 clips/binaries/*
+clara-clips/clips-src/core/*.o
+clara-clips/clips-src/core/*.a
 
 # IDE/editor
 .idea/
