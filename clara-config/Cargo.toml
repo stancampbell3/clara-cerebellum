@@ -17,5 +17,5 @@ serde_yaml = { version = "0.9", optional = true }
 [features]
 # default enables TOML parsing via the `toml` optional dependency
 default = ["toml"]
-toml = ["toml"]
-yaml = ["serde_yaml"]
+toml = ["dep:toml"]
+yaml = ["dep:serde_yaml"]

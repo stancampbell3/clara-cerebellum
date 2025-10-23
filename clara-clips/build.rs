@@ -25,7 +25,7 @@ fn main() {
 
     // Compile CLIPS C source into a static library
     let mut build = cc::Build::new();
-    build.include(clips_src.join("include"));
+    build.include(core_dir.clone());
     for file in &c_files {
         build.file(file);
         // ensure Cargo rebuilds when any C source changes
