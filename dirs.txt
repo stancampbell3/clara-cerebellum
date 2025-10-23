@@ -1,0 +1,261 @@
+.
+├── benches
+│   ├── eval_throughput.rs
+│   └── session_lifecycle.rs
+├── Cargo.lock
+├── Cargo.toml
+├── clara-api
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── handlers
+│   │   │   ├── error_handler.rs
+│   │   │   ├── eval_handler.rs
+│   │   │   ├── mod.rs
+│   │   │   └── session_handler.rs
+│   │   ├── lib.rs
+│   │   ├── main.rs
+│   │   ├── middleware
+│   │   │   ├── auth.rs
+│   │   │   ├── cors.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── rate_limit.rs
+│   │   │   └── tracing.rs
+│   │   ├── models
+│   │   │   ├── error.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── request.rs
+│   │   │   └── response.rs
+│   │   ├── routes
+│   │   │   ├── eval.rs
+│   │   │   ├── health.rs
+│   │   │   ├── metrics.rs
+│   │   │   ├── mod.rs
+│   │   │   └── sessions.rs
+│   │   ├── server.rs
+│   │   └── validation
+│   │       ├── input.rs
+│   │       └── mod.rs
+│   └── tests
+│       └── api_tests.rs
+├── clara-clips
+│   ├── build.rs
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── backend
+│   │   │   ├── ffi
+│   │   │   │   ├── bindings.rs
+│   │   │   │   ├── conversion.rs
+│   │   │   │   ├── environment.rs
+│   │   │   │   └── mod.rs
+│   │   │   ├── mod.rs
+│   │   │   └── subprocess
+│   │   │       ├── io.rs
+│   │   │       ├── mod.rs
+│   │   │       ├── process.rs
+│   │   │       └── protocol.rs
+│   │   ├── command.rs
+│   │   ├── error.rs
+│   │   ├── executor.rs
+│   │   ├── lib.rs
+│   │   ├── output.rs
+│   │   └── timeout.rs
+│   └── tests
+│       ├── protocol_tests.rs
+│       └── subprocess_tests.rs
+├── clara-config
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── defaults.rs
+│   │   ├── env.rs
+│   │   ├── lib.rs
+│   │   ├── loader.rs
+│   │   ├── schema.rs
+│   │   └── validation.rs
+│   └── tests
+│       └── config_tests.rs
+├── clara-core
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── error.rs
+│   │   ├── lib.rs
+│   │   ├── service
+│   │   │   ├── eval_service.rs
+│   │   │   ├── load_service.rs
+│   │   │   ├── mod.rs
+│   │   │   └── session_service.rs
+│   │   ├── traits.rs
+│   │   └── types
+│   │       ├── eval_result.rs
+│   │       ├── mod.rs
+│   │       ├── resource_limits.rs
+│   │       └── session.rs
+│   └── tests
+│       └── service_tests.rs
+├── clara-metrics
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── exporter.rs
+│   │   ├── lib.rs
+│   │   ├── logging
+│   │   │   ├── mod.rs
+│   │   │   ├── redaction.rs
+│   │   │   └── structured.rs
+│   │   ├── metrics
+│   │   │   ├── counters.rs
+│   │   │   ├── gauges.rs
+│   │   │   ├── histograms.rs
+│   │   │   └── mod.rs
+│   │   └── tracing
+│   │       ├── mod.rs
+│   │       ├── setup.rs
+│   │       └── spans.rs
+│   └── tests
+│       └── metrics_tests.rs
+├── clara-persistence
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── codec.rs
+│   │   ├── format
+│   │   │   ├── binary.rs
+│   │   │   ├── json.rs
+│   │   │   └── mod.rs
+│   │   ├── integrity.rs
+│   │   ├── lib.rs
+│   │   ├── migration.rs
+│   │   └── storage
+│   │       ├── filesystem.rs
+│   │       ├── mod.rs
+│   │       └── s3.rs
+│   └── tests
+│       └── roundtrip_tests.rs
+├── clara-security
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── audit.rs
+│   │   ├── auth
+│   │   │   ├── jwt.rs
+│   │   │   ├── mod.rs
+│   │   │   ├── rbac.rs
+│   │   │   └── scopes.rs
+│   │   ├── crypto.rs
+│   │   ├── filter
+│   │   │   ├── command_filter.rs
+│   │   │   ├── mod.rs
+│   │   │   └── path_validator.rs
+│   │   ├── lib.rs
+│   │   └── sandbox
+│   │       ├── isolation.rs
+│   │       ├── limits.rs
+│   │       └── mod.rs
+│   └── tests
+│       ├── auth_tests.rs
+│       └── filter_tests.rs
+├── clara-session
+│   ├── Cargo.toml
+│   ├── src
+│   │   ├── eviction.rs
+│   │   ├── lib.rs
+│   │   ├── lifecycle.rs
+│   │   ├── manager.rs
+│   │   ├── metadata.rs
+│   │   ├── queue.rs
+│   │   └── store.rs
+│   └── tests
+│       ├── eviction_tests.rs
+│       └── manager_tests.rs
+├── clippy.toml
+├── clips
+│   ├── binaries
+│   ├── rules
+│   │   ├── base_rules.clp
+│   │   └── examples
+│   └── tests
+│       ├── basic.clp
+│       ├── persistence.clp
+│       └── stress.clp
+├── config
+│   ├── default.toml
+│   ├── development.toml
+│   ├── production.toml
+│   └── schema.json
+├── crates
+│   ├── clara-api
+│   ├── clara-clips
+│   ├── clara-config
+│   ├── clara-core
+│   ├── clara-metrics
+│   ├── clara-persistence
+│   ├── clara-security
+│   └── clara-session
+├── deny.toml
+├── dirs.txt
+├── docker
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   └── Dockerfile.dev
+├── Dockerfile
+├── docs
+│   ├── ADR
+│   │   ├── 001-backend-selection.md
+│   │   ├── 002-persistence-format.md
+│   │   └── 003-security-model.md
+│   ├── API.md
+│   ├── CLIPS_SERVICE_DESIGN.md
+│   ├── DEPLOYMENT.md
+│   ├── DEVELOPMENT.md
+│   ├── PROJECT_LAYOUT.pdf
+│   ├── README.md
+│   └── SECURITY.md
+├── LICENSE
+├── migrations
+│   └── 001_initial_schema.sql
+├── rustfmt.toml
+├── rust-toolchain.toml
+├── script
+│   ├── layout_clara_api_dirs.sh
+│   ├── layout_clara_cerebrum_dirs.sh
+│   ├── layout_clara_clips_dirs.sh
+│   ├── layout_clara_config.sh
+│   ├── layout_clara_core_dirs.sh
+│   ├── layout_clara_persist_dirs.sh
+│   ├── layout_clara_security_dirs.sh
+│   ├── layout_clara_security_metrics.sh
+│   ├── layout_clara_session_dirs.sh
+│   └── layout_clara_tests.sh
+├── scripts
+│   ├── benchmark.sh
+│   ├── docker-build.sh
+│   ├── run-tests.sh
+│   ├── security-audit.sh
+│   └── setup-dev.sh
+└── tests
+    ├── chaos
+    │   ├── network_partition.rs
+    │   ├── process_kill.rs
+    │   ├── resource_exhaustion.rs
+    │   └── timeout_storms.rs
+    ├── fixtures
+    │   ├── test_data.json
+    │   └── test_rules.clp
+    ├── integration
+    │   ├── api_contract_tests.rs
+    │   ├── common
+    │   │   ├── assertions.rs
+    │   │   ├── fixtures.rs
+    │   │   ├── harness.rs
+    │   │   └── mod.rs
+    │   ├── concurrency_tests.rs
+    │   ├── eval_tests.rs
+    │   ├── persistence_tests.rs
+    │   ├── security_tests.rs
+    │   └── session_tests.rs
+    └── load
+        ├── concurrent_eval.rs
+        ├── README.md
+        ├── scenarios
+        │   ├── burst_eval.rs
+        │   ├── mixed_workload.rs
+        │   └── sustained_sessions.rs
+        └── session_churn.rs
+
+72 directories, 187 files

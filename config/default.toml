@@ -1,0 +1,46 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+request_timeout_ms = 30000
+max_request_body_size = 1048576  # 1MB
+
+[clips]
+binary_path = "./clips/binaries/clips"
+handshake_timeout_ms = 5000
+default_eval_timeout_ms = 2000
+sentinel_marker = "__END__"
+
+[sessions]
+max_concurrent = 100
+max_per_user = 10
+eviction_policy = "lru"
+default_ttl_seconds = 3600
+
+[resources]
+max_facts_per_session = 1000
+max_rules_per_session = 500
+max_memory_mb = 128
+max_eval_queue_depth = 10
+
+[security]
+deny_list = ["system", "load", "save", "open", "close"]
+allow_list_mode = false
+allowed_file_paths = ["./clips/rules"]
+
+[persistence]
+enabled = false
+storage_backend = "filesystem"
+storage_path = "./data/sessions"
+compression = "gzip"
+encryption = true
+
+[observability]
+log_level = "info"
+metrics_enabled = true
+metrics_port = 9090
+tracing_enabled = true
+tracing_endpoint = "http://localhost:4317"
+
+[auth]
+jwt_secret = "${JWT_SECRET}"
+token_expiry_seconds = 3600
