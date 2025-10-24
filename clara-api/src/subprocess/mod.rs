@@ -45,6 +45,12 @@ impl SubprocessPool {
 
         Ok(())
     }
+    
+    /// Spin up the subprocess for a session if not already present
+    pub fn ensure_subprocess(&self, session_id: &str) -> ClaraResult<()> {
+        debug!("Ensuring subprocess for session: {}", session_id);
+        self.get_or_create(session_id)
+    }
 
     /// Execute a command in a session's subprocess
     pub fn execute(&self, session_id: &str, command: &str, timeout_ms: u64) -> ClaraResult<EvalResult> {

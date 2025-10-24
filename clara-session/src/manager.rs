@@ -71,6 +71,7 @@ impl SessionManager {
 
         let mut session = Session::new(user_id, limits);
         self.store.insert(session.clone())?;
+        
         session.activate();
         self.store.update(session.clone())?;
 

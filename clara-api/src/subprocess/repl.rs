@@ -47,33 +47,44 @@ impl ReplHandler {
     /// Initialize the subprocess connection with a handshake
     fn initialize(&mut self) -> ClaraResult<()> {
         debug!("Initializing CLIPS subprocess");
-
+        debug!("Waiting for CLIPS> prompt with 5 second timeout");
+    
         // Wait for initial prompt with timeout
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut buffer = String::new();
-
+        let mut iteration = 0;
+    
         loop {
+            iteration += 1;
+            debug!("Initialize loop iteration {}", iteration);
+    
             if Instant::now() > deadline {
+                error!("Timeout waiting for CLIPS prompt after {} iterations", iteration);
                 return Err(ClaraError::ProcessCommunicationError(
                     "Timeout waiting for CLIPS prompt".to_string(),
                 ));
             }
-
+    
             buffer.clear();
+            debug!("Reading line from subprocess stdout");
             match self.reader.read_line(&mut buffer) {
                 Ok(0) => {
+                    error!("Subprocess stdout closed (EOF) during initialization");
                     return Err(ClaraError::SubprocessCrashed);
                 }
-                Ok(_) => {
-                    debug!("Received: {}", buffer.trim());
+                Ok(n) => {
+                    debug!("Read {} bytes: '{}'", n, buffer.trim());
                     // Look for the CLIPS> prompt
                     if buffer.contains("CLIPS>") {
-                        debug!("CLIPS prompt detected, sending handshake");
+                        debug!("CLIPS> prompt detected, subprocess ready");
                         self.ready = true;
                         return Ok(());
+                    } else {
+                        debug!("No CLIPS> prompt yet, continuing to read");
                     }
                 }
                 Err(e) => {
+                    error!("Error reading from subprocess: {}", e);
                     return Err(ClaraError::ProcessCommunicationError(format!(
                         "Error reading from subprocess: {}",
                         e
