@@ -27,3 +27,6 @@ else
   echo "No session_id in response" >&2
   exit 1
 fi
+
+# echo our JSON payload containing the session_id
+echo "$resp"
