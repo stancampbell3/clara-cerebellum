@@ -1,208 +1,101 @@
 use clara_core::{ClaraError, ClaraResult, EvalResult, EvalMetrics};
-use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
-use log::{debug, error};
-use std::thread;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::Instant;
+use log::debug;
 
 /// REPL Protocol handler for CLIPS subprocess communication
+/// Uses transactional interaction - spawns a fresh process for each eval
 pub struct ReplHandler {
-    process: Child,
-    reader: BufReader<std::process::ChildStdout>,
-    writer: BufWriter<std::process::ChildStdin>,
-    ready: bool
+    clips_binary: String,
 }
 
 impl ReplHandler {
-    /// Create a new REPL handler for a CLIPS subprocess
+    /// Create a new REPL handler (doesn't spawn a process until eval)
     pub fn new(clips_binary: &str) -> ClaraResult<Self> {
-        debug!("Spawning CLIPS subprocess: {}", clips_binary);
+        debug!("Initializing REPL handler for CLIPS binary: {}", clips_binary);
 
-        let program_owned = clips_binary.to_owned();
-        let mut process: Child = Command::new(program_owned)
+        Ok(Self {
+            clips_binary: clips_binary.to_owned(),
+        })
+    }
+
+    /// Execute a command in a fresh CLIPS subprocess (transactional)
+    /// Spawns a new process, sends command + (exit), and waits for completion
+    pub fn execute(&mut self, command: &str, timeout_ms: u64) -> ClaraResult<EvalResult> {
+        let start = Instant::now();
+
+        debug!("Spawning fresh CLIPS subprocess for command: {}", command);
+
+        // Create a child process with piped stdin/stdout
+        let mut child = Command::new(&self.clips_binary)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| ClaraError::ProcessSpawnError(format!("Failed to spawn CLIPS: {}", e)))?;
 
-        let stdout = process
-            .stdout
-            .take()
-            .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stdout".to_string()))?;
-
-        let stdin = process
+        // Get stdin handle
+        let mut stdin = child
             .stdin
             .take()
             .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stdin".to_string()))?;
 
-        let reader = BufReader::new(stdout);
-        let writer = BufWriter::new(stdin);
-
-        let mut handler = Self {
-            process,
-            reader,
-            writer,
-            ready: false
-        };
-
-        // Initialize connection
-        handler.initialize()?;
-
-        Ok(handler)
-    }
-
-    /// Initialize the subprocess connection
-    fn initialize(&mut self) -> ClaraResult<()> {
-        debug!("Initializing CLIPS subprocess");
-
-        // Check if the subprocess started successfully
-        thread::sleep(Duration::from_millis(100));
-        match self.process.try_wait() {
-            Ok(Some(status)) => {
-                error!("Subprocess exited immediately with status: {}", status);
-                return Err(ClaraError::ProcessSpawnError(
-                    format!("CLIPS subprocess exited immediately with status: {}", status)
-                ));
-            }
-            Ok(None) => {
-                debug!("Subprocess is running");
-            }
-            Err(e) => {
-                error!("Failed to check subprocess status: {}", e);
-                return Err(ClaraError::ProcessCommunicationError(
-                    format!("Failed to check subprocess status: {}", e)
-                ));
-            }
-        }
-
-        debug!("CLIPS subprocess initialized");
-        self.ready = true;
-        Ok(())
-    }
-
-    /// Execute a command in the CLIPS subprocess
-    pub fn execute(&mut self, command: &str, timeout_ms: u64) -> ClaraResult<EvalResult> {
-        if !self.ready {
-            return Err(ClaraError::Internal("Subprocess not ready".to_string()));
-        }
-
-        let start = Instant::now();
-        let timeout = Duration::from_millis(timeout_ms);
-
-        debug!("Executing command with {}ms timeout: {}", timeout_ms, command);
-
-        // Send command with newline
-        writeln!(self.writer, "{}", command).map_err(|e| {
+        // Write command and exit marker
+        writeln!(stdin, "{}", command).map_err(|e| {
             ClaraError::ProcessCommunicationError(format!("Failed to write command: {}", e))
         })?;
 
-        // Flush to ensure command is sent
-        self.writer.flush().map_err(|e| {
-            ClaraError::ProcessCommunicationError(format!("Failed to flush command: {}", e))
+        writeln!(stdin, "(exit)").map_err(|e| {
+            ClaraError::ProcessCommunicationError(format!("Failed to write exit: {}", e))
         })?;
 
-        debug!("Command sent to CLIPS, collecting output for {}ms...", timeout_ms);
+        // Close stdin to signal EOF to CLIPS
+        drop(stdin);
 
-        // Collect all output for the timeout duration
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        let mut lines_read = 0;
+        debug!("Command and exit sent, waiting for subprocess completion...");
 
-        // Read all available output until timeout
-        while start.elapsed() < timeout {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line) {
-                Ok(0) => {
-                    // EOF - subprocess crashed
-                    error!("Unexpected EOF from subprocess after reading {} lines", lines_read);
-                    self.ready = false;
-                    return Err(ClaraError::SubprocessCrashed);
-                }
-                Ok(_) => {
-                    lines_read += 1;
-                    debug!("Output line {}: '{}'", lines_read, line.trim());
-
-                    // Check for error patterns
-                    if line.contains("[ERROR]") || line.contains("Error:") || line.contains("***") {
-                        stderr.push_str(&line);
-                    } else if !line.trim().is_empty() {
-                        stdout.push_str(&line);
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No data available, sleep briefly and try again
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-                Err(e) => {
-                    error!("Error reading from subprocess after {} lines: {}", lines_read, e);
-                    self.ready = false;
-                    return Err(ClaraError::ProcessCommunicationError(format!(
-                        "Failed to read output: {}",
-                        e
-                    )));
-                }
-            }
-        }
-
-        debug!("Finished collecting output after {}ms (read {} lines)", start.elapsed().as_millis(), lines_read);
+        // Wait for the process to complete (this will block until it exits)
+        let output = child
+            .wait_with_output()
+            .map_err(|e| ClaraError::ProcessCommunicationError(format!("Failed to wait for subprocess: {}", e)))?;
 
         let elapsed = start.elapsed().as_millis() as u64;
         let metrics = EvalMetrics::with_elapsed(elapsed);
 
-        let result = if stderr.is_empty() {
-            EvalResult::success(stdout, metrics)
+        // Parse stdout as the output transcript
+        let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+
+        debug!("Subprocess completed in {}ms", elapsed);
+        debug!("STDOUT:\n{}", stdout_str);
+        if !stderr_str.is_empty() {
+            debug!("STDERR:\n{}", stderr_str);
+        }
+
+        // Check exit status
+        if !output.status.success() {
+            debug!("CLIPS process exited with non-zero status: {:?}", output.status);
+        }
+
+        // Return the full transcript as output
+        let result = if stderr_str.is_empty() {
+            EvalResult::success(stdout_str, metrics)
         } else {
-            EvalResult::failure(stderr, metrics)
+            EvalResult::failure(format!("{}\n{}", stdout_str, stderr_str), metrics)
         };
 
         Ok(result)
-    }
-
-    /// Check if subprocess is alive
-    pub fn is_alive(&mut self) -> bool {
-        self.ready && self.process.try_wait().ok().flatten().is_none()
-    }
-
-    /// Terminate the subprocess gracefully
-    pub fn terminate(&mut self) -> ClaraResult<()> {
-        debug!("Terminating CLIPS subprocess");
-
-        // Try graceful shutdown first
-        if let Ok(Some(_)) = self.process.try_wait() {
-            // Already terminated
-            return Ok(());
-        }
-
-        // Force kill
-        match self.process.kill() {
-            Ok(_) => {
-                debug!("Successfully killed CLIPS subprocess");
-                self.ready = false;
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-                // Already terminated
-                self.ready = false;
-                Ok(())
-            }
-            Err(e) => Err(ClaraError::SubprocessError(format!("Failed to kill subprocess: {}", e))),
-        }
-    }
-}
-
-impl Drop for ReplHandler {
-    fn drop(&mut self) {
-        let _ = self.terminate();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_sentinel_marker() {
-        let marker = "__END__".to_string();
-        assert!(!marker.is_empty());
+    fn test_repl_handler_creation() {
+        let handler = ReplHandler::new("/bin/ls");
+        assert!(handler.is_ok());
     }
 }

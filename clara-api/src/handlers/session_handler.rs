@@ -110,11 +110,8 @@ pub async fn terminate_session(
         .terminate_session(&session_id)
         .map_err(ApiError::from)?;
 
-    // Also terminate the subprocess for this session
-    state
-        .subprocess_pool
-        .terminate(&session_id_str)
-        .map_err(ApiError::from)?;
+    // With transactional model, no persistent subprocess to terminate
+    // Each eval spawns and cleans up its own process
 
     let response = TerminateResponse {
         session_id: session.session_id.to_string(),

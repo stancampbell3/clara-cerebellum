@@ -1,152 +1,43 @@
 //! Subprocess management for CLIPS execution
 //!
-//! This module handles spawning and managing CLIPS subprocess instances,
-//! implementing the REPL protocol for command execution and output capture.
+//! This module handles CLIPS subprocess execution using a transactional model
+//! where each eval spawns a fresh process, executes commands, and collects output.
 
 pub mod repl;
 
 pub use repl::ReplHandler;
 
 use clara_core::{ClaraResult, ClaraError, EvalResult};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use log::{debug, info};
+use log::debug;
 
-/// Pool of CLIPS subprocess instances, one per session
+/// Transactional CLIPS subprocess manager
+/// Each execute() call spawns a fresh CLIPS process
 pub struct SubprocessPool {
-    handlers: Arc<Mutex<HashMap<String, ReplHandler>>>,
     clips_binary: String,
-    sentinel_marker: String,
 }
 
 impl SubprocessPool {
-    /// Create a new subprocess pool
-    pub fn new(clips_binary: String, sentinel_marker: String) -> Self {
-        Self {
-            handlers: Arc::new(Mutex::new(HashMap::new())),
-            clips_binary,
-            sentinel_marker,
-        }
+    /// Create a new subprocess manager
+    pub fn new(clips_binary: String, _sentinel_marker: String) -> Self {
+        Self { clips_binary }
     }
 
-    /// Get or create a subprocess for a session
-    pub fn get_or_create(&self, session_id: &str) -> ClaraResult<()> {
-        let mut handlers = self
-            .handlers
-            .lock()
-            .map_err(|_| ClaraError::LockPoisoned)?;
-
-        if !handlers.contains_key(session_id) {
-            debug!("Creating new CLIPS subprocess for session: {}", session_id);
-            let handler = ReplHandler::new(&self.clips_binary)?;
-            handlers.insert(session_id.to_string(), handler);
-            info!("Subprocess created for session: {}", session_id);
-        }
-
-        Ok(())
-    }
-    
-    /// Spin up the subprocess for a session if not already present
-    pub fn ensure_subprocess(&self, session_id: &str) -> ClaraResult<()> {
-        debug!("Ensuring subprocess for session: {}", session_id);
-        self.get_or_create(session_id)
-    }
-
-    /// Execute a command in a session's subprocess
-    pub fn execute(&self, session_id: &str, command: &str, timeout_ms: u64) -> ClaraResult<EvalResult> {
-        debug!("SubprocessPool::execute called for session: {}", session_id);
+    /// Execute a command in a fresh CLIPS subprocess (transactional model)
+    /// Sessions are used for resource management and login tracking only
+    pub fn execute(&self, _session_id: &str, command: &str, timeout_ms: u64) -> ClaraResult<EvalResult> {
+        debug!("SubprocessPool::execute spawning fresh CLIPS process");
         debug!("Command length: {} bytes, timeout: {}ms", command.len(), timeout_ms);
-        
-        // Ensure subprocess exists
-        debug!("Ensuring subprocess exists for session: {}", session_id);
-        self.get_or_create(session_id)?;
-    
-        debug!("Acquiring lock on handlers map");
-        let mut handlers = self
-            .handlers
-            .lock()
-            .map_err(|_| ClaraError::LockPoisoned)?;
-    
-        debug!("Lock acquired, looking up handler for session: {}", session_id);
-        let handler = handlers
-            .get_mut(session_id)
-            .ok_or_else(|| ClaraError::Internal("Subprocess not found".to_string()))?;
-    
-        debug!("Handler found, checking if subprocess is alive");
-        // Check if subprocess is alive
-        if !handler.is_alive() {
-            debug!("Subprocess is dead for session: {}", session_id);
-            // Remove dead subprocess
-            handlers.remove(session_id);
-            drop(handlers); // Release lock before recursive call
-    
-            // Recreate and retry
-            debug!("Subprocess was dead, recreating for session: {}", session_id);
-            return self.execute(session_id, command, timeout_ms);
-        }
-    
-        debug!("Subprocess is alive, delegating to handler.execute()");
-        let result = handler.execute(command, timeout_ms);
-        
-        match &result {
-            Ok(eval_result) => {
-                debug!("Handler execution succeeded: exit_code={}, elapsed={}ms", 
-                       eval_result.exit_code, eval_result.metrics.elapsed_ms);
-            }
-            Err(e) => {
-                debug!("Handler execution failed: {:?}", e);
-            }
-        }
-        
-        result
-    }
 
-    /// Terminate a session's subprocess
-    pub fn terminate(&self, session_id: &str) -> ClaraResult<()> {
-        let mut handlers = self
-            .handlers
-            .lock()
-            .map_err(|_| ClaraError::LockPoisoned)?;
-
-        if let Some(mut handler) = handlers.remove(session_id) {
-            debug!("Terminating subprocess for session: {}", session_id);
-            handler.terminate()?;
-            info!("Subprocess terminated for session: {}", session_id);
-        }
-
-        Ok(())
-    }
-
-    /// Get count of active subprocesses
-    pub fn active_count(&self) -> ClaraResult<usize> {
-        let handlers = self
-            .handlers
-            .lock()
-            .map_err(|_| ClaraError::LockPoisoned)?;
-        Ok(handlers.len())
-    }
-
-    /// Terminate all subprocesses
-    pub fn terminate_all(&self) -> ClaraResult<()> {
-        let mut handlers = self
-            .handlers
-            .lock()
-            .map_err(|_| ClaraError::LockPoisoned)?;
-
-        for (_session_id, mut handler) in handlers.drain() {
-            let _ = handler.terminate();
-        }
-
-        Ok(())
+        // Create a fresh handler and execute (it spawns and cleans up its own process)
+        let mut handler = ReplHandler::new(&self.clips_binary)?;
+        handler.execute(command, timeout_ms)
     }
 }
 
 impl Clone for SubprocessPool {
     fn clone(&self) -> Self {
         Self {
-            handlers: Arc::clone(&self.handlers),
             clips_binary: self.clips_binary.clone(),
-            sentinel_marker: self.sentinel_marker.clone(),
         }
     }
 }
@@ -161,6 +52,7 @@ mod tests {
             "./clips".to_string(),
             "__END__".to_string(),
         );
-        assert_eq!(pool.active_count().unwrap_or(0), 0);
+        // Pool is now created with just the binary path
+        assert!(pool.clips_binary.contains("clips"));
     }
 }
