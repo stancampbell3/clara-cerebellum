@@ -124,55 +124,48 @@ impl ReplHandler {
             ClaraError::ProcessCommunicationError(format!("Failed to write command: {}", e))
         })?;
 
-        // Send sentinel marker command to frame output
-        writeln!(self.writer, "(printout t \"{}\" crlf)", self.sentinel_marker)
-            .map_err(|e| {
-                ClaraError::ProcessCommunicationError(format!("Failed to write sentinel: {}", e))
-            })?;
-
-        // Flush to ensure commands are sent
+        // Flush to ensure command is sent
         self.writer.flush().map_err(|e| {
-            ClaraError::ProcessCommunicationError(format!("Failed to flush commands: {}", e))
+            ClaraError::ProcessCommunicationError(format!("Failed to flush command: {}", e))
         })?;
 
-        // Collect output until sentinel
+        debug!("Command sent to CLIPS, collecting output for {}ms...", timeout_ms);
+
+        // Collect all output for the timeout duration
         let mut stdout = String::new();
         let mut stderr = String::new();
+        let mut lines_read = 0;
+        let collection_deadline = start + timeout;
 
-        loop {
-            if start.elapsed() > timeout {
-                error!("Command execution timeout after {}ms", timeout_ms);
-                return Err(ClaraError::EvalTimeout {
-                    timeout_ms,
-                });
-            }
-
+        // Read all available output until timeout
+        while start.elapsed() < timeout {
             let mut line = String::new();
             match self.reader.read_line(&mut line) {
                 Ok(0) => {
                     // EOF - subprocess crashed
-                    error!("Unexpected EOF from subprocess");
+                    error!("Unexpected EOF from subprocess after reading {} lines", lines_read);
                     self.ready = false;
                     return Err(ClaraError::SubprocessCrashed);
                 }
                 Ok(_) => {
-                    debug!("Output: {}", line.trim());
-
-                    // Check if this is the sentinel marker
-                    if line.contains(&self.sentinel_marker) {
-                        debug!("Found sentinel marker");
-                        break;
-                    }
+                    lines_read += 1;
+                    debug!("Output line {}: '{}'", lines_read, line.trim());
 
                     // Check for error patterns (basic heuristic)
-                    if line.contains("[ERROR]") || line.contains("Error:")  {
+                    if line.contains("[ERROR]") || line.contains("Error:") || line.contains("***") {
                         stderr.push_str(&line);
-                    } else {
+                    } else if !line.trim().is_empty() {
+                        // Only add non-empty lines to stdout
                         stdout.push_str(&line);
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    // No data available, sleep briefly and try again
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
                 Err(e) => {
-                    error!("Error reading from subprocess: {}", e);
+                    error!("Error reading from subprocess after {} lines: {}", lines_read, e);
                     self.ready = false;
                     return Err(ClaraError::ProcessCommunicationError(format!(
                         "Failed to read output: {}",
@@ -181,6 +174,8 @@ impl ReplHandler {
                 }
             }
         }
+
+        debug!("Finished collecting output after {}ms (read {} lines)", start.elapsed().as_millis(), lines_read);
 
         let elapsed = start.elapsed().as_millis() as u64;
         let metrics = EvalMetrics::with_elapsed(elapsed);
