@@ -11,10 +11,13 @@ PRELOAD=${PRELOAD:-}
 
 # Build payload
 if [ -n "$PRELOAD" ]; then
-  payload=$(jq -n --arg userId "$USER_ID" --argjson preload $(jq -nc --arg p "$PRELOAD" '[$p]') '{userId: $userId, preload: $preload}')
+  payload=$(jq -n --arg user_id "$USER_ID" --argjson preload "$(jq -nc --arg p "$PRELOAD" '[$p]')" '{user_id: $user_id, preload: $preload}')
 else
-  payload=$(jq -n --arg userId "$USER_ID" '{userId: $userId}')
+  payload=$(jq -n --arg user_id "$USER_ID" '{user_id: $user_id}')
 fi
+
+echo "Creating session with payload:"
+echo "$payload" | jq .
 
 resp=$(http_request POST "$BASE/sessions" "$payload") || exit $?
 
