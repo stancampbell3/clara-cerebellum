@@ -83,7 +83,7 @@ impl ReplHandler {
         }
         
         // Give CLIPS a moment to initialize and assume it's ready
-        debug!("Waiting 1 second for CLIPS to initialize");
+        debug!("Waiting 1 second for CLIPS to initialize (optimistically)...");
         thread::sleep(Duration::from_millis(1000));
         
         // Check one more time that the subprocess is still alive
