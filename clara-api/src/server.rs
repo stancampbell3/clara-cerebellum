@@ -1,5 +1,6 @@
 use actix_web::{web, App, HttpServer};
 use clara_session::{SessionManager, ManagerConfig};
+use clara_config::ConfigLoader;
 use log::info;
 
 use crate::handlers::AppState;
@@ -14,17 +15,23 @@ pub async fn start_server(
     let addr = format!("{}:{}", host, port);
     info!("Starting Clara API server on {}", addr);
 
-    // Create session manager with default config
+    // Load configuration
+    let config = ConfigLoader::from_env(None)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to load config: {}", e)))?;
+    
+    info!("Using CLIPS binary at: {}", config.clips.binary_path);
+
+    // Create session manager with config from file
     let session_config = ManagerConfig {
-        max_concurrent_sessions: 100,
-        max_sessions_per_user: 10,
+        max_concurrent_sessions: config.sessions.max_concurrent,
+        max_sessions_per_user: config.sessions.max_per_user,
     };
     let session_manager = SessionManager::new(session_config);
 
-    // Create subprocess pool
+    // Create subprocess pool with configured paths
     let subprocess_pool = SubprocessPool::new(
-        "./clara-clips/clips-src/core/clips".to_string(),  // CLIPS binary path - can be made configurable
-        "__END__".to_string(),   // Sentinel marker
+        config.clips.binary_path.clone(),
+        config.clips.sentinel_marker.clone(),
     );
 
     // Create app state
