@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Unique session identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SessionId(String);
+pub struct SessionId(pub String);
 
 impl SessionId {
     /// Generate a new unique session ID
