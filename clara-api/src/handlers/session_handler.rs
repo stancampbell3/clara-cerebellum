@@ -1,5 +1,6 @@
 use actix_web::{web, HttpResponse};
 use clara_session::SessionManager;
+use crate::subprocess::SubprocessPool;
 
 use crate::models::{ApiError, CreateSessionRequest, ResourceInfo, SessionResponse, TerminateResponse};
 
@@ -7,6 +8,7 @@ use crate::models::{ApiError, CreateSessionRequest, ResourceInfo, SessionRespons
 #[derive(Clone)]
 pub struct AppState {
     pub session_manager: SessionManager,
+    pub subprocess_pool: SubprocessPool,
 }
 
 /// Convert a clara-session::Session to API SessionResponse
@@ -99,13 +101,19 @@ pub async fn terminate_session(
     state: web::Data<AppState>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
-    let session_id = path.into_inner();
-    log::info!("Terminating session: {}", session_id);
+    let session_id_str = path.into_inner();
+    log::info!("Terminating session: {}", session_id_str);
 
-    let session_id = clara_session::SessionId(session_id);
+    let session_id = clara_session::SessionId(session_id_str.clone());
     let session = state
         .session_manager
         .terminate_session(&session_id)
+        .map_err(ApiError::from)?;
+
+    // Also terminate the subprocess for this session
+    state
+        .subprocess_pool
+        .terminate(&session_id_str)
         .map_err(ApiError::from)?;
 
     let response = TerminateResponse {

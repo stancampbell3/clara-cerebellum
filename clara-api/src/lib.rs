@@ -8,5 +8,6 @@ pub mod routes;
 pub mod server;
 pub mod middleware;
 pub mod validation;
+pub mod subprocess;
 
 pub use server::start_server;

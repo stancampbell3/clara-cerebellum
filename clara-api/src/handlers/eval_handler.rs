@@ -6,7 +6,7 @@ use crate::models::{ApiError, EvalRequest, EvalResponse, EvalMetrics};
 pub async fn eval_session(
     state: web::Data<AppState>,
     path: web::Path<String>,
-    _req: web::Json<EvalRequest>,
+    req: web::Json<EvalRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let session_id = path.into_inner();
     log::info!("Evaluating script in session: {}", session_id);
@@ -24,16 +24,21 @@ pub async fn eval_session(
         .touch_session(&session_id_obj)
         .map_err(ApiError::from)?;
 
-    // For MVP, return a stub response since we don't have CLIPS subprocess yet
-    // In a real implementation, this would execute the script via CLIPS subprocess
+    // Execute the command in the subprocess
+    let eval_result = state
+        .subprocess_pool
+        .execute(&session_id, &req.script, req.timeout_ms)
+        .map_err(ApiError::from)?;
+
+    // Convert to API response
     let response = EvalResponse {
-        stdout: format!("(executed in session {})", session_id),
-        stderr: String::new(),
-        exit_code: 0,
+        stdout: eval_result.stdout,
+        stderr: eval_result.stderr,
+        exit_code: eval_result.exit_code,
         metrics: EvalMetrics {
-            elapsed_ms: 10,
-            facts_added: None,
-            rules_fired: None,
+            elapsed_ms: eval_result.metrics.elapsed_ms,
+            facts_added: eval_result.metrics.facts_added,
+            rules_fired: eval_result.metrics.rules_fired,
         },
         session: None,
     };
