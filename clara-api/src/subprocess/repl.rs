@@ -119,23 +119,21 @@ impl ReplHandler {
 
         debug!("Executing command with {}ms timeout: {}", timeout_ms, command);
 
-        // Get mutable stdin
-        let stdin = self
-            .process
-            .stdin
-            .as_mut()
-            .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot write to stdin".to_string()))?;
-
         // Send command with newline
-        writeln!(stdin, "{}", command).map_err(|e| {
+        writeln!(self.writer, "{}", command).map_err(|e| {
             ClaraError::ProcessCommunicationError(format!("Failed to write command: {}", e))
         })?;
 
         // Send sentinel marker command to frame output
-        writeln!(stdin, "(printout t \"{}\" crlf)", self.sentinel_marker)
+        writeln!(self.writer, "(printout t \"{}\" crlf)", self.sentinel_marker)
             .map_err(|e| {
                 ClaraError::ProcessCommunicationError(format!("Failed to write sentinel: {}", e))
             })?;
+
+        // Flush to ensure commands are sent
+        self.writer.flush().map_err(|e| {
+            ClaraError::ProcessCommunicationError(format!("Failed to flush commands: {}", e))
+        })?;
 
         // Collect output until sentinel
         let mut stdout = String::new();
