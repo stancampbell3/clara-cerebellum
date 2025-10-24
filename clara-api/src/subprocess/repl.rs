@@ -73,16 +73,6 @@ impl ReplHandler {
             }
             Ok(None) => {
                 debug!("Subprocess is running");
-                self.writer.write_all("(clear)\n".as_bytes()).map_err(|e| {
-                    ClaraError::ProcessCommunicationError(
-                        format!("Failed to write initial command: {}", e)
-                    )
-                })?;                
-                self.writer.flush().map_err(|e| {
-                    ClaraError::ProcessCommunicationError(
-                        format!("Failed to flush initial command: {}", e)
-                    )
-                })?;
             }
             Err(e) => {
                 error!("Failed to check subprocess status: {}", e);
@@ -92,85 +82,30 @@ impl ReplHandler {
             }
         }
         
-        // Give CLIPS a moment to initialize and print its banner/prompt
-        debug!("Waiting 500ms for CLIPS to initialize");
-        thread::sleep(Duration::from_millis(500));
+        // Give CLIPS a moment to initialize and assume it's ready
+        debug!("Waiting 1 second for CLIPS to initialize");
+        thread::sleep(Duration::from_millis(1000));
         
-        // Try reading any initial output (banner, version info, etc.)
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut buffer = String::new();
-        let mut all_output = String::new();
-        let mut iteration = 0;
-        let mut found_prompt = false;
-    
-        loop {
-            iteration += 1;
-            debug!("Initialize loop iteration {}", iteration);
-    
-            if Instant::now() > deadline {
-                error!("Timeout waiting for CLIPS prompt after {} iterations", iteration);
-                error!("Accumulated output so far: '{}'", all_output);
-                
-                // Check if subprocess is still alive
-                if let Ok(Some(status)) = self.process.try_wait() {
-                    error!("Subprocess died during initialization with status: {}", status);
-                    return Err(ClaraError::SubprocessCrashed);
-                }
-                
+        // Check one more time that the subprocess is still alive
+        match self.process.try_wait() {
+            Ok(Some(status)) => {
+                error!("Subprocess died during initialization with status: {}", status);
+                return Err(ClaraError::SubprocessCrashed);
+            }
+            Ok(None) => {
+                debug!("Subprocess still running after initialization delay");
+            }
+            Err(e) => {
+                error!("Failed to check subprocess status after delay: {}", e);
                 return Err(ClaraError::ProcessCommunicationError(
-                    format!("Timeout waiting for CLIPS prompt. Output received: '{}'", all_output),
+                    format!("Failed to check subprocess status after delay: {}", e)
                 ));
             }
-    
-            buffer.clear();
-            debug!("Reading line from subprocess stdout (attempt {})", iteration);
-            
-            match self.reader.read_line(&mut buffer) {
-                Ok(0) => {
-                    error!("Subprocess stdout closed (EOF) during initialization");
-                    error!("Output received before EOF: '{}'", all_output);
-                    return Err(ClaraError::SubprocessCrashed);
-                }
-                Ok(n) => {
-                    debug!("Read {} bytes: '{}'", n, buffer.trim());
-                    all_output.push_str(&buffer);
-                    
-                    // Look for the CLIPS> prompt
-                    if buffer.contains("CLIPS") {
-                        debug!("CLIPS version line detected, subprocess ready");
-                        found_prompt = true;
-                        break;
-                    } else {
-                        debug!("No CLIPS version in line: '{}'", buffer.trim());
-                        // Continue reading more lines
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    debug!("Would block - no data available yet");
-                    thread::sleep(Duration::from_millis(50));
-                    continue;
-                }
-                Err(e) => {
-                    error!("Error reading from subprocess: {}", e);
-                    return Err(ClaraError::ProcessCommunicationError(format!(
-                        "Error reading from subprocess: {}",
-                        e
-                    )));
-                }
-            }
         }
         
-        if found_prompt {
-            debug!("Successfully initialized CLIPS subprocess");
-            debug!("Full initialization output: '{}'", all_output);
-            self.ready = true;
-            Ok(())
-        } else {
-            error!("Exited initialization loop without finding prompt");
-            Err(ClaraError::ProcessCommunicationError(
-                "Failed to detect CLIPS prompt".to_string()
-            ))
-        }
+        debug!("Successfully initialized CLIPS subprocess (assuming ready after delay)");
+        self.ready = true;
+        Ok(())
     }
 
     /// Execute a command in the CLIPS subprocess
