@@ -34,6 +34,9 @@ export SESSION_ID
 
 echo "Created session: $SESSION_ID"
 
+echo "Give the session a moment to initialize..."
+sleep 30
+
 echo "==> Eval against session"
 BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" SCRIPT='(printout t "session hello" crlf)' "$DIR/eval_session.sh" || { echo "Session eval failed" >&2; exit 5; }
 

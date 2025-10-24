@@ -48,30 +48,51 @@ impl SubprocessPool {
 
     /// Execute a command in a session's subprocess
     pub fn execute(&self, session_id: &str, command: &str, timeout_ms: u64) -> ClaraResult<EvalResult> {
+        debug!("SubprocessPool::execute called for session: {}", session_id);
+        debug!("Command length: {} bytes, timeout: {}ms", command.len(), timeout_ms);
+        
         // Ensure subprocess exists
+        debug!("Ensuring subprocess exists for session: {}", session_id);
         self.get_or_create(session_id)?;
-
+    
+        debug!("Acquiring lock on handlers map");
         let mut handlers = self
             .handlers
             .lock()
             .map_err(|_| ClaraError::LockPoisoned)?;
-
+    
+        debug!("Lock acquired, looking up handler for session: {}", session_id);
         let handler = handlers
             .get_mut(session_id)
             .ok_or_else(|| ClaraError::Internal("Subprocess not found".to_string()))?;
-
+    
+        debug!("Handler found, checking if subprocess is alive");
         // Check if subprocess is alive
         if !handler.is_alive() {
+            debug!("Subprocess is dead for session: {}", session_id);
             // Remove dead subprocess
             handlers.remove(session_id);
             drop(handlers); // Release lock before recursive call
-
+    
             // Recreate and retry
             debug!("Subprocess was dead, recreating for session: {}", session_id);
             return self.execute(session_id, command, timeout_ms);
         }
-
-        handler.execute(command, timeout_ms)
+    
+        debug!("Subprocess is alive, delegating to handler.execute()");
+        let result = handler.execute(command, timeout_ms);
+        
+        match &result {
+            Ok(eval_result) => {
+                debug!("Handler execution succeeded: exit_code={}, elapsed={}ms", 
+                       eval_result.exit_code, eval_result.metrics.elapsed_ms);
+            }
+            Err(e) => {
+                debug!("Handler execution failed: {:?}", e);
+            }
+        }
+        
+        result
     }
 
     /// Terminate a session's subprocess
