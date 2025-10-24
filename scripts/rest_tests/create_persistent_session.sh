@@ -2,6 +2,9 @@
 set -euo pipefail
 
 # Wrapper: creates a persistent session and prints the sessionId
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$DIR/_common.sh"
+
 BASE=${BASE_URL:-http://localhost:8080}
 AUTH=${AUTH:-}
 USER_ID=${USER_ID:-"test-user"}
@@ -13,13 +16,9 @@ else
   payload=$(jq -n --arg userId "$USER_ID" '{userId: $userId}')
 fi
 
-resp=$(if [ -n "$AUTH" ]; then
-  curl -sS -H "Content-Type: application/json" -H "Authorization: Bearer $AUTH" -d "$payload" "$BASE/sessions"
-else
-  curl -sS -H "Content-Type: application/json" -d "$payload" "$BASE/sessions"
-fi)
+resp=$(http_request POST "$BASE/sessions" "$payload") || exit $?
 
-echo "$resp" | jq .
+echo "$resp" | jq . || echo "$resp"
 # extract sessionId if present
 echo
 sessionId=$(echo "$resp" | jq -r '.sessionId // empty')
@@ -29,4 +28,3 @@ else
   echo "No sessionId in response" >&2
   exit 1
 fi
-

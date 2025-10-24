@@ -29,7 +29,7 @@ pub trait SessionService: Send + Sync + Clone {
 
 /// Evaluation service trait - executes CLIPS code
 pub trait EvalService: Send + Sync + Clone {
-    /// Evaluate a script in the context of a session
+    /// Evaluate a scripts-dev in the context of a session
     fn eval_session(&self, session_id: &str, req: EvalRequest) -> ClaraResult<EvalResponse>;
 
     /// Execute an ephemeral evaluation (no session state)

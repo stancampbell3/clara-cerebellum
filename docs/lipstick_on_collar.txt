@@ -1,0 +1,52 @@
+Notes from Chat Gepetto:
+Title: Clara-cerebrum — current state
+Date: 2025-10-23
+Source: Notes during a debugging and test hardening session for clara-cerebrum with one of those lovely AI assistants.
+---
+Checklist (what I changed / added)
+Created a hardened REST test suite at scripts/rest_tests/ and a shared helper:
+scripts/rest_tests/_common.sh (http_request with retries)
+All rest test scripts now source _common.sh.
+Fixed a jq payload bug in scripts/rest_tests/eval_ephemeral.sh.
+Added/updated top-level helper scripts: scripts/run-tests.sh, scripts/setup-dev.sh, scripts/docker-build.sh, scripts/benchmark.sh.
+Updated README.md to document the scripts.
+Current status (short)
+Orchestrator: scripts/rest_tests/all_tests.sh runs: health -> ephemeral eval -> create session -> session eval -> save -> delete.
+Running the orchestrator against http://localhost:8080:
+Health check succeeded (returned {"status":"ok"}).
+POST /sessions repeatedly returned HTTP 404 → orchestrator aborted with a clear failure message.
+Note: API code registers POST /sessions and expects payload key user_id (snake_case).
+Observed diagnostics & findings
+Verbose curl against /sessions returned 404 with empty body:
+curl -v -X POST -H "Content-Type: application/json" -d '{"userId":"test-user"}' http://localhost:8080/sessions → HTTP/1.1 404 Not Found
+Code inspection:
+clara-api/src/routes/sessions.rs registers web::scope("/sessions") with a POST route for "".
+Request model CreateSessionRequest (clara-api/src/models/request.rs) expects user_id (snake_case), not userId.
+Hypothesis: primary issue is that test payload used userId while API expects user_id. This mismatch can cause deserialization errors (usually 400), but the 404 suggests another layer (proxy/mount/logging) might be affecting responses; still, fix the payload first.
+Minimal actionable fixes (do these first)
+Change session creation payload key to user_id in:
+scripts/rest_tests/create_session.sh
+scripts/rest_tests/create_persistent_session.sh Example in jq:
+jq -n --arg user_id "$USER_ID" '{user_id: $user_id}'
+Re-run a single curl test with the corrected JSON to see whether the server still returns 404:
+If 201/200 returned, re-run the orchestrator.
+If 404 persists, inspect the server logs (see next section).
+Exact commands to copy/paste (debug & run)
+Health check:
+BASE_URL=http://localhost:8080 ./scripts/rest_tests/health.sh
+Test creating a session with the correct payload (direct curl):
+curl -v -X POST -H "Content-Type: application/json" \
+  -d '{"user_id":"test-user"}' \
+  http://localhost:8080/sessions
+Run the full orchestrator:
+BASE_URL=http://localhost:8080 ./scripts/rest_tests/all_tests.sh
+Run the create-persistent-step only:
+BASE_URL=http://localhost:8080 ./scripts/rest_tests/create_persistent_session.sh
+Start the API with logs (so you can watch requests and handler output):
+RUST_LOG=info cargo run -p clara-api
+(Then re-run the curl POST above and watch the terminal where the server is running for logged routing/handler messages and errors.)
+How to save this summary to a file
+Example: save as SESSION_SUMMARY.md
+cat > SESSION_SUMMARY.md <<'EOF'
+Title: Clara-cerebrum — current state
+Date: 2025-10-23

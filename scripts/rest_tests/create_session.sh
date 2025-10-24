@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$DIR/_common.sh"
+
 BASE=${BASE_URL:-http://localhost:8080}
 AUTH=${AUTH:-}
 USER_ID=${USER_ID:-"test-user"}
@@ -13,9 +16,6 @@ else
   payload=$(jq -n --arg userId "$USER_ID" '{userId: $userId}')
 fi
 
-if [ -n "$AUTH" ]; then
-  curl -sS -H "Content-Type: application/json" -H "Authorization: Bearer $AUTH" -d "$payload" "$BASE/sessions" | jq .
-else
-  curl -sS -H "Content-Type: application/json" -d "$payload" "$BASE/sessions" | jq .
-fi
+resp=$(http_request POST "$BASE/sessions" "$payload") || exit $?
 
+echo "$resp" | jq . || echo "$resp"

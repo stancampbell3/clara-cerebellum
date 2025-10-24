@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$DIR/_common.sh"
+
 # Runs a simple happy-path through the API: health -> ephemeral eval -> create session -> eval -> save -> delete
 BASE=${BASE_URL:-http://localhost:8080}
 AUTH=${AUTH:-}
 
+export BASE_URL="$BASE"
+export AUTH="$AUTH"
+
 echo "BASE_URL=$BASE"
 
 echo "==> Health"
-BASE_URL=$BASE AUTH=$AUTH scripts/rest_tests/health.sh
+"$DIR/health.sh" || { echo "Health check failed" >&2; exit 2; }
 
 echo "==> Ephemeral eval"
-BASE_URL=$BASE AUTH=$AUTH SCRIPT='(printout t \"ephemeral hello\" crlf)' scripts/rest_tests/eval_ephemeral.sh
+SCRIPT='(printout t "ephemeral hello" crlf)'
+BASE_URL="$BASE" AUTH="$AUTH" SCRIPT="$SCRIPT" "$DIR/eval_ephemeral.sh" || { echo "Ephemeral eval failed" >&2; exit 3; }
 
 echo "==> Create persistent session"
-resp=$(BASE_URL=$BASE AUTH=$AUTH scripts/rest_tests/create_persistent_session.sh)
+resp=$(BASE_URL="$BASE" AUTH="$AUTH" "$DIR/create_persistent_session.sh") || { echo "Create session failed" >&2; echo "$resp" >&2; exit 4; }
+
 echo "$resp"
 SESSION_ID=$(echo "$resp" | jq -r '.sessionId // empty')
 if [ -z "$SESSION_ID" ]; then
@@ -26,13 +34,12 @@ export SESSION_ID
 echo "Created session: $SESSION_ID"
 
 echo "==> Eval against session"
-BASE_URL=$BASE AUTH=$AUTH SESSION_ID=$SESSION_ID SCRIPT='(printout t \"session hello\" crlf)' scripts/rest_tests/eval_session.sh
+BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" SCRIPT='(printout t "session hello" crlf)' "$DIR/eval_session.sh" || { echo "Session eval failed" >&2; exit 5; }
 
 echo "==> Save session"
-BASE_URL=$BASE AUTH=$AUTH SESSION_ID=$SESSION_ID LABEL='checkpoint-1' scripts/rest_tests/save_session.sh
+BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" LABEL='checkpoint-1' "$DIR/save_session.sh" || { echo "Save session failed" >&2; exit 6; }
 
 echo "==> Delete session"
-BASE_URL=$BASE AUTH=$AUTH SESSION_ID=$SESSION_ID scripts/rest_tests/delete_session.sh
+BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" "$DIR/delete_session.sh" || { echo "Delete session failed" >&2; exit 7; }
 
 echo "All tests finished"
-

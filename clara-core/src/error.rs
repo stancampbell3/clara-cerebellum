@@ -30,7 +30,7 @@ pub enum ClaraError {
     #[error("Command not found: {0}")]
     CommandNotFound(String),
 
-    #[error("Syntax error in script: {0}")]
+    #[error("Syntax error in scripts-dev: {0}")]
     SyntaxError(String),
 
     #[error("Runtime error: {0}")]

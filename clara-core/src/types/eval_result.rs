@@ -96,7 +96,7 @@ pub enum EvalMode {
 /// Evaluation request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalRequest {
-    /// CLIPS commands or script to evaluate
+    /// CLIPS commands or scripts-dev to evaluate
     pub script: String,
 
     /// Timeout in milliseconds

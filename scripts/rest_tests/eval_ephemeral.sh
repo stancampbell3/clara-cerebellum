@@ -6,6 +6,7 @@ AUTH=${AUTH:-}
 SCRIPT=${SCRIPT:-"(printout t \"Hello from ephemeral eval\" crlf)"}
 TIMEOUT_MS=${TIMEOUT_MS:-2000}
 
+# Build payload: single script and timeout
 payload=$(jq -n --arg script "$SCRIPT" --argjson t $TIMEOUT_MS '{script: $script, timeout_ms: $t}')
 
 if [ -n "$AUTH" ]; then
@@ -13,4 +14,3 @@ if [ -n "$AUTH" ]; then
 else
   curl -sS -H "Content-Type: application/json" -d "$payload" "$BASE/eval" | jq .
 fi
-

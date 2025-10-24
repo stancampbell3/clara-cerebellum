@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$DIR/_common.sh"
+
 BASE=${BASE_URL:-http://localhost:8080}
 AUTH=${AUTH:-}
 
-if [ -n "$AUTH" ]; then
-  curl -sS -H "Authorization: Bearer $AUTH" "$BASE/healthz" | jq .
-else
-  curl -sS "$BASE/healthz" | jq .
-fi
-
+echo "Checking health: $BASE/healthz"
+resp=$(http_request GET "$BASE/healthz") || exit $?
+echo "$resp" | jq . || echo "$resp"

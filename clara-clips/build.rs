@@ -37,7 +37,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=clips");
     println!("cargo:rustc-link-search=native={}", env::var("OUT_DIR").unwrap());
 
-    // Re-run build.rs if build script or top-level clips-src changes
+    // Re-run build.rs if build scripts-dev or top-level clips-src changes
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", clips_src.display());
 }

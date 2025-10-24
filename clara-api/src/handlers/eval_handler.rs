@@ -9,7 +9,7 @@ pub async fn eval_session(
     req: web::Json<EvalRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let session_id = path.into_inner();
-    log::info!("Evaluating script in session: {}", session_id);
+    log::info!("Evaluating scripts-dev in session: {}", session_id);
 
     // Verify session exists
     let session_id_obj = clara_session::SessionId(session_id.clone());

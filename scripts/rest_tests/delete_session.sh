@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$DIR/_common.sh"
+
 BASE=${BASE_URL:-http://localhost:8080}
 AUTH=${AUTH:-}
 SESSION_ID=${SESSION_ID:-}
@@ -10,9 +13,6 @@ if [ -z "$SESSION_ID" ]; then
   exit 2
 fi
 
-if [ -n "$AUTH" ]; then
-  curl -sS -X DELETE -H "Authorization: Bearer $AUTH" "$BASE/sessions/$SESSION_ID" | jq .
-else
-  curl -sS -X DELETE "$BASE/sessions/$SESSION_ID" | jq .
-fi
+resp=$(http_request DELETE "$BASE/sessions/$SESSION_ID") || exit $?
 
+echo "$resp" | jq . || echo "$resp"
