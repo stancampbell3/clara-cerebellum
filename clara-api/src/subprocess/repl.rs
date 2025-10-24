@@ -1,5 +1,5 @@
 use clara_core::{ClaraError, ClaraResult, EvalResult, EvalMetrics};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{stdin, BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use log::{debug, error};
@@ -8,6 +8,7 @@ use log::{debug, error};
 pub struct ReplHandler {
     process: Child,
     reader: BufReader<std::process::ChildStdout>,
+    writer: BufWriter<std::process::ChildStdin>,
     ready: bool,
     sentinel_marker: String,
 }
@@ -28,12 +29,24 @@ impl ReplHandler {
             .stdout
             .take()
             .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stdout".to_string()))?;
+        
+        let stdin = process
+            .stdin
+            .take()
+            .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stdin".to_string()))?;
+        
+        let stderr = process
+            .stderr
+            .take()
+            .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stderr".to_string()))?;
 
         let reader = BufReader::new(stdout);
+        let writer = BufWriter::new(stdin);
 
         let mut handler = Self {
             process,
             reader,
+            writer,
             ready: false,
             sentinel_marker,
         };
@@ -47,6 +60,9 @@ impl ReplHandler {
     /// Initialize the subprocess connection with a handshake
     fn initialize(&mut self) -> ClaraResult<()> {
         debug!("Initializing CLIPS subprocess");
+        self.writer.buffer();
+        self.writer.write_all(b"(clear)\n").map_err(|e| ClaraError::ProcessCommunicationError(format!("Failed to write init command: {}", e)))?;
+        self.writer.flush().map_err(|e| ClaraError::ProcessCommunicationError(format!("Failed to flush init command: {}", e)))?;
         debug!("Waiting for CLIPS> prompt with 5 second timeout");
     
         // Wait for initial prompt with timeout
