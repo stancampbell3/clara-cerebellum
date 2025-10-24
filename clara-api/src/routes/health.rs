@@ -25,12 +25,3 @@ pub async fn live() -> HttpResponse {
         "uptime_seconds": uptime
     }))
 }
-
-pub fn configure(cfg: &mut actix_web::web::ServiceConfig) {
-    cfg.service(
-        actix_web::web::scope("")
-            .route("/healthz", actix_web::web::get().to(health))
-            .route("/readyz", actix_web::web::get().to(ready))
-            .route("/livez", actix_web::web::get().to(live)),
-    );
-}

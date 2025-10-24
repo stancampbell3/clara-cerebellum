@@ -23,7 +23,7 @@ pub async fn start_server(
 
     // Create subprocess pool
     let subprocess_pool = SubprocessPool::new(
-        "./clips".to_string(),  // CLIPS binary path - can be made configurable
+        "./clara-clips/clips-src/core/clips".to_string(),  // CLIPS binary path - can be made configurable
         "__END__".to_string(),   // Sentinel marker
     );
 
