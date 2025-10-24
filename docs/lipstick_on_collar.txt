@@ -1,52 +1,79 @@
-Notes from Chat Gepetto:
-Title: Clara-cerebrum — current state
-Date: 2025-10-23
-Source: Notes during a debugging and test hardening session for clara-cerebrum with one of those lovely AI assistants.
+# Clara Cerebrum Session Summary
+## Project Overview
+Clara Cerebrum is a Rust-based API server that provides CLIPS (C Language Integrated Production System) expert system functionality via HTTP endpoints. The system uses Actix-web for the HTTP server and manages CLIPS subprocesses for rule-based inference execution.
+
+## Current Architecture
+- **Frontend**: Actix-web HTTP server with REST API
+- **Backend**: CLIPS expert system subprocesses managed per user session
+- **Configuration**: TOML-based config with environment variable interpolation
+- **Logging**: Structured logging with configurable levels
+- **Persistence**: Session management with eviction policies
+
+## Key Components
+- `clara-api`: Main HTTP server with handlers for sessions, evaluation, and health checks
+- `clara-session`: Session lifecycle management with configurable limits
+- `clara-clips`: CLIPS integration layer (C code with Rust bindings)
+- `clara-core`: Shared types and error handling
+- `clara-config`: Configuration loading and validation
+- `clara-persistence`: Data storage and migration
+- `clara-security`: Authentication and sandboxing
+- `clara-metrics`: Observability and tracing
+
+## Recent Issues Resolved
+
+### 1. Route Configuration Issues
+**Problem**: Compilation error with `actix_web::post` macro usage
+**Solution**: Updated route configuration to use `web::post()` function instead of the macro
+**Files Modified**: `clara-api/src/routes/health.rs`
+
+### 2. CLIPS Binary Location
+**Problem**: CLIPS binary not found at expected path `./clips/binaries/clips`
+**Solution**: CLIPS was built in `clara-clips/clips-src/core/clips` but expected in `./clips/binaries/clips`. Copied the binary to the expected location.
+**Status**: CLIPS binary now accessible, but build process integration incomplete
+
+### 3. Session Initialization Timeouts
+**Problem**: CLIPS subprocess initialization hanging during startup
+**Solution**: Simplified initialization to assume readiness after 1-second delay instead of attempting handshake communication
+**Files Modified**: `clara-api/src/subprocess/repl.rs`
+
+### 4. Subprocess Communication Issues
+**Problem**: Eval handler timing out with no response from CLIPS subprocesses
+**Solution**:
+- Fixed stdin handle access (was trying to access consumed handle)
+- Simplified command execution to collect all output during timeout period
+- Removed sentinel-based output framing
+**Files Modified**: `clara-api/src/subprocess/repl.rs`
+
+## Current Status
+- ✅ Server starts successfully
+- ✅ Session creation works
+- ✅ Health endpoints functional
+- ❌ Eval endpoints timing out (CLIPS subprocess communication incomplete)
+- ❌ CLIPS build process not integrated into Rust build system
+
+## Next Steps Needed
+1. **CLIPS Build Integration**: Integrate CLIPS makefile into Cargo build process
+2. **CLIPS Communication**: Determine correct CLIPS invocation mode (batch vs interactive)
+3. **Command Execution**: Implement proper CLIPS command execution and output capture
+4. **Error Handling**: Improve subprocess error detection and recovery
+5. **Testing**: Complete integration tests for eval functionality
+
+## Technical Notes
+- CLIPS subprocesses are spawned per user session with piped stdin/stdout/stderr
+- Current approach assumes CLIPS runs in interactive mode but may need batch mode
+- Subprocess communication uses blocking I/O with timeouts
+- Session management includes configurable concurrent limits and eviction policies
+
+## Configuration
+Default config expects CLIPS binary at `./clips/binaries/clips` with sentinel marker `"__END__"`
+
+## Dependencies
+- Rust 1.70+ (via rust-toolchain.toml)
+- CLIPS 6.4.2 (C codebase in clara-clips/)
+- Actix-web for HTTP server
+- Tokio for async runtime
+- Various logging and serialization crates
+
 ---
-Checklist (what I changed / added)
-Created a hardened REST test suite at scripts/rest_tests/ and a shared helper:
-scripts/rest_tests/_common.sh (http_request with retries)
-All rest test scripts now source _common.sh.
-Fixed a jq payload bug in scripts/rest_tests/eval_ephemeral.sh.
-Added/updated top-level helper scripts: scripts/run-tests.sh, scripts/setup-dev.sh, scripts/docker-build.sh, scripts/benchmark.sh.
-Updated README.md to document the scripts.
-Current status (short)
-Orchestrator: scripts/rest_tests/all_tests.sh runs: health -> ephemeral eval -> create session -> session eval -> save -> delete.
-Running the orchestrator against http://localhost:8080:
-Health check succeeded (returned {"status":"ok"}).
-POST /sessions repeatedly returned HTTP 404 → orchestrator aborted with a clear failure message.
-Note: API code registers POST /sessions and expects payload key user_id (snake_case).
-Observed diagnostics & findings
-Verbose curl against /sessions returned 404 with empty body:
-curl -v -X POST -H "Content-Type: application/json" -d '{"userId":"test-user"}' http://localhost:8080/sessions → HTTP/1.1 404 Not Found
-Code inspection:
-clara-api/src/routes/sessions.rs registers web::scope("/sessions") with a POST route for "".
-Request model CreateSessionRequest (clara-api/src/models/request.rs) expects user_id (snake_case), not userId.
-Hypothesis: primary issue is that test payload used userId while API expects user_id. This mismatch can cause deserialization errors (usually 400), but the 404 suggests another layer (proxy/mount/logging) might be affecting responses; still, fix the payload first.
-Minimal actionable fixes (do these first)
-Change session creation payload key to user_id in:
-scripts/rest_tests/create_session.sh
-scripts/rest_tests/create_persistent_session.sh Example in jq:
-jq -n --arg user_id "$USER_ID" '{user_id: $user_id}'
-Re-run a single curl test with the corrected JSON to see whether the server still returns 404:
-If 201/200 returned, re-run the orchestrator.
-If 404 persists, inspect the server logs (see next section).
-Exact commands to copy/paste (debug & run)
-Health check:
-BASE_URL=http://localhost:8080 ./scripts/rest_tests/health.sh
-Test creating a session with the correct payload (direct curl):
-curl -v -X POST -H "Content-Type: application/json" \
-  -d '{"user_id":"test-user"}' \
-  http://localhost:8080/sessions
-Run the full orchestrator:
-BASE_URL=http://localhost:8080 ./scripts/rest_tests/all_tests.sh
-Run the create-persistent-step only:
-BASE_URL=http://localhost:8080 ./scripts/rest_tests/create_persistent_session.sh
-Start the API with logs (so you can watch requests and handler output):
-RUST_LOG=info cargo run -p clara-api
-(Then re-run the curl POST above and watch the terminal where the server is running for logged routing/handler messages and errors.)
-How to save this summary to a file
-Example: save as SESSION_SUMMARY.md
-cat > SESSION_SUMMARY.md <<'EOF'
-Title: Clara-cerebrum — current state
-Date: 2025-10-23
+*Session Summary Generated: October 24, 2025*
+*Current Focus: Resolving CLIPS subprocess communication for eval endpoints*
