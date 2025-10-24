@@ -38,7 +38,7 @@ impl SubprocessPool {
 
         if !handlers.contains_key(session_id) {
             debug!("Creating new CLIPS subprocess for session: {}", session_id);
-            let handler = ReplHandler::new(&self.clips_binary, self.sentinel_marker.clone())?;
+            let handler = ReplHandler::new(&self.clips_binary)?;
             handlers.insert(session_id.to_string(), handler);
             info!("Subprocess created for session: {}", session_id);
         }

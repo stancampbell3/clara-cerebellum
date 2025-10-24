@@ -2,7 +2,7 @@ use clara_core::{ClaraError, ClaraResult, EvalResult, EvalMetrics};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use log::{debug, error, warn};
+use log::{debug, error};
 use std::thread;
 
 /// REPL Protocol handler for CLIPS subprocess communication
@@ -10,16 +10,16 @@ pub struct ReplHandler {
     process: Child,
     reader: BufReader<std::process::ChildStdout>,
     writer: BufWriter<std::process::ChildStdin>,
-    ready: bool,
-    sentinel_marker: String,
+    ready: bool
 }
 
 impl ReplHandler {
     /// Create a new REPL handler for a CLIPS subprocess
-    pub fn new(clips_binary: &str, sentinel_marker: String) -> ClaraResult<Self> {
+    pub fn new(clips_binary: &str) -> ClaraResult<Self> {
         debug!("Spawning CLIPS subprocess: {}", clips_binary);
 
-        let mut process = Command::new(clips_binary)
+        let program_owned = clips_binary.to_owned();
+        let mut process: Child = Command::new(program_owned)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -36,11 +36,6 @@ impl ReplHandler {
             .take()
             .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stdin".to_string()))?;
         
-        let stderr = process
-            .stderr
-            .take()
-            .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stderr".to_string()))?;
-
         let reader = BufReader::new(stdout);
         let writer = BufWriter::new(stdin);
 
@@ -48,8 +43,7 @@ impl ReplHandler {
             process,
             reader,
             writer,
-            ready: false,
-            sentinel_marker,
+            ready: false
         };
 
         // Initialize connection with handshake
@@ -135,7 +129,7 @@ impl ReplHandler {
         let mut stdout = String::new();
         let mut stderr = String::new();
         let mut lines_read = 0;
-        let collection_deadline = start + timeout;
+        let _collection_deadline = start + timeout;
 
         // Read all available output until timeout
         while start.elapsed() < timeout {
