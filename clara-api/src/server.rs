@@ -33,13 +33,9 @@ pub async fn start_server(
         config.clips.binary_path.clone(),
         config.clips.sentinel_marker.clone(),
     );
-    
-    // Preload the subprocess pool to ensure the subprocess is ready
-    info!("Preloading CLIPS subprocess pool...");
-    subprocess_pool.ensure_subprocess("preload").map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to preload subprocess: {}", e))
-    })?;
-    info!("CLIPS subprocess pool preloaded.");
+
+    // Subprocesses are created lazily on first session request, not during startup
+    info!("Subprocess pool initialized (lazy creation enabled).");
 
     // Create app state
     let app_state = web::Data::new(AppState {
