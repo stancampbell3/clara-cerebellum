@@ -23,7 +23,7 @@ echo "==> Health"
 
 echo "==> Create persistent session"
 resp=$(BASE_URL="$BASE" AUTH="$AUTH" "$DIR/create_persistent_session.sh") || { echo "Create session failed" >&2; echo "$resp" >&2; exit 4; }
-
+echo "Create session response:"
 echo "$resp"
 SESSION_ID=$(echo "$resp" | jq -r '.session_id // empty')
 if [ -z "$SESSION_ID" ]; then

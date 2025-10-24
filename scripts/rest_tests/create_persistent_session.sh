@@ -16,14 +16,13 @@ else
   payload=$(jq -n --arg user_id "$USER_ID" '{user_id: $user_id}')
 fi
 
+echo "$payload" | jq .
 resp=$(http_request POST "$BASE/sessions" "$payload") || exit $?
-
-echo "$resp" | jq . || echo "$resp"
 # extract session_id if present
 echo
 session_id=$(echo "$resp" | jq -r '.session_id // empty')
 if [ -n "$session_id" ]; then
-  echo "SESSION_ID=$session_id"
+  export SESSION_ID=$session_id
 else
   echo "No session_id in response" >&2
   exit 1
