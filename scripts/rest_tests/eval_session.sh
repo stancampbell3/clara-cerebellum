@@ -15,8 +15,8 @@ if [ -z "$SESSION_ID" ]; then
   exit 2
 fi
 
-# Build payload: commands array and timeout
-payload=$(jq -n --arg cmd "$SCRIPT" --argjson t $TIMEOUT_MS '{commands: [$cmd], timeout_ms: $t}')
+# Build payload: script and timeout
+payload=$(jq -n --arg script "$SCRIPT" --argjson t $TIMEOUT_MS '{script: $script, timeout_ms: $t}')
 
 resp=$(http_request POST "$BASE/sessions/$SESSION_ID/eval" "$payload") || exit $?
 

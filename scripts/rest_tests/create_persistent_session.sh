@@ -11,20 +11,20 @@ USER_ID=${USER_ID:-"test-user"}
 PRELOAD=${PRELOAD:-}
 
 if [ -n "$PRELOAD" ]; then
-  payload=$(jq -n --arg userId "$USER_ID" --argjson preload $(jq -nc --arg p "$PRELOAD" '[$p]') '{userId: $userId, preload: $preload}')
+  payload=$(jq -n --arg user_id "$USER_ID" --argjson preload $(jq -nc --arg p "$PRELOAD" '[$p]') '{user_id: $user_id, preload: $preload}')
 else
-  payload=$(jq -n --arg userId "$USER_ID" '{userId: $userId}')
+  payload=$(jq -n --arg user_id "$USER_ID" '{user_id: $user_id}')
 fi
 
 resp=$(http_request POST "$BASE/sessions" "$payload") || exit $?
 
 echo "$resp" | jq . || echo "$resp"
-# extract sessionId if present
+# extract session_id if present
 echo
-sessionId=$(echo "$resp" | jq -r '.sessionId // empty')
-if [ -n "$sessionId" ]; then
-  echo "SESSION_ID=$sessionId"
+session_id=$(echo "$resp" | jq -r '.session_id // empty')
+if [ -n "$session_id" ]; then
+  echo "SESSION_ID=$session_id"
 else
-  echo "No sessionId in response" >&2
+  echo "No session_id in response" >&2
   exit 1
 fi
