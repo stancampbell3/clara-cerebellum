@@ -6,6 +6,8 @@
    /*                COMMAND LINE MODULE                  */
    /*******************************************************/
 
+#define _POSIX_C_SOURCE 200809L
+
 /*************************************************************/
 /* Purpose: Provides a set of routines for processing        */
 /*   commands entered at the top level prompt.               */
@@ -92,6 +94,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #include "setup.h"
 #include "constant.h"
@@ -185,6 +188,18 @@ void RerouteStdin(
   {
    int i;
    int theSwitch = NO_SWITCH;
+
+   /*=====================================================*/
+   /* If no batch file was specified and stdin is not    */
+   /* a TTY (e.g., piped input), automatically treat     */
+   /* stdin as a batch file for non-interactive mode.    */
+   /*=====================================================*/
+
+   if ((argc <= 1) && (isatty(fileno(stdin)) == 0))
+     {
+      OpenBatch(theEnv,"-",false);
+      return;
+     }
 
    /*======================================*/
    /* If there aren't enough arguments for */

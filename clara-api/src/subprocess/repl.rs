@@ -30,12 +30,12 @@ impl ReplHandler {
             .stdout
             .take()
             .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stdout".to_string()))?;
-        
+
         let stdin = process
             .stdin
             .take()
             .ok_or_else(|| ClaraError::ProcessCommunicationError("Cannot capture stdin".to_string()))?;
-        
+
         let reader = BufReader::new(stdout);
         let writer = BufWriter::new(stdin);
 
@@ -46,17 +46,17 @@ impl ReplHandler {
             ready: false
         };
 
-        // Initialize connection with handshake
+        // Initialize connection
         handler.initialize()?;
 
         Ok(handler)
     }
 
-    /// Initialize the subprocess connection with a handshake
+    /// Initialize the subprocess connection
     fn initialize(&mut self) -> ClaraResult<()> {
         debug!("Initializing CLIPS subprocess");
-        
-        // First, check if the subprocess started successfully
+
+        // Check if the subprocess started successfully
         thread::sleep(Duration::from_millis(100));
         match self.process.try_wait() {
             Ok(Some(status)) => {
@@ -75,29 +75,8 @@ impl ReplHandler {
                 ));
             }
         }
-        
-        // Give CLIPS a moment to initialize and assume it's ready
-        debug!("Waiting 1 second for CLIPS to initialize (optimistically)...");
-        thread::sleep(Duration::from_millis(1000));
-        
-        // Check one more time that the subprocess is still alive
-        match self.process.try_wait() {
-            Ok(Some(status)) => {
-                error!("Subprocess died during initialization with status: {}", status);
-                return Err(ClaraError::SubprocessCrashed);
-            }
-            Ok(None) => {
-                debug!("Subprocess still running after initialization delay");
-            }
-            Err(e) => {
-                error!("Failed to check subprocess status after delay: {}", e);
-                return Err(ClaraError::ProcessCommunicationError(
-                    format!("Failed to check subprocess status after delay: {}", e)
-                ));
-            }
-        }
-        
-        debug!("Successfully initialized CLIPS subprocess (assuming ready after delay)");
+
+        debug!("CLIPS subprocess initialized");
         self.ready = true;
         Ok(())
     }
@@ -129,7 +108,6 @@ impl ReplHandler {
         let mut stdout = String::new();
         let mut stderr = String::new();
         let mut lines_read = 0;
-        let _collection_deadline = start + timeout;
 
         // Read all available output until timeout
         while start.elapsed() < timeout {
@@ -145,11 +123,10 @@ impl ReplHandler {
                     lines_read += 1;
                     debug!("Output line {}: '{}'", lines_read, line.trim());
 
-                    // Check for error patterns (basic heuristic)
+                    // Check for error patterns
                     if line.contains("[ERROR]") || line.contains("Error:") || line.contains("***") {
                         stderr.push_str(&line);
                     } else if !line.trim().is_empty() {
-                        // Only add non-empty lines to stdout
                         stdout.push_str(&line);
                     }
                 }
@@ -198,15 +175,7 @@ impl ReplHandler {
             return Ok(());
         }
 
-        // Send (exit) command
-        if let Some(stdin) = self.process.stdin.as_mut() {
-            let _ = writeln!(stdin, "(exit)");
-        }
-
-        // Give it a moment to shut down
-        std::thread::sleep(Duration::from_millis(100));
-
-        // Force kill if needed
+        // Force kill
         match self.process.kill() {
             Ok(_) => {
                 debug!("Successfully killed CLIPS subprocess");

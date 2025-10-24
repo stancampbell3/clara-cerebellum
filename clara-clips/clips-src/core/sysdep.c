@@ -596,6 +596,15 @@ FILE *GenOpen(
    wchar_t *waccessType;
    int wfnlength, watlength;
 #endif
+   /*==============================================*/
+   /* Handle "-" as stdin for batch mode reading. */
+   /*==============================================*/
+
+   if ((fileName != NULL) && (strcmp(fileName,"-") == 0) && (strcmp(accessType,"r") == 0))
+     {
+      return stdin;
+     }
+
    /*==================================*/
    /* Invoke the before open function. */
    /*==================================*/
@@ -673,6 +682,12 @@ int GenClose(
   FILE *theFile)
   {
    int rv;
+
+   /* Don't close stdin - it's a standard stream that should not be closed */
+   if (theFile == stdin)
+     {
+      return 0;
+     }
 
    rv = fclose(theFile);
 
