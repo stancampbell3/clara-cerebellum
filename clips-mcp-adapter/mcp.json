@@ -1,0 +1,97 @@
+{
+  "name": "clara-clips",
+  "version": "0.1.0",
+  "description": "MCP adapter for CLIPS expert system via Clara REST API",
+  "author": "Clara Project",
+  "license": "MIT",
+  "homepage": "https://github.com/yourorg/clara-cerebrum",
+  "capabilities": {
+    "tools": true,
+    "resources": false,
+    "sampling": false
+  },
+  "tools": [
+    {
+      "name": "clips.eval",
+      "description": "Evaluate CLIPS expressions and return results. Use this for calculations, function calls, and REPL interactions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "expression": {
+            "type": "string",
+            "description": "CLIPS expression to evaluate (e.g., '(+ 1 2)' or '(printout t \"hello world\")')"
+          }
+        },
+        "required": ["expression"]
+      }
+    },
+    {
+      "name": "clips.query",
+      "description": "Query facts from the CLIPS knowledge base. Returns matching facts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "template": {
+            "type": "string",
+            "description": "CLIPS template pattern to match (e.g., '(myfact ?x ?y)' to find all myfact instances)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results to return (default: 100)",
+            "default": 100
+          }
+        },
+        "required": ["template"]
+      }
+    },
+    {
+      "name": "clips.assert",
+      "description": "Assert one or more facts into the CLIPS knowledge base.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "facts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Array of fact templates to assert (e.g., ['(myfact 1 \"value\")', '(myfact 2 \"other\")'])"
+          }
+        },
+        "required": ["facts"]
+      }
+    },
+    {
+      "name": "clips.reset",
+      "description": "Reset the CLIPS engine to initial state, clearing all facts and rules.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "preserve_globals": {
+            "type": "boolean",
+            "description": "If true, preserve global variable values during reset (default: false)",
+            "default": false
+          }
+        }
+      }
+    },
+    {
+      "name": "clips.status",
+      "description": "Get the current status of the CLIPS engine, including facts and session information.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "transport": {
+    "type": "stdio",
+    "encoding": "utf-8"
+  },
+  "environment": {
+    "REST_API_URL": {
+      "description": "Base URL of the Clara REST API",
+      "default": "http://localhost:8080"
+    }
+  }
+}
