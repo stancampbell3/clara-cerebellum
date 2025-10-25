@@ -21,5 +21,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/sessions/{session_id}", web::get().to(sessions::get_session))
             .route("/sessions/{session_id}", web::delete().to(sessions::terminate_session))
             .route("/sessions/{session_id}/eval", web::post().to(sessions::eval_session))
+            .route("/sessions/{session_id}/save", web::post().to(sessions::save_session))
     );
 }

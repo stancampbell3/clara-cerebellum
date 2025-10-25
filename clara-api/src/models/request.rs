@@ -11,6 +11,15 @@ pub struct CreateSessionRequest {
     pub metadata: HashMap<String, String>,
 }
 
+// Save session request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveSessionRequest {
+    pub user_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
 /// Eval request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalRequest {
@@ -23,12 +32,6 @@ pub struct EvalRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadRequest {
     pub files: Vec<String>,
-}
-
-/// Save request
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SaveRequest {
-    pub label: String,
 }
 
 /// Reload request
@@ -53,5 +56,16 @@ mod tests {
             metadata: HashMap::new(),
         };
         assert_eq!(req.user_id, "user-123");
+    }
+    
+    #[test]
+    fn test_save_session_request() {
+        let req = SaveSessionRequest {
+            user_id: "user-123".to_string(),
+            session_id: "session-456".to_string(),
+            metadata: HashMap::new(),
+        };
+        assert_eq!(req.user_id, "user-123");
+        assert_eq!(req.session_id, "session-456");
     }
 }

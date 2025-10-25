@@ -62,7 +62,7 @@ OBJS = agenda.o analysis.o argacces.o bload.o bmathfun.o bsave.o \
 all: release
 
 debug : CC = gcc
-debug : CFLAGS = -std=c99 -O0 -g
+debug : CFLAGS = -std=c99 -O0 -g -Wno-unused-parameter -Wno-cast-function-type
 debug : LDLIBS = -lm
 debug : clips
 

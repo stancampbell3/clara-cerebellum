@@ -2,7 +2,7 @@ use actix_web::{web, HttpResponse};
 use clara_session::SessionManager;
 use crate::subprocess::SubprocessPool;
 
-use crate::models::{ApiError, CreateSessionRequest, ResourceInfo, SessionResponse, TerminateResponse};
+use crate::models::{ApiError, CreateSessionRequest, SaveSessionRequest, ResourceInfo, SessionResponse, TerminateResponse};
 
 /// Application state
 #[derive(Clone)]
@@ -55,6 +55,22 @@ pub async fn create_session(
 
     let response = session_to_response(&session);
     Ok(HttpResponse::Created().json(response))
+}
+
+/// POST /sessions/{session_id}/save - Save session state (facts and rules)
+pub async fn save_session(
+    state: web::Data<AppState>,
+    req: web::Json<SaveSessionRequest>,
+) -> Result<HttpResponse, ApiError> {
+    let session_id = clara_session::SessionId(req.session_id.clone());
+    log::info!("Saving session: {}", req.session_id);
+
+    state
+        .session_manager
+        .save_session(&session_id)
+        .map_err(ApiError::from)?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({"status": "saved"})))
 }
 
 /// GET /sessions/{session_id} - Get session details

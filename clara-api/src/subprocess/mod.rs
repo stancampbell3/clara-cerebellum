@@ -7,7 +7,7 @@ pub mod repl;
 
 pub use repl::ReplHandler;
 
-use clara_core::{ClaraResult, ClaraError, EvalResult};
+use clara_core::{ClaraResult, EvalResult};
 use log::debug;
 
 /// Transactional CLIPS subprocess manager

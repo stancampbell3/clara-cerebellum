@@ -41,7 +41,7 @@ echo "==> Eval against session"
 BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" SCRIPT='(printout t "session hello" crlf)' "$DIR/eval_session.sh" || { echo "Session eval failed" >&2; exit 5; }
 
 echo "==> Save session"
-BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" LABEL='checkpoint-1' "$DIR/save_session.sh" || { echo "Save session failed" >&2; exit 6; }
+BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" USER_ID='$USER_ID' "$DIR/save_session.sh" || { echo "Save session failed" >&2; exit 6; }
 
 echo "==> Delete session"
 BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" "$DIR/delete_session.sh" || { echo "Delete session failed" >&2; exit 7; }
