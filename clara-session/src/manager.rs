@@ -86,8 +86,10 @@ impl SessionManager {
         if session.status == SessionStatus::Terminated {
             return Err(ManagerError::SessionTerminated);
         }
+        
+        // Log the save action (in a real implementation, this would persist to disk or database)
+        log::info!("Saving session: {}", session_id.0);
 
-        // Update the session's saved state
         self.store.update(session)?;
         Ok(())
     }

@@ -14,7 +14,7 @@ if [ -z "$SESSION_ID" ]; then
   exit 2
 fi
 
-payload=$(jq -n --arg user_id "USER_ID" --arg session_id "SESSION_ID" '{user_id: $user_id, session_id: $session_id}')
+payload=$(jq -n --arg user_id "$USER_ID" --arg session_id "$SESSION_ID" '{user_id: $user_id, session_id: $session_id}')
 
 resp=$(http_request POST "$BASE/sessions/$SESSION_ID/save" "$payload") || exit $?
 
