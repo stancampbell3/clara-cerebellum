@@ -21,8 +21,8 @@ echo "==> Health"
 # SCRIPT='(printout t "ephemeral hello" crlf)'
 # BASE_URL="$BASE" AUTH="$AUTH" SCRIPT="$SCRIPT" "$DIR/eval_ephemeral.sh" || { echo "Ephemeral eval failed" >&2; exit 3; }
 
-echo "==> Create persistent session"
-resp=$(BASE_URL="$BASE" AUTH="$AUTH" "$DIR/create_persistent_session.sh") || { echo "Create session failed" >&2; echo "$resp" >&2; exit 4; }
+echo "==> Create session"
+resp=$(BASE_URL="$BASE" AUTH="$AUTH" "$DIR/create_session.sh") || { echo "Create session failed" >&2; echo "$resp" >&2; exit 4; }
 echo "Create session response:"
 echo "$resp"
 SESSION_ID=$(echo "$resp" | jq -r '.session_id // empty')
@@ -41,7 +41,7 @@ echo "==> Eval against session"
 BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" SCRIPT='(printout t "session hello" crlf)' "$DIR/eval_session.sh" || { echo "Session eval failed" >&2; exit 5; }
 
 echo "==> Save session"
-BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" LABEL='checkpoint-1' "$DIR/save_session.sh" || { echo "Save session failed" >&2; exit 6; }
+BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" USER_ID='$USER_ID' "$DIR/save_session.sh" || { echo "Save session failed" >&2; exit 6; }
 
 echo "==> Delete session"
 BASE_URL="$BASE" AUTH="$AUTH" SESSION_ID="$SESSION_ID" "$DIR/delete_session.sh" || { echo "Delete session failed" >&2; exit 7; }

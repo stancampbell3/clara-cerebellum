@@ -22,7 +22,8 @@ impl ReplHandler {
 
     /// Execute a command in a fresh CLIPS subprocess (transactional)
     /// Spawns a new process, sends command + (exit), and waits for completion
-    pub fn execute(&mut self, command: &str, timeout_ms: u64) -> ClaraResult<EvalResult> {
+    /// (( todo timeout handling )))
+    pub fn execute(&mut self, command: &str, _timeout_ms: u64) -> ClaraResult<EvalResult> {
         let start = Instant::now();
 
         debug!("Spawning fresh CLIPS subprocess for command: {}", command);

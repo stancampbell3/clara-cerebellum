@@ -27,7 +27,9 @@ fn main() {
 
     // Compile CLIPS C source into a static library
     let mut build = cc::Build::new();
-    build.include(&core_dir);
+    build.include(&core_dir)
+        .flag("-Wno-unused-parameter")
+        .flag("-Wno-cast-function-type");
     for file in &c_files {
         build.file(file);
         // ensure Cargo rebuilds when any C source changes

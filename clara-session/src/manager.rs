@@ -77,6 +77,22 @@ impl SessionManager {
 
         Ok(session)
     }
+    
+    /// Save a session's facts and rules
+    pub fn save_session(&self, session_id: &SessionId) -> Result<(), ManagerError> {
+        
+        // Look up the session by the sessionId
+        let session = self.store.get(session_id)?;
+        if session.status == SessionStatus::Terminated {
+            return Err(ManagerError::SessionTerminated);
+        }
+        
+        // Log the save action (in a real implementation, this would persist to disk or database)
+        log::info!("Saving session: {}", session_id.0);
+
+        self.store.update(session)?;
+        Ok(())
+    }
 
     /// Get a session by ID
     pub fn get_session(&self, session_id: &SessionId) -> Result<Session, ManagerError> {
