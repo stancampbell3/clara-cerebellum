@@ -21,8 +21,8 @@ echo "==> Health"
 # SCRIPT='(printout t "ephemeral hello" crlf)'
 # BASE_URL="$BASE" AUTH="$AUTH" SCRIPT="$SCRIPT" "$DIR/eval_ephemeral.sh" || { echo "Ephemeral eval failed" >&2; exit 3; }
 
-echo "==> Create persistent session"
-resp=$(BASE_URL="$BASE" AUTH="$AUTH" "$DIR/create_persistent_session.sh") || { echo "Create session failed" >&2; echo "$resp" >&2; exit 4; }
+echo "==> Create session"
+resp=$(BASE_URL="$BASE" AUTH="$AUTH" "$DIR/create_session.sh") || { echo "Create session failed" >&2; echo "$resp" >&2; exit 4; }
 echo "Create session response:"
 echo "$resp"
 SESSION_ID=$(echo "$resp" | jq -r '.session_id // empty')

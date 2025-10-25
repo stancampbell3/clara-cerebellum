@@ -16,8 +16,8 @@ else
   payload=$(jq -n --arg user_id "$USER_ID" '{user_id: $user_id}')
 fi
 
-echo "Creating session with payload:"
-echo "$payload" | jq .
+# echo "Creating session with payload:"
+# echo "$payload" | jq .
 
 resp=$(http_request POST "$BASE/sessions" "$payload") || exit $?
 
