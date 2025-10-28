@@ -1,6 +1,6 @@
 # toml
 [workspace]
-members = [
+members = ["caw",
   "clara-api",
   "clara-clips",
   "clara-config",

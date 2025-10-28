@@ -1,0 +1,81 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "#" ~ (!"NEWLINE" ~ ANY)* }
+
+// Program structure
+program = _{ SOI ~ statement* ~ EOI }
+
+statement = {
+    type_decl
+    | agent_decl
+    | feather_decl
+    | rune_decl
+    | expression
+}
+
+// Type declarations
+type_decl = { "type" ~ identifier ~ "=" ~ type_expr }
+
+type_expr = { vector_or_func_or_record_or_prim ~ ("|" ~ vector_or_func_or_record_or_prim)* }
+
+vector_or_func_or_record_or_prim = {
+    vector_type
+    | function_type
+    | record_type
+    | primitive_type
+}
+
+vector_type = { "[" ~ type_expr ~ "]" }
+function_type = { "(" ~ type_expr_list ~ ")" ~ "=>" ~ type_expr }
+record_type = { "{" ~ (field_type ~ ("," ~ field_type)*)? ~ "}" }
+field_type = { identifier ~ ":" ~ vector_or_func_or_record_or_prim }
+primitive_type = @{ "String" | "Number" | "Boolean" }
+type_expr_list = { vector_or_func_or_record_or_prim ~ ("," ~ vector_or_func_or_record_or_prim)* }
+
+// Agent declarations
+agent_decl = { "let" ~ identifier ~ "=" ~ agent_init }
+agent_init = { "Expert" ~ "(" ~ domain_path ~ ")" }
+domain_path = @{ identifier ~ ("." ~ identifier)* ~ ("._")? }
+
+// Feather (fact) declarations
+feather_decl = { "feather" ~ identifier ~ ":" ~ identifier ~ "=" ~ record_literal }
+
+// Rule declarations
+rune_decl = { "rune" ~ string_literal ~ "when" ~ condition_block ~ "then" ~ action_block }
+condition_block = { expression+ }
+action_block = { statement+ }
+
+// Expressions
+expression = { message_send }
+
+message_send = { agent_call ~ ("!" ~ agent_call)* }
+
+agent_call = { function_call ~ ("." ~ function_call)* }
+
+function_call = { primary ~ ("(" ~ arg_list? ~ ")")* }
+
+primary = {
+    record_literal
+    | literal
+    | identifier
+    | "(" ~ expression ~ ")"
+}
+
+arg_list = @{ expression ~ ("," ~ expression)* }
+
+record_literal = { "{" ~ field_list? ~ "}" }
+field_list = { field_assignment ~ ("," ~ field_assignment)* }
+field_assignment = { identifier ~ ":" ~ expression }
+
+// Literals
+literal = {
+    string_literal
+    | number_literal
+    | boolean_literal
+}
+
+string_literal = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+number_literal = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+boolean_literal = @{ "true" | "false" }
+
+// Identifiers
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | ".")* }

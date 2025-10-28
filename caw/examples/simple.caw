@@ -1,0 +1,23 @@
+// Simple CAW example: Radioactive decay simulation
+
+type Particle = {
+  type: String,
+  state: String,
+  half_life: Number
+}
+
+feather radium: Particle = {
+  type: "radium",
+  state: "unstable",
+  half_life: 1600
+}
+
+rune "DecayLaw" when
+  radium.state == "unstable"
+then
+  assert Particle(state: "decaying")
+
+let albert = Expert(Physics.Nuclear.Particle._)
+let marie = Expert(Chemistry.Nuclear._)
+
+marie.research(radium) ! albert.research _
