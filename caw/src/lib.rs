@@ -8,6 +8,8 @@ pub mod parser;
 pub mod runtime;
 pub mod transpiler;
 pub mod types;
+pub mod pretty_print;
+pub mod repl;
 
 #[cfg(test)]
 mod tests;
@@ -17,6 +19,7 @@ pub use ast::*;
 pub use parser::CawParser;
 pub use runtime::Runtime;
 pub use transpiler::ClipsTranspiler;
+pub use repl::{ReplSession, ReplCommand};
 
 #[derive(Error, Debug)]
 pub enum CawError {

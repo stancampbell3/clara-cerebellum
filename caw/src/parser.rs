@@ -11,6 +11,31 @@ use pest::Parser;
 pub struct CawParser;
 
 impl CawParser {
+    /// Parse a single statement (for REPL)
+    pub fn parse_statement_interactive(input: &str) -> CawResult<Statement> {
+        let trimmed = input.trim();
+
+        // Try to parse as a statement wrapped in a minimal program
+        let program_text = format!("{}\n", trimmed);
+        let pairs = Self::parse(Rule::program, &program_text)
+            .map_err(|e| ParseError(format!("Failed to parse statement: {}", e)))?;
+
+        let mut statements = Vec::new();
+        for pair in pairs {
+            if pair.as_rule() == Rule::statement {
+                statements.push(Self::parse_statement(pair)?);
+            }
+        }
+
+        if statements.is_empty() {
+            Err(ParseError("No valid statement found".to_string()))
+        } else if statements.len() == 1 {
+            Ok(statements.into_iter().next().unwrap())
+        } else {
+            Err(ParseError("Expected single statement".to_string()))
+        }
+    }
+
     /// Parse a complete CAW program
     pub fn parse_program(input: &str) -> CawResult<Program> {
         let pairs = Self::parse(Rule::program, input)

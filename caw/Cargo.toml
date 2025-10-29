@@ -10,6 +10,10 @@ publish.workspace = true
 name = "parse_and_eval"
 path = "examples/parse_and_eval.rs"
 
+[[bin]]
+name = "caw"
+path = "src/bin/repl.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"
@@ -18,3 +22,5 @@ serde_json = "1.0"
 thiserror = "1.0"
 log = "0.4"
 anyhow = "1.0"
+rustyline = "13.0"
+colored = "2.1"
