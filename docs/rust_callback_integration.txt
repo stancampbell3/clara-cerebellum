@@ -1,0 +1,23 @@
+We're working on a hybrid, distributed system which includes a REST API server (Clara api) and a CLIPS expert system MCP server.
+
+lildaemon - development REPL and testing environment for Evaluators and Fish for communicating with and between models, tools, etc.  includes a connection via MCP to the...
+project is on disk at: ~/Development/lildaemon
+
+clara-cerebrum - a CLIPS expert system shell server wrapped in Rust and served over MCP.
+project is on disk at: ~/Desktop/Development/clara-cerebrum	
+
+Calls from Clara (originating in an LLM conversation) are routed to function calls and tools in lildaemon using the ToolboxManager and the logic of ToolifiedOllamaEvaluator's evaluate function.
+
+Now, we need for CLIPS to be able to make tool and perhaps prompt requests back to Clara.
+
+Using the conversation in ./docs/C_lang_callbacks_from_CLIPS.txt as a starting point, we're looking to integrate a single callback from CLIPS back into a registered C-style function.
+
+We'll be using this callback to perform tool and function calling as if CLIPS were an LLM.
+The function "clara_evaluate" will be used in CLIPS expressions such as:
+(clara-evaluate "{ "name": "name_tool_here", "arguments": { "param1": "value1", "param2": 123 }}")
+
+We'll implement a ToolboxManager class in Rust.
+ToolboxManager will manage the registration and deregistration of tools in clara-cerebrum (our CLIPS MCP server) similar to the ToolboxManager we're developing in lildaemon.
+
+
+
