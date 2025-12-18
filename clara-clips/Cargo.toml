@@ -7,12 +7,17 @@ license = "MIT OR Apache-2.0"
 publish = false
 build = "build.rs"
 
+[[bin]]
+name = "clips-repl"
+path = "src/bin/clips-repl.rs"
+
 [dependencies]
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 lazy_static = "1.4"
 log = "0.4"
+env_logger = "0.11"
 clara-toolbox = { path = "../clara-toolbox" }
 
 [build-dependencies]

@@ -589,6 +589,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "clara-toolbox",
+ "env_logger",
  "lazy_static",
  "libc",
  "log",
