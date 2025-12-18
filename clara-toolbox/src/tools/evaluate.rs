@@ -4,7 +4,13 @@ use crate::tool::{Tool, ToolError};
 use clara_client::ClaraClient;
 use serde_json::Value;
 use std::sync::Arc;
-/// Tool for evaluating expressions using Clara's evaluation endpoint
+/// Tool for evaluating expressions using Clara's evaluation endpoint (may be a lildaemon, or other instance supporting Evaluators)
+/// Takes a JSON object as input and returns the evaluation result as JSON.
+/// NOTE: During rule evaluation in CLIPS, an evaluation request may be made to Clara for LLM reasoning.
+/// Clara may then itself call a clara-cerebrum instance for further rule based reasoning.
+/// We MUST detect and prevent loops in such calls to avoid infinite recursion.  When Clara is designing rule sets,
+/// she should apply validation rules to the generated rules to ensure no loops are possible as well as guarding from
+/// them in the clara-cerebrum clips server.
 pub struct EvaluateTool {
     clara_client: Arc<ClaraClient>,
 }
