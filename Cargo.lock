@@ -573,6 +573,7 @@ dependencies = [
  "clara-config",
  "clara-core",
  "clara-session",
+ "clara-toolbox",
  "env_logger",
  "log",
  "serde",
@@ -587,7 +588,12 @@ name = "clara-clips"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "clara-toolbox",
+ "lazy_static",
  "libc",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -665,6 +671,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cc",
+ "clara-clips",
  "clara-core",
  "clara-persistence",
  "clara-security",
@@ -679,6 +686,18 @@ dependencies = [
  "time",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "clara-toolbox"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "lazy_static",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

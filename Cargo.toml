@@ -8,8 +8,9 @@ members = ["caw",
   "clara-metrics",
   "clara-persistence",
   "clara-security",
-  "clara-session"
-, "clips-mcp-adapter"]
+  "clara-session",
+  "clara-toolbox",
+  "clips-mcp-adapter"]
 resolver = "2"
 
 [workspace.package]

@@ -35,15 +35,26 @@ pub async fn eval_session(
             ApiError::from(e)
         })?;
 
-    // Execute the command in the subprocess
-    log::debug!("Executing script in subprocess pool");
-    let eval_result = state
-        .subprocess_pool
-        .execute(&session_id, &req.script, req.timeout_ms)
+    // Execute the script using FFI
+    log::debug!("Executing script via CLIPS FFI");
+    let start = std::time::Instant::now();
+
+    let result = state
+        .session_manager
+        .with_clips_env(&session_id_obj, |env| {
+            env.eval(&req.script)
+        })
         .map_err(|e| {
-            log::error!("Subprocess execution failed for session {}: {:?}", session_id, e);
+            log::error!("FFI execution failed for session {}: {:?}", session_id, e);
             ApiError::from(e)
         })?;
+
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    let eval_result = clara_core::EvalResult::success(
+        result,
+        clara_core::EvalMetrics::with_elapsed(elapsed_ms)
+    );
     
     log::info!(
         "Evaluation complete: exit_code={}, elapsed={}ms",

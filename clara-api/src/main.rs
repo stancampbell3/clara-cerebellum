@@ -9,6 +9,10 @@ async fn main() -> std::io::Result<()> {
 
     log::info!("Starting Clara Cerebrum API Server");
 
+    // Initialize global ToolboxManager with default tools
+    log::info!("Initializing ToolboxManager");
+    clara_toolbox::ToolboxManager::init_global();
+
     // Start server on localhost:8080
     start_server("127.0.0.1", 8080).await
 }

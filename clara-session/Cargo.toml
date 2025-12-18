@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4"], optional = true }
 clara-core = { path = "../clara-core", optional = true }
 clara-security = { path = "../clara-security", optional = true }
 clara-persistence = { path = "../clara-persistence", optional = true }
+clara-clips = { path = "../clara-clips" }
 
 # Small helpers for examples/tests
 anyhow = { version = "1.0", optional = true }
