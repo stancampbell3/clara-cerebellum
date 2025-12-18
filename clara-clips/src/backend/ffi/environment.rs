@@ -1,11 +1,42 @@
 // Safe Rust wrapper around CLIPS Environment
 
 use super::bindings::{self, CLIPSValue, Environment, EvalError};
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
+use libc::c_void;
 
 /// Safe wrapper around a CLIPS Environment
 pub struct ClipsEnvironment {
     env: *mut Environment,
+}
+
+/// Router callback to determine if we should capture output from this logical name
+extern "C" fn capture_query(
+    _env: *mut Environment,
+    logical_name: *const libc::c_char,
+    _context: *mut c_void,
+) -> bool {
+    unsafe {
+        let name = CStr::from_ptr(logical_name).to_str().unwrap_or("");
+        // Capture output from stdout, stderr, and general output
+        name == "stdout" || name == "stderr" || name == "t" || name == "werror"
+    }
+}
+
+/// Router callback to capture written output
+extern "C" fn capture_write(
+    _env: *mut Environment,
+    _logical_name: *const libc::c_char,
+    data: *const libc::c_char,
+    context: *mut c_void,
+) {
+    unsafe {
+        if context.is_null() {
+            return;
+        }
+        let buffer = &mut *(context as *mut String);
+        let text = CStr::from_ptr(data).to_str().unwrap_or("");
+        buffer.push_str(text);
+    }
 }
 
 impl std::fmt::Debug for ClipsEnvironment {
@@ -34,20 +65,51 @@ impl ClipsEnvironment {
             let c_code = CString::new(code)
                 .map_err(|e| format!("Invalid code string: {}", e))?;
 
+            // Create output buffer
+            let mut output = String::new();
+            let output_ptr = &mut output as *mut String as *mut c_void;
+
+            // Register router to capture output
+            let router_name = CString::new("rust-capture").unwrap();
+            let router_added = bindings::AddRouter(
+                self.env,
+                router_name.as_ptr(),
+                10, // Priority (higher than default routers)
+                Some(capture_query),
+                Some(capture_write),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                output_ptr,
+            );
+
+            if !router_added {
+                return Err("Failed to add output capture router".to_string());
+            }
+
+            // Evaluate the expression
             let mut result: CLIPSValue = std::mem::zeroed();
             let eval_result = bindings::Eval(self.env, c_code.as_ptr(), &mut result);
 
+            // If eval succeeded and no output was captured, write the result value
+            if matches!(eval_result, EvalError::EE_NO_ERROR) && output.is_empty() {
+                let stdout_name = CString::new("stdout").unwrap();
+                bindings::WriteCLIPSValue(self.env, stdout_name.as_ptr(), &mut result);
+            }
+
+            // Clean up router
+            bindings::DeleteRouter(self.env, router_name.as_ptr());
+
             match eval_result {
                 EvalError::EE_NO_ERROR => {
-                    // For now, return a simple success indicator
-                    // TODO: Implement proper value conversion from CLIPSValue
-                    Ok(format!("{}", code))
+                    // Return captured output, or empty string if nothing was captured
+                    Ok(output)
                 }
                 EvalError::EE_PARSING_ERROR => {
-                    Err("CLIPS parsing error".to_string())
+                    Err(format!("CLIPS parsing error: {}", output))
                 }
                 EvalError::EE_PROCESSING_ERROR => {
-                    Err("CLIPS processing error".to_string())
+                    Err(format!("CLIPS processing error: {}", output))
                 }
             }
         }

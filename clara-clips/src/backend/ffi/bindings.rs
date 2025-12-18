@@ -31,6 +31,10 @@ pub enum EvalError {
     EE_PROCESSING_ERROR = 2,
 }
 
+/// Router callback function types
+pub type RouterQueryFunction = extern "C" fn(env: *mut Environment, logical_name: *const c_char, context: *mut c_void) -> bool;
+pub type RouterWriteFunction = extern "C" fn(env: *mut Environment, logical_name: *const c_char, data: *const c_char, context: *mut c_void);
+
 extern "C" {
     /// Create a new CLIPS environment
     /// Returns NULL on failure
@@ -61,6 +65,34 @@ extern "C" {
 
     /// Clear the CLIPS environment
     pub fn Clear(env: *mut Environment);
+
+    /// Add a custom router to the environment
+    /// Args:
+    ///   - env: The CLIPS environment
+    ///   - name: Router name (C string)
+    ///   - priority: Router priority (higher = checked first)
+    ///   - query: Query function (determines if router handles logical name)
+    ///   - write: Write function (handles output)
+    ///   - read, unread, exit: Other router functions (can be NULL)
+    ///   - context: User data passed to callbacks
+    /// Returns: true on success
+    pub fn AddRouter(
+        env: *mut Environment,
+        name: *const c_char,
+        priority: c_int,
+        query: Option<RouterQueryFunction>,
+        write: Option<RouterWriteFunction>,
+        read: *const c_void,
+        unread: *const c_void,
+        exit: *const c_void,
+        context: *mut c_void,
+    ) -> bool;
+
+    /// Remove a router from the environment
+    pub fn DeleteRouter(env: *mut Environment, name: *const c_char) -> bool;
+
+    /// Write a CLIPSValue to a logical name (router)
+    pub fn WriteCLIPSValue(env: *mut Environment, logical_name: *const c_char, value: *mut CLIPSValue);
 
     /// Activate string router to capture output
     pub fn ActivateRouter(env: *mut Environment, router_name: *const c_char) -> bool;
