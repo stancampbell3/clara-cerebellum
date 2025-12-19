@@ -1,5 +1,7 @@
 use crate::metadata::{ResourceLimits, Session, SessionId, SessionStatus};
 use crate::store::{SessionStore, StoreError};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -40,6 +42,8 @@ impl Default for ManagerConfig {
 pub struct SessionManager {
     store: SessionStore,
     config: ManagerConfig,
+    /// Separate storage for CLIPS environments (not cloneable/serializable)
+    clips_envs: Arc<RwLock<HashMap<SessionId, clara_clips::ClipsEnvironment>>>,
 }
 
 impl SessionManager {
@@ -48,6 +52,7 @@ impl SessionManager {
         Self {
             store: SessionStore::new(),
             config,
+            clips_envs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -70,11 +75,30 @@ impl SessionManager {
         }
 
         let mut session = Session::new(user_id, limits);
+
+        // Create CLIPS FFI environment
+        let clips_env = clara_clips::ClipsEnvironment::new()
+            .map_err(|e| {
+                log::error!("Failed to create CLIPS environment: {}", e);
+                ManagerError::Store(StoreError::InvalidState)
+            })?;
+
+        // Insert session
+        let session_id = session.session_id.clone();
         self.store.insert(session.clone())?;
-        
+
+        // Store CLIPS environment separately
+        {
+            let mut envs = self.clips_envs.write()
+                .map_err(|_| ManagerError::Store(StoreError::LockPoisoned))?;
+            envs.insert(session_id.clone(), clips_env);
+        }
+
+        // Activate and update
         session.activate();
         self.store.update(session.clone())?;
 
+        // Return the session
         Ok(session)
     }
     
@@ -120,7 +144,30 @@ impl SessionManager {
         let mut session = self.store.get(session_id)?;
         session.terminate();
         self.store.update(session.clone())?;
+
+        // Remove CLIPS environment
+        {
+            let mut envs = self.clips_envs.write()
+                .map_err(|_| ManagerError::Store(StoreError::LockPoisoned))?;
+            envs.remove(session_id);
+        }
+
         Ok(session)
+    }
+
+    /// Execute an operation on a session's CLIPS environment
+    /// Returns an error if the session or environment doesn't exist
+    pub fn with_clips_env<F, R>(&self, session_id: &SessionId, f: F) -> Result<R, ManagerError>
+    where
+        F: FnOnce(&mut clara_clips::ClipsEnvironment) -> Result<R, String>,
+    {
+        let mut envs = self.clips_envs.write()
+            .map_err(|_| ManagerError::Store(StoreError::LockPoisoned))?;
+
+        let env = envs.get_mut(session_id)
+            .ok_or_else(|| ManagerError::SessionNotFound)?;
+
+        f(env).map_err(|e| ManagerError::Store(StoreError::InvalidState))
     }
 
     /// Get all sessions for a user
@@ -173,6 +220,7 @@ impl Clone for SessionManager {
         Self {
             store: self.store.clone(),
             config: self.config.clone(),
+            clips_envs: Arc::clone(&self.clips_envs),
         }
     }
 }

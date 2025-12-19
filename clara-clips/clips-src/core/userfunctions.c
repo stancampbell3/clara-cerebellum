@@ -52,6 +52,41 @@
 
 void UserFunctions(Environment *);
 
+/* External declarations for Rust FFI callbacks */
+extern char* rust_clara_evaluate(void* env, const char* input);
+extern void rust_free_string(char* s);
+
+/*********************************************************/
+/* ClaraEvaluateWrapper: C wrapper for Rust callback     */
+/* This function is registered with CLIPS and calls the  */
+/* Rust implementation of clara-evaluate                 */
+/*********************************************************/
+static void ClaraEvaluateWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue arg;
+
+   /* Get the first argument (JSON string) */
+   if (! UDFFirstArgument(context, LEXEME_BITS, &arg))
+     {
+      returnValue->lexemeValue = CreateString(env, "{\"status\":\"error\",\"message\":\"Invalid argument\"}");
+      return;
+     }
+
+   const char* input = arg.lexemeValue->contents;
+
+   /* Call Rust callback */
+   char* result = rust_clara_evaluate((void*)env, input);
+
+   /* Create CLIPS string from result */
+   returnValue->lexemeValue = CreateString(env, result);
+
+   /* Free the Rust-allocated string */
+   rust_free_string(result);
+  }
+
 /*********************************************************/
 /* UserFunctions: Informs the expert system environment  */
 /*   of any user defined functions. In the default case, */
@@ -64,7 +99,7 @@ void UserFunctions(Environment *);
 void UserFunctions(
   Environment *env)
   {
-#if MAC_XCD
-#pragma unused(env)
-#endif
+   /* Register clara-evaluate function */
+   /* Signature: "s" = returns string, 1,1 = min/max args, "s" = arg must be string */
+   AddUDF(env, "clara-evaluate", "s", 1, 1, "s", ClaraEvaluateWrapper, "ClaraEvaluateWrapper", NULL);
   }

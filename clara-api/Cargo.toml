@@ -11,6 +11,7 @@ clara-clips = { path = "../clara-clips", features = ["ffi"] }
 clara-config = { path = "../clara-config", features = ["toml"] }
 clara-session = { path = "../clara-session" }
 clara-core = { path = "../clara-core" }
+clara-toolbox = { path = "../clara-toolbox" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
