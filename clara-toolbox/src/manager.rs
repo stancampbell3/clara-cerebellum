@@ -9,13 +9,15 @@ use std::sync::{Arc, Mutex};
 /// ToolboxManager manages the registry of available tools and routes execution
 pub struct ToolboxManager {
     tools: HashMap<String, Arc<dyn Tool>>,
+    default_evaluator: String,
 }
 
 impl ToolboxManager {
-    /// Create a new empty ToolboxManager
+    /// Create a new empty ToolboxManager with "evaluate" as default evaluator
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            default_evaluator: "evaluate".to_string(),
         }
     }
 
@@ -24,6 +26,20 @@ impl ToolboxManager {
         let name = tool.name().to_string();
         log::info!("Registering tool: {}", name);
         self.tools.insert(name, tool);
+    }
+
+    /// Set the default evaluator tool name
+    ///
+    /// This tool will be used when clara-evaluate is called with just arguments
+    /// (no explicit tool specified in the JSON)
+    pub fn set_default_evaluator(&mut self, tool_name: impl Into<String>) {
+        self.default_evaluator = tool_name.into();
+        log::info!("Default evaluator set to: {}", self.default_evaluator);
+    }
+
+    /// Get the default evaluator tool name
+    pub fn get_default_evaluator(&self) -> &str {
+        &self.default_evaluator
     }
 
     /// Execute a tool by name with the given arguments
@@ -45,6 +61,18 @@ impl ToolboxManager {
                 Ok(ToolResponse::error(format!("{}", e)))
             }
         }
+    }
+
+    /// Execute using the default evaluator with the given arguments
+    ///
+    /// This is a convenience method for calling the default evaluator without
+    /// needing to know its name. Used by CLIPS callbacks.
+    pub fn evaluate(&self, arguments: serde_json::Value) -> Result<ToolResponse, ToolError> {
+        let request = ToolRequest {
+            tool: self.default_evaluator.clone(),
+            arguments,
+        };
+        self.execute_tool(&request)
     }
 
     /// List all registered tool names

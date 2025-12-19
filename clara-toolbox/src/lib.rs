@@ -7,4 +7,4 @@ pub mod tools;
 // Re-export commonly used types
 pub use manager::ToolboxManager;
 pub use tool::{Tool, ToolError, ToolRequest, ToolResponse};
-pub use tools::EchoTool;
+pub use tools::{EchoTool, EvaluateTool};

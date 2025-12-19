@@ -1,10 +1,35 @@
 // CLIPS REPL with full Rust callback support
 
 use clara_clips::ClipsEnvironment;
-use clara_toolbox::ToolboxManager;
+use clara_toolbox::{ToolboxManager, EvaluateTool};
+use demonic_voice::DemonicVoice;
+use std::env;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 fn main() {
+    // Parse command line arguments
+    let args: Vec<String> = env::args().collect();
+    let default_evaluator = if args.len() > 1 && args[1] == "--evaluator" && args.len() > 2 {
+        args[2].clone()
+    } else if args.len() > 1 && (args[1] == "--help" || args[1] == "-h") {
+        println!("Clara-CLIPS REPL");
+        println!();
+        println!("Usage: clips-repl [--evaluator TOOL]");
+        println!();
+        println!("Options:");
+        println!("  --evaluator TOOL    Set default evaluator tool (default: evaluate)");
+        println!("                      Use 'echo' for testing without network calls");
+        println!("  --help, -h          Show this help message");
+        println!();
+        println!("Examples:");
+        println!("  clips-repl                      # Use 'evaluate' (DemonicVoice)");
+        println!("  clips-repl --evaluator echo     # Use 'echo' for testing");
+        std::process::exit(0);
+    } else {
+        "evaluate".to_string()
+    };
+
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp(None)
@@ -18,9 +43,21 @@ fn main() {
     println!("Initializing ToolboxManager...");
     ToolboxManager::init_global();
 
+    // Register the EvaluateTool with a DemonicVoice client
+    {
+        let mut manager = ToolboxManager::global().lock().unwrap();
+        let daemon_voice = Arc::new(DemonicVoice::new("http://localhost:8000"));
+        manager.register_tool(Arc::new(EvaluateTool::new(daemon_voice)));
+
+        // Set the default evaluator
+        manager.set_default_evaluator(&default_evaluator);
+    }
+
     let manager = ToolboxManager::global().lock().unwrap();
     let tools = manager.list_tools();
+    let current_default = manager.get_default_evaluator();
     println!("Registered tools: {}", tools.join(", "));
+    println!("Default evaluator: {}", current_default);
     drop(manager);
 
     println!();
@@ -140,13 +177,21 @@ fn print_help() {
     println!("  (clear)          - Clear the CLIPS environment");
     println!("  (exit), exit, quit - Exit the REPL");
     println!();
-    println!("Callback Usage:");
+    println!("Evaluation Callback:");
     println!("  (clara-evaluate JSON-STRING)");
     println!();
-    println!("  JSON format: {{\"tool\":\"TOOL_NAME\",\"arguments\":{{...}}}}");
+    println!("  Two modes:");
+    println!("  1. Simple (uses default evaluator):");
+    println!("     {{\"question\":\"what is 2+2?\"}}");
+    println!();
+    println!("  2. Explicit tool selection:");
+    println!("     {{\"tool\":\"TOOL_NAME\",\"arguments\":{{...}}}}");
     println!();
     println!("Examples:");
-    println!("  ; Echo tool example");
+    println!("  ; Use default evaluator (DemonicVoice at localhost:8000)");
+    println!("  (clara-evaluate \"{{\\\"question\\\":\\\"what is the weather?\\\"}}\")");
+    println!();
+    println!("  ; Explicitly use echo tool (for testing)");
     println!("  (clara-evaluate \"{{\\\"tool\\\":\\\"echo\\\",\\\"arguments\\\":{{\\\"message\\\":\\\"hello\\\"}}}}\")");
     println!();
     println!("  ; Basic CLIPS");

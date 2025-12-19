@@ -46,11 +46,11 @@ pub extern "C" fn rust_clara_evaluate(
 
         log::debug!("rust_clara_evaluate called with input: {}", input_str);
 
-        // Parse the JSON request
-        let request: ToolRequest = match serde_json::from_str(input_str) {
-            Ok(req) => req,
+        // Parse the JSON input
+        let json_value: serde_json::Value = match serde_json::from_str(input_str) {
+            Ok(val) => val,
             Err(e) => {
-                log::error!("Failed to parse tool request: {}", e);
+                log::error!("Failed to parse JSON: {}", e);
                 return CString::new(format!(
                     "{{\"status\":\"error\",\"message\":\"Invalid JSON: {}\"}}",
                     e
@@ -60,12 +60,29 @@ pub extern "C" fn rust_clara_evaluate(
             }
         };
 
-        // Execute the tool via ToolboxManager
+        // Execute via ToolboxManager
         let manager = ToolboxManager::global().lock().unwrap();
-        let response = manager.execute_tool(&request).unwrap_or_else(|e| {
-            log::error!("Tool execution error: {}", e);
-            ToolResponse::error(format!("{}", e))
-        });
+
+        let response = if json_value.get("tool").is_some() {
+            // Explicit tool specified - parse as ToolRequest and execute
+            match serde_json::from_value::<ToolRequest>(json_value) {
+                Ok(request) => manager.execute_tool(&request).unwrap_or_else(|e| {
+                    log::error!("Tool execution error: {}", e);
+                    ToolResponse::error(format!("{}", e))
+                }),
+                Err(e) => {
+                    log::error!("Failed to parse ToolRequest: {}", e);
+                    ToolResponse::error(format!("Invalid tool request: {}", e))
+                }
+            }
+        } else {
+            // No tool specified - use default evaluator with entire JSON as arguments
+            log::debug!("No tool specified, using default evaluator");
+            manager.evaluate(json_value).unwrap_or_else(|e| {
+                log::error!("Default evaluator error: {}", e);
+                ToolResponse::error(format!("{}", e))
+            })
+        };
 
         let response_str = serde_json::to_string(&response).unwrap();
 

@@ -1,43 +1,49 @@
-// Clara Evaluation Tool
-// -- Accepts JSON input and passes it on as a request to Clara's evaluation endpoint
+// Evaluation Tool - Routes evaluation requests to a lil-daemon instance
+//
+// Accepts JSON input and passes it to a lil-daemon's /evaluate endpoint.
+// Lil-daemons can provide LLM reasoning, rule-based evaluation, or other processing.
 use crate::tool::{Tool, ToolError};
-use clara_client::ClaraClient;
+use demonic_voice::DemonicVoice;
 use serde_json::Value;
 use std::sync::Arc;
-/// Tool for evaluating expressions using Clara's evaluation endpoint (may be a lildaemon, or other instance supporting Evaluators)
+
+/// Tool for evaluating expressions via a lil-daemon's evaluation endpoint
+///
 /// Takes a JSON object as input and returns the evaluation result as JSON.
-/// NOTE: During rule evaluation in CLIPS, an evaluation request may be made to Clara for LLM reasoning.
-/// Clara may then itself call a clara-cerebrum instance for further rule based reasoning.
-/// We MUST detect and prevent loops in such calls to avoid infinite recursion.  When Clara is designing rule sets,
-/// she should apply validation rules to the generated rules to ensure no loops are possible as well as guarding from
-/// them in the clara-cerebrum clips server.
+///
+/// # Loop Prevention
+/// During rule evaluation in CLIPS, an evaluation request may be made to a lil-daemon for LLM reasoning.
+/// The lil-daemon may then call back to clara-cerebrum for further rule-based reasoning.
+/// We MUST detect and prevent loops in such calls to avoid infinite recursion. When designing rule sets,
+/// validation rules should ensure no loops are possible, with additional guards in the clara-cerebrum server.
 pub struct EvaluateTool {
-    clara_client: Arc<ClaraClient>,
+    daemon_voice: Arc<DemonicVoice>,
 }
 
 impl EvaluateTool {
-    /// Create a new EvaluateTool with the given ClaraClient
-    pub fn new(clara_client: Arc<ClaraClient>) -> Self {
-        Self { clara_client }
+    /// Create a new EvaluateTool with the given DemonicVoice client
+    pub fn new(daemon_voice: Arc<DemonicVoice>) -> Self {
+        Self { daemon_voice }
     }
 }
+
 impl Tool for EvaluateTool {
     fn name(&self) -> &str {
         "evaluate"
     }
 
     fn description(&self) -> &str {
-        "Evaluates expressions using Clara's evaluation endpoint"
+        "Evaluates expressions via lil-daemon evaluation endpoint"
     }
 
     fn execute(&self, args: Value) -> Result<Value, ToolError> {
         log::debug!("EvaluateTool executing with args: {}", args);
 
-        // Call Clara's evaluation endpoint with the provided arguments
-        match self.clara_client.evaluate(args) {
+        // Call lil-daemon's evaluation endpoint with the provided arguments
+        match self.daemon_voice.evaluate(args) {
             Ok(response) => Ok(response),
             Err(e) => Err(ToolError::ExecutionFailed(format!(
-                "Clara evaluation failed: {}",
+                "Lil-daemon evaluation failed: {}",
                 e
             ))),
         }
@@ -47,17 +53,17 @@ impl Tool for EvaluateTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clara_client::ClaraClient;
+    use demonic_voice::DemonicVoice;
     use serde_json::json;
     use std::sync::Arc;
 
     #[test]
     fn test_evaluate_tool_basic() {
-        let clara_client = Arc::new(ClaraClient::new("http://localhost:8000"));
-        let tool = EvaluateTool::new(clara_client);
+        let daemon_voice = Arc::new(DemonicVoice::new("http://localhost:8000"));
+        let tool = EvaluateTool::new(daemon_voice);
         assert_eq!(tool.name(), "evaluate");
         assert!(!tool.description().is_empty());
     }
 
-    // Note: Additional tests would require mocking ClaraClient's evaluate method
+    // Note: Additional tests would require mocking DemonicVoice's evaluate method
 }
