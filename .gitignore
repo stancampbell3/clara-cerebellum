@@ -8,6 +8,10 @@ clips/binaries/*
 clara-clips/clips-src/core/*.o
 clara-clips/clips-src/core/*.a
 
+# macOS metadata files
+._*
+.DS_Store
+
 # IDE/editor
 .idea/
 .vscode/

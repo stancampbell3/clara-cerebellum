@@ -6,6 +6,14 @@ fn collect_c_files(dir: &Path, out: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
+
+            // Skip macOS metadata files (._* files)
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                if filename.starts_with("._") {
+                    continue;
+                }
+            }
+
             if path.is_dir() {
                 collect_c_files(&path, out);
             } else if path.extension().and_then(|s| s.to_str()) == Some("c") {
