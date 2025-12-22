@@ -102,6 +102,16 @@ impl SessionStore {
         Ok(ids)
     }
 
+    /// List all sessions (across all users)
+    pub fn list_all(&self) -> Result<Vec<Session>, StoreError> {
+        let sessions = self
+            .sessions
+            .read()
+            .map_err(|_| StoreError::LockPoisoned)?;
+
+        Ok(sessions.values().cloned().collect())
+    }
+
     /// Get count of active sessions
     pub fn count_active(&self) -> Result<usize, StoreError> {
         let sessions = self

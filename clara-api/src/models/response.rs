@@ -96,6 +96,21 @@ pub struct HealthResponse {
     pub uptime_seconds: u64,
 }
 
+/// Run rules response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunResponse {
+    pub rules_fired: u64,
+    pub status: String,
+    pub runtime_ms: u64,
+}
+
+/// Query facts response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryFactsResponse {
+    pub matches: Vec<String>,
+    pub count: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

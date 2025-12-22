@@ -1,10 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Session configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default)]
+    pub max_facts: Option<u32>,
+    #[serde(default)]
+    pub max_rules: Option<u32>,
+    #[serde(default)]
+    pub max_memory_mb: Option<u32>,
+}
+
 /// Create session request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSessionRequest {
     pub user_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub config: Option<SessionConfig>,
     #[serde(default)]
     pub preload: Vec<String>,
     #[serde(default)]
@@ -40,8 +55,31 @@ pub struct ReloadRequest {
     pub label: String,
 }
 
+/// Load rules request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadRulesRequest {
+    pub rules: Vec<String>,
+}
+
+/// Load facts request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadFactsRequest {
+    pub facts: Vec<String>,
+}
+
+/// Run rules request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRequest {
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: i64,
+}
+
 fn default_timeout() -> u64 {
     2000
+}
+
+fn default_max_iterations() -> i64 {
+    -1 // -1 means run until completion
 }
 
 #[cfg(test)]

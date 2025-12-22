@@ -35,14 +35,9 @@ Clara Cerebellum supports multiple concurrent CLIPS sessions, each maintaining i
 ## Lifecycle States
 
 ```
-                 ┌─────────┐
-                 │ Created │
-                 └────┬────┘
-                      │
-                      ▼
-               ┌─────────────┐
-               │ Initialized │
-               └──────┬──────┘
+               ┌──────────────┐
+               │ Initializing │
+               └──────┬───────┘
                       │
                       ▼
                ┌─────────────┐
@@ -56,28 +51,29 @@ Clara Cerebellum supports multiple concurrent CLIPS sessions, each maintaining i
           │           │
           │           ▼
           │    ┌─────────────┐
-          └────│   Paused    │
+          └────│    Idle     │
                └──────┬──────┘
                       │
                       ▼
                ┌─────────────┐
-               │ Terminating │
+               │   Paused*   │
                └──────┬──────┘
                       │
                       ▼
                ┌─────────────┐
                │ Terminated  │
                └─────────────┘
+
+* Paused state reserved for future pause/resume functionality
 ```
 
 ### State Descriptions
 
-**Created**: Session object allocated, ID assigned
-**Initialized**: CLIPS environment created, ready for rules/facts
-**Active**: Accepting commands, rules, and queries
-**Evaluating**: Currently executing rules via `(run)`
-**Paused**: Execution suspended, state preserved
-**Terminating**: Cleanup in progress
+**Initializing**: CLIPS environment being created
+**Active**: Ready to accept commands, rules, and queries
+**Evaluating**: Currently executing CLIPS code (eval or run)
+**Idle**: Session exists but not actively used (future: timeout cleanup)
+**Paused**: Reserved for future pause/resume functionality
 **Terminated**: All resources freed, session no longer accessible
 
 ---
@@ -91,14 +87,19 @@ POST /sessions
 Content-Type: application/json
 
 {
+  "user_id": "required_user_id",
   "name": "optional_session_name",
   "config": {
-    "max_runtime_ms": 5000,
-    "max_rules": 1000,
-    "persistence": "memory"
-  }
+    "max_facts": 1000,
+    "max_rules": 500,
+    "max_memory_mb": 128
+  },
+  "preload": ["file1.clp"],
+  "metadata": {"key": "value"}
 }
 ```
+
+**Note**: Our implementation requires `user_id` for multi-user session management. The `name` field is optional for human-readable session identification.
 
 ### Response
 
@@ -107,9 +108,22 @@ HTTP/1.1 201 Created
 Content-Type: application/json
 
 {
-  "session_id": "abc123def456",
-  "created_at": "2025-12-21T10:30:00Z",
-  "status": "initialized"
+  "session_id": "sess-abc123def456",
+  "user_id": "user-123",
+  "started": "2025-12-21T10:30:00Z",
+  "touched": "2025-12-21T10:30:00Z",
+  "status": "active",
+  "resources": {
+    "facts": 0,
+    "rules": 0,
+    "objects": 0
+  },
+  "limits": {
+    "facts": 1000,
+    "rules": 500,
+    "objects": 0,
+    "memory_mb": 128
+  }
 }
 ```
 
@@ -206,15 +220,23 @@ POST /sessions/{session_id}/evaluate
 Content-Type: application/json
 
 {
-  "expression": "(printout t \"Hello\" crlf)"
+  "script": "(printout t \"Hello\" crlf)",
+  "timeout_ms": 2000
 }
 ```
 
 **Response**:
 ```json
 {
-  "result": "nil",
-  "output": "Hello\n"
+  "stdout": "Hello\n",
+  "stderr": "",
+  "exit_code": 0,
+  "metrics": {
+    "elapsed_ms": 125,
+    "facts_added": null,
+    "rules_fired": null
+  },
+  "session": null
 }
 ```
 
@@ -255,6 +277,8 @@ GET /sessions/{session_id}/facts?pattern=(data%20?x)
 }
 ```
 
+**Note**: Pattern matching is simplified in current implementation. Use `(find-all-facts ...)` in evaluate endpoint for advanced queries.
+
 ---
 
 ## Session State Management
@@ -268,18 +292,26 @@ GET /sessions/{session_id}
 **Response**:
 ```json
 {
-  "session_id": "abc123",
+  "session_id": "sess-abc123",
+  "user_id": "user-123",
+  "started": "2025-12-21T10:30:00Z",
+  "touched": "2025-12-21T10:35:22Z",
   "status": "active",
-  "created_at": "2025-12-21T10:30:00Z",
-  "last_activity": "2025-12-21T10:35:22Z",
-  "fact_count": 127,
-  "rule_count": 15,
-  "stats": {
-    "rules_fired_total": 1543,
-    "evaluations_total": 234
+  "resources": {
+    "facts": 127,
+    "rules": 15,
+    "objects": 0
+  },
+  "limits": {
+    "facts": 1000,
+    "rules": 500,
+    "objects": 0,
+    "memory_mb": 128
   }
 }
 ```
+
+**Implementation Note**: Session statistics (rules_fired_total, evaluations_total, last_activity) are tracked in the session metadata but not yet exposed in this endpoint response. Will be added in a future update.
 
 ### List All Sessions
 
@@ -292,19 +324,53 @@ GET /sessions
 {
   "sessions": [
     {
-      "session_id": "abc123",
+      "session_id": "sess-abc123",
+      "user_id": "user-123",
+      "started": "2025-12-21T10:30:00Z",
+      "touched": "2025-12-21T10:35:00Z",
       "status": "active",
-      "created_at": "2025-12-21T10:30:00Z"
+      "resources": {
+        "facts": 127,
+        "rules": 15,
+        "objects": 0
+      },
+      "limits": {
+        "facts": 1000,
+        "rules": 500,
+        "objects": 0,
+        "memory_mb": 128
+      }
     },
     {
-      "session_id": "def456",
-      "status": "paused",
-      "created_at": "2025-12-21T09:15:00Z"
+      "session_id": "sess-def456",
+      "user_id": "user-456",
+      "started": "2025-12-21T09:15:00Z",
+      "touched": "2025-12-21T09:20:00Z",
+      "status": "idle",
+      "resources": {
+        "facts": 45,
+        "rules": 8,
+        "objects": 0
+      },
+      "limits": {
+        "facts": 1000,
+        "rules": 500,
+        "objects": 0,
+        "memory_mb": 128
+      }
     }
   ],
   "total": 2
 }
 ```
+
+### List User Sessions
+
+```http
+GET /sessions/user/{user_id}
+```
+
+Returns sessions for a specific user only. Same response format as listing all sessions.
 
 ---
 
@@ -317,21 +383,22 @@ POST /sessions/{session_id}/save
 Content-Type: application/json
 
 {
-  "name": "weather_rules_v1",
-  "include": ["facts", "rules", "activations"]
+  "user_id": "user-123",
+  "session_id": "sess-abc123",
+  "metadata": {"note": "checkpoint_before_changes"}
 }
 ```
 
 **Response**:
 ```json
 {
-  "snapshot_id": "snap_xyz789",
-  "saved_at": "2025-12-21T10:40:00Z",
-  "size_bytes": 45632
+  "status": "saved"
 }
 ```
 
-### Restore Session
+**Current Implementation**: Session save updates the session metadata but does not yet create versioned snapshots. Persistence is in-memory only.
+
+### Restore Session (Planned)
 
 ```http
 POST /sessions/restore
@@ -342,24 +409,18 @@ Content-Type: application/json
 }
 ```
 
-**Response**:
-```json
-{
-  "session_id": "new_abc123",
-  "restored_from": "snap_xyz789",
-  "status": "active"
-}
-```
+**Status**: Not yet implemented. Planned for future release.
 
 ### Persistence Backends
 
-**Memory** (default):
-- Session state kept in RAM
+**Memory** (current):
+- Session state kept in RAM via `SessionStore`
 - Lost on server restart
 - Fast access
+- No disk persistence
 
-**Disk**:
-- CLIPS saves to `.clp` files
+**Disk** (planned):
+- CLIPS save/load to `.clp` files
 - Survives server restart
 - Slower than memory
 
@@ -436,32 +497,19 @@ impl SessionManager {
 }
 ```
 
-### Automatic Cleanup
+### Automatic Cleanup (Planned)
 
-**Timeout-based**:
-```rust
-impl SessionManager {
-    pub fn cleanup_idle_sessions(&mut self, timeout: Duration) {
-        let now = Utc::now();
-        let mut to_remove = Vec::new();
+**Timeout-based cleanup**: Not yet implemented. Future enhancement will add:
+- Configurable idle timeout
+- Background cleanup task
+- Automatic termination of stale sessions
 
-        for (id, session) in &self.sessions {
-            if now - session.last_activity > timeout {
-                to_remove.push(id.clone());
-            }
-        }
-
-        for id in to_remove {
-            self.terminate_session(&id).ok();
-        }
-    }
-}
-```
-
-**Resource-based**:
+**Resource-based cleanup**: Planned features:
 - Sessions exceeding memory limits
 - Sessions with too many facts/rules
 - Sessions in error state
+
+**Current Status**: Resource limits are tracked but not enforced. Sessions must be explicitly terminated via `DELETE /sessions/{session_id}`.
 
 ---
 
@@ -505,41 +553,27 @@ Session A (thread 2) ─┘
 
 ---
 
-## Session Lifecycle Hooks
+## Session Lifecycle Hooks (Planned)
 
-### Pre-Creation Hook
+### Pre-Creation Hook (Not Implemented)
 
-```rust
-impl SessionManager {
-    pub fn set_pre_create_hook<F>(&mut self, hook: F)
-    where F: Fn(&SessionConfig) -> Result<()> + 'static
-    {
-        self.pre_create_hook = Some(Box::new(hook));
-    }
-}
-```
+Planned feature to add validation and logging hooks before session creation.
 
-**Use cases**:
+**Planned use cases**:
 - Validate session configuration
 - Check resource limits
 - Log session creation
+- Enforce quotas
 
-### Post-Termination Hook
+### Post-Termination Hook (Not Implemented)
 
-```rust
-impl SessionManager {
-    pub fn set_post_terminate_hook<F>(&mut self, hook: F)
-    where F: Fn(&SessionId, &SessionStats) + 'static
-    {
-        self.post_terminate_hook = Some(Box::new(hook));
-    }
-}
-```
+Planned feature to add cleanup and notification hooks after session termination.
 
-**Use cases**:
+**Planned use cases**:
 - Persist final state
 - Collect metrics
 - Notify external systems
+- Archive session data
 
 ---
 
@@ -679,26 +713,41 @@ setInterval(() => {
 
 ## Implementation Status
 
-### Current State
+### Implemented (Priority 1 & 2)
 
-✅ Session creation and termination
-✅ Rule and fact loading
-✅ Expression evaluation
-✅ Basic session isolation
-✅ In-memory state management
+✅ Session creation with user_id and optional name
+✅ Session configuration with resource limits (tracked, not yet enforced)
+✅ Session termination
+✅ Rule loading via `POST /sessions/{session_id}/rules`
+✅ Fact loading via `POST /sessions/{session_id}/facts`
+✅ Expression evaluation via `POST /sessions/{session_id}/evaluate`
+✅ Run rules via `POST /sessions/{session_id}/run`
+✅ Query facts via `GET /sessions/{session_id}/facts`
+✅ List all sessions via `GET /sessions`
+✅ List user sessions via `GET /sessions/user/{user_id}`
+✅ Session status tracking (Initializing, Active, Evaluating, Idle, Paused, Terminated)
+✅ Session statistics (rules_fired_total, evaluations_total, last_activity)
+✅ Basic session isolation with separate CLIPS environments
+✅ In-memory state management via SessionStore
 
-### In Progress
+### Planned (Priority 3)
 
-🚧 Session persistence to disk
-🚧 Automatic idle timeout
-🚧 Resource limits enforcement
-
-### Planned
-
+📋 Snapshot versioning system
+📋 Restore from snapshot
+📋 Disk persistence (CLIPS save/load)
 📋 Database persistence backend
-📋 Session migration between servers
-📋 Snapshot versioning and rollback
+
+### Planned (Priority 4)
+
+📋 Resource limits enforcement
+📋 Automatic idle timeout cleanup
+📋 Resource-based eviction policies
+
+### Planned (Priority 5)
+
+📋 Lifecycle hooks (pre-creation, post-termination)
 📋 Session templates
+📋 Session migration between servers
 📋 Distributed session management
 
 ---

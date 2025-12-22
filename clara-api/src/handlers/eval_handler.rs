@@ -25,13 +25,15 @@ pub async fn eval_session(
         })?;
     log::debug!("Session found successfully");
 
-    // Touch the session to update last activity
-    log::debug!("Touching session to update last activity");
+    // Set session to Evaluating state
+    log::debug!("Setting session status to Evaluating");
+    let mut session = _session;
+    session.start_evaluating();
     state
         .session_manager
-        .touch_session(&session_id_obj)
+        .update_session(session.clone())
         .map_err(|e| {
-            log::error!("Failed to touch session {}: {:?}", session_id, e);
+            log::error!("Failed to update session status {}: {:?}", session_id, e);
             ApiError::from(e)
         })?;
 
@@ -46,16 +48,29 @@ pub async fn eval_session(
         })
         .map_err(|e| {
             log::error!("FFI execution failed for session {}: {:?}", session_id, e);
+            // Return session to Active state on error
+            session.status = clara_session::SessionStatus::Active;
+            let _ = state.session_manager.update_session(session.clone());
             ApiError::from(e)
         })?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
+    // Complete evaluation and update session stats
+    session.complete_evaluation(None); // TODO: extract rules_fired from result
+    state
+        .session_manager
+        .update_session(session.clone())
+        .map_err(|e| {
+            log::error!("Failed to update session after evaluation {}: {:?}", session_id, e);
+            ApiError::from(e)
+        })?;
+
     let eval_result = clara_core::EvalResult::success(
         result,
         clara_core::EvalMetrics::with_elapsed(elapsed_ms)
     );
-    
+
     log::info!(
         "Evaluation complete: exit_code={}, elapsed={}ms",
         eval_result.exit_code,

@@ -28,6 +28,6 @@ pub mod lifecycle;
 pub mod queue;
 pub mod eviction;
 
-pub use metadata::{Session, SessionId, SessionStatus, ResourceUsage, ResourceLimits};
+pub use metadata::{Session, SessionId, SessionStatus, SessionStats, ResourceUsage, ResourceLimits};
 pub use store::{SessionStore, StoreError};
 pub use manager::{SessionManager, ManagerConfig, ManagerError};

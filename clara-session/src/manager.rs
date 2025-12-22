@@ -62,6 +62,16 @@ impl SessionManager {
         user_id: String,
         limits: Option<ResourceLimits>,
     ) -> Result<Session, ManagerError> {
+        self.create_session_with_name(user_id, None, limits)
+    }
+
+    /// Create a new session for a user with optional name
+    pub fn create_session_with_name(
+        &self,
+        user_id: String,
+        name: Option<String>,
+        limits: Option<ResourceLimits>,
+    ) -> Result<Session, ManagerError> {
         // Check global session limit
         let active_count = self.store.count_active()?;
         if active_count >= self.config.max_concurrent_sessions {
@@ -74,7 +84,7 @@ impl SessionManager {
             return Err(ManagerError::UserSessionLimitExceeded);
         }
 
-        let mut session = Session::new(user_id, limits);
+        let mut session = Session::new_with_name(user_id, name, limits);
 
         // Create CLIPS FFI environment
         let clips_env = clara_clips::ClipsEnvironment::new()
@@ -167,7 +177,7 @@ impl SessionManager {
         let env = envs.get_mut(session_id)
             .ok_or_else(|| ManagerError::SessionNotFound)?;
 
-        f(env).map_err(|e| ManagerError::Store(StoreError::InvalidState))
+        f(env).map_err(|_e| ManagerError::Store(StoreError::InvalidState))
     }
 
     /// Get all sessions for a user
@@ -199,6 +209,12 @@ impl SessionManager {
             .count();
 
         Ok(count)
+    }
+
+    /// List all sessions (across all users)
+    pub fn list_all_sessions(&self) -> Result<Vec<Session>, ManagerError> {
+        self.store.list_all()
+            .map_err(|e| e.into())
     }
 
     /// Touch a session (update its last access time)

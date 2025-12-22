@@ -98,6 +98,10 @@ pub enum SessionStatus {
     Initializing,
     /// Session is idle (not being used but still active)
     Idle,
+    /// Session is currently evaluating/running rules
+    Evaluating,
+    /// Session is paused (execution suspended, state preserved)
+    Paused,
     /// Session is suspended (e.g., for maintenance)
     Suspended,
     /// Session has been terminated
@@ -110,8 +114,31 @@ impl std::fmt::Display for SessionStatus {
             Self::Active => write!(f, "active"),
             Self::Initializing => write!(f, "initializing"),
             Self::Idle => write!(f, "idle"),
+            Self::Evaluating => write!(f, "evaluating"),
+            Self::Paused => write!(f, "paused"),
             Self::Suspended => write!(f, "suspended"),
             Self::Terminated => write!(f, "terminated"),
+        }
+    }
+}
+
+/// Session statistics for tracking activity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionStats {
+    /// Total number of rules fired in this session
+    pub rules_fired_total: u64,
+    /// Total number of evaluations performed
+    pub evaluations_total: u64,
+    /// Timestamp of last activity
+    pub last_activity: u64,
+}
+
+impl Default for SessionStats {
+    fn default() -> Self {
+        Self {
+            rules_fired_total: 0,
+            evaluations_total: 0,
+            last_activity: current_timestamp(),
         }
     }
 }
@@ -124,6 +151,9 @@ pub struct Session {
 
     /// User who owns this session
     pub user_id: String,
+
+    /// Optional human-readable name for this session
+    pub name: Option<String>,
 
     /// When the session was created (Unix timestamp in seconds)
     pub created_at: u64,
@@ -140,6 +170,9 @@ pub struct Session {
     /// Resource limits for this session
     pub limits: ResourceLimits,
 
+    /// Session statistics
+    pub stats: SessionStats,
+
     /// Custom metadata (user-provided)
     pub metadata: HashMap<String, String>,
 
@@ -154,14 +187,27 @@ impl Session {
         Self {
             session_id: SessionId::new(),
             user_id,
+            name: None,
             created_at: now,
             touched_at: now,
             status: SessionStatus::Initializing,
             resources: ResourceUsage::default(),
             limits: limits.unwrap_or_default(),
+            stats: SessionStats::default(),
             metadata: HashMap::new(),
             loaded_files: Vec::new(),
         }
+    }
+
+    /// Create a new session with an optional name
+    pub fn new_with_name(
+        user_id: String,
+        name: Option<String>,
+        limits: Option<ResourceLimits>,
+    ) -> Self {
+        let mut session = Self::new(user_id, limits);
+        session.name = name;
+        session
     }
 
     /// Mark the session as active
@@ -172,7 +218,25 @@ impl Session {
 
     /// Update the touched timestamp
     pub fn touch(&mut self) {
-        self.touched_at = current_timestamp();
+        let now = current_timestamp();
+        self.touched_at = now;
+        self.stats.last_activity = now;
+    }
+
+    /// Set session status to Evaluating
+    pub fn start_evaluating(&mut self) {
+        self.status = SessionStatus::Evaluating;
+        self.touch();
+    }
+
+    /// Record completion of an evaluation
+    pub fn complete_evaluation(&mut self, rules_fired: Option<u64>) {
+        self.stats.evaluations_total += 1;
+        if let Some(count) = rules_fired {
+            self.stats.rules_fired_total += count;
+        }
+        self.status = SessionStatus::Active;
+        self.touch();
     }
 
     /// Terminate the session
