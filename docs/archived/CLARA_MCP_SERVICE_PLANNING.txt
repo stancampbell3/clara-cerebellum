@@ -1,0 +1,27 @@
+Plan to expose CLIPS REST API as MCP service:
+
+    Manifest: define mcp.json with service name, version, capabilities, and JSON Schemas for requests/responses.
+
+    Adapter: build thin Rust layer that speaks MCP JSON‑RPC (stdin/stdout or WebSocket) and forwards to your REST API.
+
+    Mapping: map REST endpoints → MCP tools (e.g. POST /evaluate → clips.evaluate, GET /facts → clips.facts).
+
+    Transport: start with subprocess JSON‑RPC over stdin/stdout for compatibility; add WebSocket/HTTP later if needed.
+
+    Schemas: use JSON Schema to describe input/output for each tool.
+
+    Deployment: package adapter as sibling crate (clips-mcp-adapter), either calling REST API over localhost or embedding server.
+
+    Testing: validate with MCP client, ensure prompt/response translation works.
+
+Roadmap:
+
+    Draft manifest.
+
+    Implement Rust MCP adapter.
+
+    Define schemas.
+
+    Test with client.
+
+    Package + document.
