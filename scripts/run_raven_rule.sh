@@ -6,7 +6,7 @@ BASE_URL="http://localhost:8080"
 echo "== Creating session =="
 SESSION_ID=$(curl -s -X POST "$BASE_URL/sessions" \
   -H "Content-Type: application/json" \
-  -d '{"name":"raven_test","config":{"persistence":"memory"}}' \
+  -d '{"user_id":"raven_test","config":{"persistence":"memory"}}' \
   | jq -r '.session_id')
 
 echo "Session created: $SESSION_ID"
