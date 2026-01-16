@@ -703,6 +703,7 @@ dependencies = [
  "clara-clips",
  "clara-core",
  "clara-persistence",
+ "clara-prolog",
  "clara-security",
  "cookie 0.18.1",
  "jsonwebtoken",
@@ -2439,6 +2440,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e0f6df8eaa422d97d72edcd152e1451618fed47fabbdbd5a8864167b1d4aff7"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "prolog-mcp-adapter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "log",
+ "reqwest 0.12.24",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

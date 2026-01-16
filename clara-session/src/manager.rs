@@ -1,4 +1,4 @@
-use crate::metadata::{ResourceLimits, Session, SessionId, SessionStatus};
+use crate::metadata::{ResourceLimits, Session, SessionId, SessionStatus, SessionType};
 use crate::store::{SessionStore, StoreError};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -20,6 +20,9 @@ pub enum ManagerError {
 
     #[error("Session not found")]
     SessionNotFound,
+
+    #[error("Wrong session type: expected {expected}, got {actual}")]
+    WrongSessionType { expected: String, actual: String },
 }
 
 /// Session manager configuration
@@ -44,6 +47,8 @@ pub struct SessionManager {
     config: ManagerConfig,
     /// Separate storage for CLIPS environments (not cloneable/serializable)
     clips_envs: Arc<RwLock<HashMap<SessionId, clara_clips::ClipsEnvironment>>>,
+    /// Separate storage for Prolog environments (LilDevils)
+    prolog_envs: Arc<RwLock<HashMap<SessionId, clara_prolog::PrologEnvironment>>>,
 }
 
 impl SessionManager {
@@ -53,6 +58,7 @@ impl SessionManager {
             store: SessionStore::new(),
             config,
             clips_envs: Arc::new(RwLock::new(HashMap::new())),
+            prolog_envs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -180,6 +186,109 @@ impl SessionManager {
         f(env).map_err(|_e| ManagerError::Store(StoreError::InvalidState))
     }
 
+    // =========================================================================
+    // Prolog Session Methods (LilDevils)
+    // =========================================================================
+
+    /// Create a new Prolog session for a user
+    pub fn create_prolog_session(
+        &self,
+        user_id: String,
+        limits: Option<ResourceLimits>,
+    ) -> Result<Session, ManagerError> {
+        self.create_prolog_session_with_name(user_id, None, limits)
+    }
+
+    /// Create a new Prolog session for a user with optional name
+    pub fn create_prolog_session_with_name(
+        &self,
+        user_id: String,
+        name: Option<String>,
+        limits: Option<ResourceLimits>,
+    ) -> Result<Session, ManagerError> {
+        // Check global session limit
+        let active_count = self.store.count_active()?;
+        if active_count >= self.config.max_concurrent_sessions {
+            return Err(ManagerError::GlobalSessionLimitExceeded);
+        }
+
+        // Check per-user session limit
+        let user_count = self.store.count_user_sessions(&user_id)?;
+        if user_count >= self.config.max_sessions_per_user {
+            return Err(ManagerError::UserSessionLimitExceeded);
+        }
+
+        let mut session = Session::new_typed_with_name(user_id, SessionType::Prolog, name, limits);
+
+        // Create Prolog FFI environment
+        let prolog_env = clara_prolog::PrologEnvironment::new()
+            .map_err(|e| {
+                log::error!("Failed to create Prolog environment: {}", e);
+                ManagerError::Store(StoreError::InvalidState)
+            })?;
+
+        // Insert session
+        let session_id = session.session_id.clone();
+        self.store.insert(session.clone())?;
+
+        // Store Prolog environment separately
+        {
+            let mut envs = self.prolog_envs.write()
+                .map_err(|_| ManagerError::Store(StoreError::LockPoisoned))?;
+            envs.insert(session_id.clone(), prolog_env);
+        }
+
+        // Activate and update
+        session.activate();
+        self.store.update(session.clone())?;
+
+        log::info!("Created Prolog session: {}", session_id);
+
+        Ok(session)
+    }
+
+    /// Terminate a Prolog session
+    pub fn terminate_prolog_session(&self, session_id: &SessionId) -> Result<Session, ManagerError> {
+        let mut session = self.store.get(session_id)?;
+
+        // Verify it's a Prolog session
+        if session.session_type != SessionType::Prolog {
+            return Err(ManagerError::WrongSessionType {
+                expected: "prolog".to_string(),
+                actual: session.session_type.to_string(),
+            });
+        }
+
+        session.terminate();
+        self.store.update(session.clone())?;
+
+        // Remove Prolog environment
+        {
+            let mut envs = self.prolog_envs.write()
+                .map_err(|_| ManagerError::Store(StoreError::LockPoisoned))?;
+            envs.remove(session_id);
+        }
+
+        log::info!("Terminated Prolog session: {}", session_id);
+
+        Ok(session)
+    }
+
+    /// Execute an operation on a session's Prolog environment
+    /// Returns an error if the session or environment doesn't exist
+    pub fn with_prolog_env<F, R>(&self, session_id: &SessionId, f: F) -> Result<R, ManagerError>
+    where
+        F: FnOnce(&mut clara_prolog::PrologEnvironment) -> Result<R, String>,
+    {
+        let mut envs = self.prolog_envs.write()
+            .map_err(|_| ManagerError::Store(StoreError::LockPoisoned))?;
+
+        let env = envs.get_mut(session_id)
+            .ok_or_else(|| ManagerError::SessionNotFound)?;
+
+        f(env).map_err(|_e| ManagerError::Store(StoreError::InvalidState))
+    }
+
     /// Get all sessions for a user
     pub fn get_user_sessions(&self, user_id: &str) -> Result<Vec<Session>, ManagerError> {
         let session_ids = self.store.get_user_sessions(user_id)?;
@@ -237,6 +346,7 @@ impl Clone for SessionManager {
             store: self.store.clone(),
             config: self.config.clone(),
             clips_envs: Arc::clone(&self.clips_envs),
+            prolog_envs: Arc::clone(&self.prolog_envs),
         }
     }
 }
@@ -302,5 +412,75 @@ mod tests {
 
         let user2_sessions = manager.get_user_sessions("user-2").unwrap();
         assert_eq!(user2_sessions.len(), 1);
+    }
+
+    // =========================================================================
+    // Prolog Session Tests (LilDevils)
+    // =========================================================================
+
+    #[test]
+    fn test_create_prolog_session() {
+        let manager = SessionManager::new(ManagerConfig::default());
+        let session = manager.create_prolog_session("user-1".to_string(), None).unwrap();
+
+        assert_eq!(session.user_id, "user-1");
+        assert_eq!(session.status, SessionStatus::Active);
+        assert_eq!(session.session_type, SessionType::Prolog);
+    }
+
+    #[test]
+    fn test_terminate_prolog_session() {
+        let manager = SessionManager::new(ManagerConfig::default());
+        let session = manager.create_prolog_session("user-1".to_string(), None).unwrap();
+
+        manager.terminate_prolog_session(&session.session_id).unwrap();
+
+        let result = manager.get_session(&session.session_id);
+        assert!(matches!(result, Err(ManagerError::SessionTerminated)));
+    }
+
+    #[test]
+    fn test_prolog_session_wrong_type() {
+        let manager = SessionManager::new(ManagerConfig::default());
+        // Create a CLIPS session
+        let clips_session = manager.create_session("user-1".to_string(), None).unwrap();
+
+        // Try to terminate it as Prolog - should fail
+        let result = manager.terminate_prolog_session(&clips_session.session_id);
+        assert!(matches!(result, Err(ManagerError::WrongSessionType { .. })));
+    }
+
+    #[test]
+    fn test_with_prolog_env() {
+        let manager = SessionManager::new(ManagerConfig::default());
+        let session = manager.create_prolog_session("user-1".to_string(), None).unwrap();
+
+        // Execute a simple query
+        let result = manager.with_prolog_env(&session.session_id, |env| {
+            env.query_once("X = 42").map_err(|e| e.to_string())
+        });
+
+        assert!(result.is_ok(), "Query should succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_mixed_clips_prolog_sessions() {
+        let manager = SessionManager::new(ManagerConfig::default());
+
+        // Create one of each type
+        let clips_session = manager.create_session("user-1".to_string(), None).unwrap();
+        let prolog_session = manager.create_prolog_session("user-1".to_string(), None).unwrap();
+
+        // Verify types
+        assert_eq!(clips_session.session_type, SessionType::Clips);
+        assert_eq!(prolog_session.session_type, SessionType::Prolog);
+
+        // Both should be in user sessions
+        let user_sessions = manager.get_user_sessions("user-1").unwrap();
+        assert_eq!(user_sessions.len(), 2);
+
+        // Terminate both
+        manager.terminate_session(&clips_session.session_id).unwrap();
+        manager.terminate_prolog_session(&prolog_session.session_id).unwrap();
     }
 }

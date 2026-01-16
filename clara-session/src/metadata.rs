@@ -88,6 +88,31 @@ impl Default for ResourceLimits {
     }
 }
 
+/// Type of reasoning engine for the session
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionType {
+    /// CLIPS expert system (LilDaemon)
+    Clips,
+    /// SWI-Prolog logic engine (LilDevils)
+    Prolog,
+}
+
+impl Default for SessionType {
+    fn default() -> Self {
+        Self::Clips
+    }
+}
+
+impl std::fmt::Display for SessionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Clips => write!(f, "clips"),
+            Self::Prolog => write!(f, "prolog"),
+        }
+    }
+}
+
 /// Session status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -155,6 +180,10 @@ pub struct Session {
     /// Optional human-readable name for this session
     pub name: Option<String>,
 
+    /// Type of reasoning engine (CLIPS or Prolog)
+    #[serde(default)]
+    pub session_type: SessionType,
+
     /// When the session was created (Unix timestamp in seconds)
     pub created_at: u64,
 
@@ -181,13 +210,19 @@ pub struct Session {
 }
 
 impl Session {
-    /// Create a new session for a given user
+    /// Create a new CLIPS session for a given user (default)
     pub fn new(user_id: String, limits: Option<ResourceLimits>) -> Self {
+        Self::new_typed(user_id, SessionType::Clips, limits)
+    }
+
+    /// Create a new session with a specific type
+    pub fn new_typed(user_id: String, session_type: SessionType, limits: Option<ResourceLimits>) -> Self {
         let now = current_timestamp();
         Self {
             session_id: SessionId::new(),
             user_id,
             name: None,
+            session_type,
             created_at: now,
             touched_at: now,
             status: SessionStatus::Initializing,
@@ -206,6 +241,18 @@ impl Session {
         limits: Option<ResourceLimits>,
     ) -> Self {
         let mut session = Self::new(user_id, limits);
+        session.name = name;
+        session
+    }
+
+    /// Create a new session with a specific type and optional name
+    pub fn new_typed_with_name(
+        user_id: String,
+        session_type: SessionType,
+        name: Option<String>,
+        limits: Option<ResourceLimits>,
+    ) -> Self {
+        let mut session = Self::new_typed(user_id, session_type, limits);
         session.name = name;
         session
     }

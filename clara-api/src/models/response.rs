@@ -111,6 +111,17 @@ pub struct QueryFactsResponse {
     pub count: usize,
 }
 
+/// Prolog query response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrologQueryResponse {
+    /// The query result (bindings or output)
+    pub result: String,
+    /// Whether the query succeeded
+    pub success: bool,
+    /// Execution time in milliseconds
+    pub runtime_ms: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

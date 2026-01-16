@@ -11,7 +11,9 @@ members = ["caw",
   "clara-security",
   "clara-session",
   "clara-toolbox",
-  "clips-mcp-adapter"]
+  "clips-mcp-adapter",
+  "demonic-voice",
+  "prolog-mcp-adapter"]
 resolver = "2"
 
 [workspace.package]

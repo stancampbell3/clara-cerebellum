@@ -87,6 +87,9 @@ impl From<ManagerError> for ApiError {
             ManagerError::GlobalSessionLimitExceeded => ClaraError::GlobalSessionLimitExceeded,
             ManagerError::SessionTerminated => ClaraError::SessionTerminated,
             ManagerError::SessionNotFound => ClaraError::SessionNotFound("Session not found".to_string()),
+            ManagerError::WrongSessionType { expected, actual } => {
+                ClaraError::ValidationError(format!("Expected {} session, got {}", expected, actual))
+            }
         };
         Self { inner: clara_error }
     }

@@ -31,6 +31,7 @@ clara-core = { path = "../clara-core", optional = true }
 clara-security = { path = "../clara-security", optional = true }
 clara-persistence = { path = "../clara-persistence", optional = true }
 clara-clips = { path = "../clara-clips" }
+clara-prolog = { path = "../clara-prolog" }
 
 # Small helpers for examples/tests
 anyhow = { version = "1.0", optional = true }

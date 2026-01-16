@@ -82,6 +82,23 @@ fn default_max_iterations() -> i64 {
     -1 // -1 means run until completion
 }
 
+/// Prolog query request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrologQueryRequest {
+    /// The Prolog goal to execute
+    pub goal: String,
+    /// If true, return all solutions; if false, return first solution only
+    #[serde(default)]
+    pub all_solutions: Option<bool>,
+}
+
+/// Prolog consult request - load clauses into the knowledge base
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrologConsultRequest {
+    /// Prolog clauses to assert (facts and rules)
+    pub clauses: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
