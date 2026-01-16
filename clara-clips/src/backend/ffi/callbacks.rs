@@ -139,6 +139,9 @@ mod tests {
 
     #[test]
     fn test_rust_clara_evaluate_basic() {
+        // Initialize global toolbox with default tools (including echo)
+        ToolboxManager::init_global();
+
         let input = CString::new(r#"{"tool":"echo","arguments":{"message":"hello"}}"#).unwrap();
 
         unsafe {
@@ -148,8 +151,16 @@ mod tests {
             let result_cstr = CStr::from_ptr(result_ptr);
             let result_str = result_cstr.to_str().unwrap();
 
-            assert!(result_str.contains("success"), "Should contain success status");
-            assert!(result_str.contains("phase_2_testing"), "Should indicate phase 2");
+            assert!(
+                result_str.contains("success"),
+                "Should contain success status, got: {}",
+                result_str
+            );
+            assert!(
+                result_str.contains("echoed"),
+                "Should contain echoed field from EchoTool, got: {}",
+                result_str
+            );
 
             // Clean up
             rust_free_string(result_ptr);
@@ -158,13 +169,11 @@ mod tests {
 
     #[test]
     fn test_rust_clara_evaluate_null_input() {
-        unsafe {
-            let result_ptr = rust_clara_evaluate(std::ptr::null_mut(), std::ptr::null());
-            assert!(!result_ptr.is_null(), "Should return non-null pointer even with null input");
+        let result_ptr = rust_clara_evaluate(std::ptr::null_mut(), std::ptr::null());
+        assert!(!result_ptr.is_null(), "Should return non-null pointer even with null input");
 
-            // Clean up
-            rust_free_string(result_ptr);
-        }
+        // Clean up
+        rust_free_string(result_ptr);
     }
 
     #[test]
