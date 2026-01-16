@@ -90,6 +90,8 @@ mod tests {
     fn test_create_session_request() {
         let req = CreateSessionRequest {
             user_id: "user-123".to_string(),
+            name: Some("Test Session".to_string()),
+            config: None,
             preload: vec![],
             metadata: HashMap::new(),
         };
