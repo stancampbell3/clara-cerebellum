@@ -182,6 +182,213 @@ if __name__ == '__main__':
 
 ---
 
+## LilDevils (Prolog) REST API
+
+The **LilDevils** subsystem provides SWI-Prolog integration via the `/devils/*` endpoints. This enables backward-chaining logic programming alongside CLIPS's forward-chaining rules.
+
+### Prolog Session Endpoints
+
+#### POST /devils/sessions
+
+Create a new Prolog session.
+
+**Request**:
+```json
+{
+  "user_id": "user-123",
+  "config": {
+    "max_facts": 1000,
+    "max_rules": 500,
+    "max_memory_mb": 128
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "session_id": "sess-abc123",
+  "user_id": "user-123",
+  "started": "2025-01-16T12:00:00Z",
+  "touched": "2025-01-16T12:00:00Z",
+  "status": "active",
+  "resources": { "facts": 0, "rules": 0, "objects": 0 },
+  "limits": { "facts": 1000, "rules": 500, "memory_mb": 128 }
+}
+```
+
+#### GET /devils/sessions
+
+List all Prolog sessions.
+
+**Response**:
+```json
+{
+  "sessions": [...],
+  "total": 5
+}
+```
+
+#### GET /devils/sessions/{session_id}
+
+Get details for a specific Prolog session.
+
+#### DELETE /devils/sessions/{session_id}
+
+Terminate a Prolog session.
+
+**Response**:
+```json
+{
+  "session_id": "sess-abc123",
+  "status": "terminated",
+  "saved": false
+}
+```
+
+### Prolog Query Endpoints
+
+#### POST /devils/sessions/{session_id}/query
+
+Execute a Prolog query in the session.
+
+**Request**:
+```json
+{
+  "goal": "member(X, [1, 2, 3])",
+  "all_solutions": false
+}
+```
+
+**Response**:
+```json
+{
+  "result": "X = 1",
+  "success": true,
+  "runtime_ms": 2
+}
+```
+
+**Parameters**:
+- `goal`: Prolog goal to execute (required)
+- `all_solutions`: If `true`, return all solutions; if `false`, return first solution only (default: `false`)
+
+#### POST /devils/sessions/{session_id}/consult
+
+Load Prolog clauses (facts and rules) into the session's knowledge base.
+
+**Request**:
+```json
+{
+  "clauses": [
+    "parent(tom, mary)",
+    "parent(tom, john)",
+    "grandparent(X, Z) :- parent(X, Y), parent(Y, Z)"
+  ]
+}
+```
+
+**Response**:
+```json
+{
+  "status": "clauses_loaded",
+  "count": 3
+}
+```
+
+### Example Prolog Workflow
+
+```bash
+# 1. Create a session
+curl -X POST http://localhost:8080/devils/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "demo"}'
+
+# Response: {"session_id": "sess-xyz", ...}
+
+# 2. Load knowledge base
+curl -X POST http://localhost:8080/devils/sessions/sess-xyz/consult \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clauses": [
+      "likes(mary, food)",
+      "likes(mary, wine)",
+      "likes(john, wine)",
+      "likes(john, mary)"
+    ]
+  }'
+
+# 3. Query the knowledge base
+curl -X POST http://localhost:8080/devils/sessions/sess-xyz/query \
+  -H "Content-Type: application/json" \
+  -d '{"goal": "likes(mary, X)"}'
+
+# Response: {"result": "X = food", "success": true, "runtime_ms": 1}
+
+# 4. Get all solutions
+curl -X POST http://localhost:8080/devils/sessions/sess-xyz/query \
+  -H "Content-Type: application/json" \
+  -d '{"goal": "likes(X, wine)", "all_solutions": true}'
+
+# 5. Terminate session
+curl -X DELETE http://localhost:8080/devils/sessions/sess-xyz
+```
+
+---
+
+## Prolog MCP Adapter
+
+The `prolog-mcp-adapter` provides MCP (Model Context Protocol) integration for Prolog sessions, enabling use with Claude Desktop and other MCP-compatible clients.
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `prolog.query` | Execute a Prolog goal, optionally returning all solutions |
+| `prolog.consult` | Load clauses into the knowledge base |
+| `prolog.retract` | Remove clauses from the knowledge base |
+| `prolog.status` | Get session and engine status |
+
+### Running the MCP Adapter
+
+```bash
+# Set REST API URL (defaults to http://localhost:8080)
+export REST_API_URL=http://localhost:8080
+
+# Run the adapter (communicates via stdin/stdout)
+./target/release/prolog-mcp-adapter
+```
+
+### MCP Tool Schemas
+
+**prolog.query**:
+```json
+{
+  "goal": "member(X, [1, 2, 3])",
+  "all_solutions": true
+}
+```
+
+**prolog.consult**:
+```json
+{
+  "clauses": [
+    "fact(one)",
+    "rule(X) :- fact(X)"
+  ]
+}
+```
+
+**prolog.retract**:
+```json
+{
+  "clause": "fact(_)",
+  "all": true
+}
+```
+
+---
+
 ## Integration with Clara Cerebellum
 
 ### EvaluateTool Wrapper

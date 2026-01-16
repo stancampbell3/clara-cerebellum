@@ -2,7 +2,11 @@
 
 ## Overview
 
-Clara Cerebellum is a rule-based reasoning system built on CLIPS (C Language Integrated Production System) with Rust bindings and integration with external LLM-based evaluators via the **DemonicVoice** client.
+Clara Cerebellum is a hybrid reasoning system combining:
+- **CLIPS** (C Language Integrated Production System) - Forward-chaining rule engine
+- **SWI-Prolog** (LilDevils) - Backward-chaining logic programming
+
+Both engines are integrated via Rust FFI bindings and exposed through a unified REST API. External LLM-based evaluators can be accessed via the **DemonicVoice** client.
 
 ## Core Components
 
@@ -25,7 +29,51 @@ Clara Cerebellum is a rule-based reasoning system built on CLIPS (C Language Int
 
 ---
 
-### 2. Toolbox System (`clara-toolbox`)
+### 2. Prolog Engine (`clara-prolog`)
+
+**Purpose**: Provides Rust FFI bindings to SWI-Prolog for backward-chaining logic programming.
+
+**Key Features**:
+- Links against SWI-Prolog's `libswipl.so` library
+- Exposes safe Rust API via `PrologEnvironment`
+- Per-session engine isolation using `PL_create_engine()`
+- Query execution with single or multiple solution modes
+- Dynamic clause assertion/retraction
+
+**Main Types**:
+- `PrologEnvironment` - Safe wrapper around SWI-Prolog engine
+- `PrologError` / `PrologResult` - Error handling types
+- FFI bindings for `PL_initialise`, `PL_call`, `PL_get_*`, etc.
+
+**Build Requirements**:
+- SWI-Prolog source tree (bundled in `swipl/swipl-devel/`)
+- Set `SWIPL_HOME` environment variable for builds
+- Runtime: `LD_LIBRARY_PATH` must include `swipl/build/src`
+
+**Location**: `clara-prolog/`
+
+---
+
+### 3. Prolog MCP Adapter (`prolog-mcp-adapter`)
+
+**Purpose**: MCP (Model Context Protocol) adapter enabling Prolog integration with Claude Desktop and other MCP clients.
+
+**Key Features**:
+- JSON-RPC over stdin/stdout communication
+- Automatic session creation on startup
+- Tool-based interface for Prolog operations
+
+**MCP Tools**:
+- `prolog.query` - Execute Prolog goals
+- `prolog.consult` - Load clauses into knowledge base
+- `prolog.retract` - Remove clauses
+- `prolog.status` - Get session status
+
+**Location**: `prolog-mcp-adapter/`
+
+---
+
+### 4. Toolbox System (`clara-toolbox`)
 
 **Purpose**: Registry and execution framework for tools that can be invoked from CLIPS rules.
 
@@ -55,7 +103,7 @@ ToolboxManager (singleton)
 
 ---
 
-### 3. DemonicVoice Client (`demonic-voice`)
+### 5. DemonicVoice Client (`demonic-voice`)
 
 **Purpose**: Synchronous HTTP client for communicating with lil-daemon REST instances.
 
@@ -86,30 +134,52 @@ let response = voice.evaluate(json_payload)?;
 
 ---
 
-### 4. Session Management (`clara-session`)
+### 6. Session Management (`clara-session`)
 
-**Purpose**: Manages CLIPS environment lifecycle and persistence.
+**Purpose**: Manages reasoning engine lifecycle and persistence for both CLIPS and Prolog.
 
 **Key Responsibilities**:
-- Session creation and destruction
-- Fact and rule persistence to CLIPS files
-- Session isolation (multiple concurrent sessions)
+- Session creation and destruction for both engine types
+- `SessionType` enum distinguishing CLIPS vs Prolog sessions
+- Per-session engine isolation (separate environments per session)
+- Fact and rule persistence
 - Integration with clara-persistence for long-term storage
+
+**Session Types**:
+- `SessionType::Clips` - Forward-chaining CLIPS sessions (via `/sessions/*`)
+- `SessionType::Prolog` - Backward-chaining Prolog sessions (via `/devils/*`)
+
+**Key Types**:
+- `SessionManager` - Manages both CLIPS and Prolog session registries
+- `Session` - Metadata including type, limits, resources
+- `SessionId` - Unique session identifier
 
 **Location**: `clara-session/`
 
 ---
 
-### 5. REST API (`clara-api`)
+### 7. REST API (`clara-api`)
 
-**Purpose**: Actix-web HTTP server exposing CLIPS functionality.
+**Purpose**: Actix-web HTTP server exposing CLIPS and Prolog functionality.
 
-**Endpoints**:
-- `POST /evaluate` - Evaluate CLIPS expressions
-- `POST /sessions` - Create new session
+**CLIPS Endpoints** (`/sessions/*`):
+- `POST /sessions` - Create CLIPS session
 - `GET /sessions/:id` - Get session state
-- `DELETE /sessions/:id` - Delete session
-- See `docs/fiery_pit_endpoints.md` for full API spec
+- `DELETE /sessions/:id` - Terminate session
+- `POST /sessions/:id/evaluate` - Evaluate CLIPS expression
+- `POST /sessions/:id/rules` - Load rules
+- `POST /sessions/:id/facts` - Load/query facts
+- `POST /sessions/:id/run` - Run inference
+
+**Prolog Endpoints** (`/devils/*`):
+- `POST /devils/sessions` - Create Prolog session
+- `GET /devils/sessions` - List Prolog sessions
+- `GET /devils/sessions/:id` - Get session details
+- `DELETE /devils/sessions/:id` - Terminate session
+- `POST /devils/sessions/:id/query` - Execute Prolog query
+- `POST /devils/sessions/:id/consult` - Load Prolog clauses
+
+See `docs/DEMONIC_VOICE_PROTOCOL.md` for full API specification.
 
 **Location**: `clara-api/`
 
@@ -229,8 +299,9 @@ Options:
 
 ### Session Isolation
 
-- Each session maintains separate CLIPS environment
-- No shared state between sessions (TODO: verify)
+- Each CLIPS session maintains separate `ClipsEnvironment`
+- Each Prolog session maintains separate `PrologEnvironment` (via `PL_create_engine`)
+- No shared state between sessions of either type
 
 ---
 
@@ -240,6 +311,12 @@ Options:
 - **Rule matching**: O(n×m) where n=facts, m=rules
 - **Evaluation**: Microseconds for simple rules
 - **Memory**: ~1MB per environment
+
+### Prolog Engine
+- **Query execution**: Depends on goal complexity and search space
+- **Unification**: Generally fast for ground terms
+- **Memory**: Variable based on knowledge base size
+- **Multiple solutions**: Backtracking overhead for `all_solutions` queries
 
 ### DemonicVoice Client
 - **Latency**: Network-dependent (typically 100-1000ms for LLM)
@@ -256,33 +333,49 @@ Options:
 ## Deployment Topology
 
 ```
-┌─────────────────┐
-│  Client/User    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   clara-api     │  (Actix-web server, port 8080)
-│   REST Server   │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  clara-session  │  (Session management)
-│   ┌──────────┐  │
-│   │  CLIPS   │  │  (Rule engine)
-│   │  Engine  │  │
-│   └────┬─────┘  │
-└────────┼────────┘
-         │
-         ├─▶ ToolboxManager
-         │    ├─ EchoTool
-         │    └─ EvaluateTool
-         │         │
-         │         ▼
-         │    DemonicVoice
-         │         │
-         ▼         ▼
+┌─────────────────┐       ┌─────────────────────┐
+│  Client/User    │       │  MCP Client         │
+│  (REST API)     │       │  (Claude Desktop)   │
+└────────┬────────┘       └──────────┬──────────┘
+         │                           │
+         │                           ▼
+         │                 ┌─────────────────────┐
+         │                 │ prolog-mcp-adapter  │
+         │                 │ (stdin/stdout)      │
+         │                 └──────────┬──────────┘
+         │                           │
+         ▼                           ▼
+┌─────────────────────────────────────────────────┐
+│              clara-api (port 8080)              │
+│   ┌─────────────────┐  ┌──────────────────────┐│
+│   │ /sessions/*     │  │ /devils/*            ││
+│   │ (CLIPS)         │  │ (Prolog)             ││
+│   └────────┬────────┘  └──────────┬───────────┘│
+└────────────┼──────────────────────┼────────────┘
+             │                      │
+             ▼                      ▼
+┌────────────────────────────────────────────────┐
+│            clara-session (SessionManager)       │
+│   ┌──────────────┐       ┌───────────────┐     │
+│   │ CLIPS Envs   │       │ Prolog Envs   │     │
+│   │ (HashMap)    │       │ (HashMap)     │     │
+│   └──────┬───────┘       └───────┬───────┘     │
+└──────────┼───────────────────────┼─────────────┘
+           │                       │
+           ▼                       ▼
+    ┌─────────────┐         ┌─────────────┐
+    │ clara-clips │         │clara-prolog │
+    │ (CLIPS FFI) │         │(SWI-Prolog) │
+    └──────┬──────┘         └─────────────┘
+           │
+           ├─▶ ToolboxManager
+           │    ├─ EchoTool
+           │    └─ EvaluateTool
+           │         │
+           │         ▼
+           │    DemonicVoice
+           │         │
+           ▼         ▼
     ┌──────────────────┐
     │   lil-daemon     │  (External LLM service, port 8000)
     │   /evaluate      │
@@ -330,8 +423,12 @@ Implement the lil-daemon protocol:
 
 ### Integration Tests
 
-- `clara-clips/tests/` - FFI callback tests
+- `clara-clips/tests/` - CLIPS FFI callback tests
+- `clara-prolog/tests/` - Prolog environment tests
+- `clara-session/tests/` - Session management tests (both CLIPS and Prolog)
+- `clara-api/tests/` - REST API endpoint tests
 - `clara-toolbox/tests/` - Tool execution tests
+- `tests/integration/` - End-to-end smoke tests
 
 ### Testing Without lil-daemon
 
@@ -374,6 +471,7 @@ Each crate has `#[cfg(test)]` modules testing:
 
 For specific subsystem documentation, see:
 - `SESSION_LIFECYCLE.md` - Session management details
-- `DEMONIC_VOICE_PROTOCOL.md` - lil-daemon communication
+- `DEMONIC_VOICE_PROTOCOL.md` - lil-daemon communication and LilDevils (Prolog) REST API
 - `CLIPS_CALLBACKS.md` - Callback system internals
 - `TOOLBOX_SYSTEM.md` - Tool development guide
+- `lildevils_prolog_integration_planning.md` - Original Prolog integration design
