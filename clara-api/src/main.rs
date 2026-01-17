@@ -14,5 +14,5 @@ async fn main() -> std::io::Result<()> {
     clara_toolbox::ToolboxManager::init_global();
 
     // Start server on localhost:8080
-    start_server("127.0.0.1", 8080).await
+    start_server("0.0.0.0", 8080).await
 }

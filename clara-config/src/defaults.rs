@@ -2,7 +2,7 @@ use crate::schema::*;
 
 pub fn default_server_config() -> ServerConfig {
     ServerConfig {
-        host: "127.0.0.1".to_string(),
+        host: "0.0.0.0".to_string(),
         port: 8080,
         request_timeout_ms: 30000,
         max_request_body_size: 1048576, // 1MB

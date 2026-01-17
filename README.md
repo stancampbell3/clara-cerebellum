@@ -103,7 +103,7 @@ A small REST test suite lives in `./scripts/rest_tests/` and includes an orchest
 - With a bearer token and a custom base URL:
 
 ```bash
-AUTH="your-token" BASE_URL=http://127.0.0.1:8080 ./scripts/rest_tests/all_tests.sh
+AUTH="your-token" BASE_URL=http://0.0.0.0:8080 ./scripts/rest_tests/all_tests.sh
 ```
 
 Prerequisites

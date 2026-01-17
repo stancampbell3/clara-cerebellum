@@ -70,7 +70,7 @@ impl ConfigLoader {
         // A more sophisticated merge would preserve unset fields
 
         // Only override if overlay values differ from defaults
-        if overlay.server.host != "127.0.0.1" || overlay.server.port != 8080 {
+        if overlay.server.host != "0.0.0.0" || overlay.server.port != 8080 {
             base.server = overlay.server;
         }
         if !overlay.clips.binary_path.is_empty() {

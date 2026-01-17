@@ -437,7 +437,7 @@ cargo build
 RUST_LOG=info cargo run --bin clara-api
 ```
 
-Server will start on `http://127.0.0.1:8080`
+Server will start on `http://0.0.0.0:8080`
 
 ### Test Everything
 ```bash
