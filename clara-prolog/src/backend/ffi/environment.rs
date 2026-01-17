@@ -230,26 +230,33 @@ impl PrologEnvironment {
 
     /// Execute a function within this engine's context
     ///
-    /// Handles engine switching automatically.
-    fn with_engine<F, R>(&self, f: F) -> R
+    /// Handles engine switching automatically. Returns an error if the engine
+    /// cannot be acquired (e.g., it's in use by another thread).
+    fn with_engine<F, R>(&self, f: F) -> PrologResult<R>
     where
-        F: FnOnce() -> R,
+        F: FnOnce() -> PrologResult<R>,
     {
         unsafe {
             let mut old_engine: PL_engine_t = std::ptr::null_mut();
             let set_result = PL_set_engine(self.engine, &mut old_engine);
 
             if set_result != PL_ENGINE_SET {
-                log::error!("Failed to set engine: {}", set_result);
-                // For now, proceed anyway - might be already set
+                let error_msg = match set_result {
+                    PL_ENGINE_INUSE => "Engine is in use by another thread".to_string(),
+                    PL_ENGINE_INVAL => "Invalid engine handle".to_string(),
+                    other => format!("Unknown engine error code: {}", other),
+                };
+                log::error!("Failed to set engine: {} (code {})", error_msg, set_result);
+                return Err(PrologError::EngineContextError(error_msg));
             }
 
             let result = f();
 
-            // Restore previous engine if we switched
-            if !old_engine.is_null() && old_engine != self.engine {
-                PL_set_engine(old_engine, std::ptr::null_mut());
-            }
+            // Detach from this engine so other threads can use it.
+            // In a multi-threaded server, different worker threads may handle
+            // different requests for the same session. We must release ownership
+            // so subsequent requests from other threads can acquire the engine.
+            PL_set_engine(std::ptr::null_mut(), std::ptr::null_mut());
 
             result
         }

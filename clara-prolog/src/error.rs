@@ -20,6 +20,10 @@ pub enum PrologError {
     #[error("Failed to set engine context: code {0}")]
     EngineSetFailed(i32),
 
+    /// Engine context error (e.g., engine in use by another thread)
+    #[error("Engine context error: {0}")]
+    EngineContextError(String),
+
     /// Failed to parse a Prolog term/goal
     #[error("Failed to parse Prolog term: {0}")]
     ParseError(String),
