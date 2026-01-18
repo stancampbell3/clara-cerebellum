@@ -30,3 +30,5 @@ clara-clips/clips-src/core/*.a
 *.tar
 *.img
 
+# our mixing place
+./wok/
