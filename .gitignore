@@ -31,4 +31,4 @@ clara-clips/clips-src/core/*.a
 *.img
 
 # our mixing place
-./wok/
+wok/
