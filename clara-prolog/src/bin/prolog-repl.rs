@@ -10,6 +10,9 @@ fn main() {
     println!("Type Prolog goals to execute, or 'quit' to exit.");
     println!("--------------------------------------------");
 
+    // Initialize the global ToolboxManager with default tools (echo, etc.)
+    clara_toolbox::ToolboxManager::init_global();
+
     // Initialize Prolog
     clara_prolog::init_global();
 
