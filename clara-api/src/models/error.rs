@@ -90,6 +90,9 @@ impl From<ManagerError> for ApiError {
             ManagerError::WrongSessionType { expected, actual } => {
                 ClaraError::ValidationError(format!("Expected {} session, got {}", expected, actual))
             }
+            ManagerError::EnvironmentError(msg) => {
+                ClaraError::Internal(format!("Environment execution error: {}", msg))
+            }
         };
         Self { inner: clara_error }
     }

@@ -23,6 +23,9 @@ pub enum ManagerError {
 
     #[error("Wrong session type: expected {expected}, got {actual}")]
     WrongSessionType { expected: String, actual: String },
+
+    #[error("Environment execution error: {0}")]
+    EnvironmentError(String),
 }
 
 /// Session manager configuration
@@ -183,7 +186,7 @@ impl SessionManager {
         let env = envs.get_mut(session_id)
             .ok_or_else(|| ManagerError::SessionNotFound)?;
 
-        f(env).map_err(|_e| ManagerError::Store(StoreError::InvalidState))
+        f(env).map_err(|e| ManagerError::EnvironmentError(e))
     }
 
     // =========================================================================
@@ -286,7 +289,7 @@ impl SessionManager {
         let env = envs.get_mut(session_id)
             .ok_or_else(|| ManagerError::SessionNotFound)?;
 
-        f(env).map_err(|_e| ManagerError::Store(StoreError::InvalidState))
+        f(env).map_err(|e| ManagerError::EnvironmentError(e))
     }
 
     /// Get all sessions for a user
