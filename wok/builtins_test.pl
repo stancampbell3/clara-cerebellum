@@ -38,40 +38,48 @@ ask_clara_llm(Prompt, Response) :-
     known_model(clara_splinter_model, Model),
     ask_llm(Model, Prompt, Response).
 
-% LLM query with system context and model specification
-ask_llm_with_context(Model, SystemPrompt, UserPrompt, Response) :-
+% LLM query with system prompt and model specification
+ask_llm_with_system_prompt(Model, SystemPrompt, UserPrompt, Response) :-
     format(atom(Json),
         '{"tool":"splinteredmind","arguments":{"operation":"evaluate","data":{"model":"~w","system":"~w","prompt":"~w"}}}',
         [Model, SystemPrompt, UserPrompt]),
     clara_evaluate(Json, Response).
 
 % Convenience wrapper with default model
-ask_llm_with_context(SystemPrompt, UserPrompt, Response) :-
-    ask_llm_with_context('llama3.2', SystemPrompt, UserPrompt, Response).
+ask_llm_with_system_prompt(SystemPrompt, UserPrompt, Response) :-
+    ask_llm_with_system_prompt('llama3.2', SystemPrompt, UserPrompt, Response).
+
+% Convenience wrapper for Clara model with system prompt
+ask_clara_with_system_prompt(SystemPrompt, UserPrompt, Response) :-
+    known_model(clara_splinter_model, Model),
+    ask_llm_with_system_prompt(Model, SystemPrompt, UserPrompt, Response).
 
 % Example: Ask as a helpful assistant
-% ?- ask_llm_with_context('You are a helpful coding assistant.',
+% ?- ask_llm_with_system_prompt('You are a helpful coding assistant.',
 %                         'How do I reverse a list in Prolog?', R).
 
 % Example usage:
 % ?- ask_llm('What is the capital of France?', R).
 % ?- ask_llm('mistral', 'Explain quantum computing briefly.', R).
 
-% LLM query with system context and model specification
-ask_llm_with_context(Model, SystemPrompt, UserPrompt, Response) :-
-    format(atom(Json),
-        '{"tool":"splinteredmind","arguments":{"operation":"evaluate","data":{"model":"~w","system":"~w","prompt":"~w"}}}',
-        [Model, SystemPrompt, UserPrompt]),
-    clara_evaluate(Json, Response).
+
 
 % Convenience wrapper with default model
-ask_clara_with_context(SystemPrompt, UserPrompt, Response) :-
-    known_model(clara_splinter_model, Model),
-    ask_llm_with_context(Model, SystemPrompt, UserPrompt, Response).
+ask_llm_with_context(Model, SystemPrompt, UserPrompt, MessagesContext, Response) :-
+    known_model(_, Model),
+    current_messages_context(MessagesContext),
+    format(atom(Json),
+        '{"tool":"splinteredmind","arguments":{"operation":"evaluate","data":{"model":"~w","system":"~w","user":"~w","messages":~w}}}',
+        [Model, SystemPrompt, UserPrompt, MessagesContext]),
+    clara_evaluate(Json, Response).
 
-% Example: Ask as a helpful assistant
-% ?- ask_llm_with_context('You are a helpful coding assistant.',
-%                         'How do I reverse a list in Prolog?', R).
+% Example: As front desk receptionist with message context, greeting the visitor.  Using the clara_splinter_model.
+example_1(R) :-
+    known_model(clara_splinter_model, Model),
+    SystemPrompt = 'You are a friendly front desk receptionist at Seashell Analytics LLC which provides expert software consulting and enterprise system development services.',
+    UserPrompt = 'A visitor has just arrived. Greet them warmly and ask how you can assist them today.',
+    MessagesContext = '[{"role":"user","content":"Hello!"}]',
+    ask_llm_with_context(Model, SystemPrompt, UserPrompt, MessagesContext, R).
 
 % -----------------------------------------------------------------
 reset_clara_session :-
