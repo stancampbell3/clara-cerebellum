@@ -1,7 +1,7 @@
 // ToolboxManager: Registry and execution engine for tools
 
 use crate::tool::{Tool, ToolError, ToolRequest, ToolResponse};
-use crate::tools::EchoTool;
+use crate::tools::{ClaraSplinteredMindTool, EchoTool};
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -86,12 +86,22 @@ impl ToolboxManager {
     }
 
     /// Initialize the global ToolboxManager with default tools
+    ///
+    /// Registers:
+    /// - `echo`: Simple echo tool for testing
+    /// - `splinteredmind`: Bridge to FieryPit REST API (URL from FIERYPIT_URL env var, default: http://localhost:6666)
     pub fn init_global() {
         log::info!("Initializing global ToolboxManager");
         let mut mgr = GLOBAL_TOOLBOX.lock().unwrap();
 
         // Register default tools
         mgr.register_tool(Arc::new(EchoTool));
+
+        // Register splinteredmind tool with FieryPit URL from environment
+        let fierypit_url = std::env::var("FIERYPIT_URL")
+            .unwrap_or_else(|_| "http://localhost:6666".to_string());
+        log::info!("Registering splinteredmind tool with FieryPit URL: {}", fierypit_url);
+        mgr.register_tool(Arc::new(ClaraSplinteredMindTool::with_url(&fierypit_url)));
 
         log::info!("Global ToolboxManager initialized with {} tools", mgr.tools.len());
     }

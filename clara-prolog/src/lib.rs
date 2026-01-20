@@ -27,8 +27,11 @@ pub mod error;
 
 // Re-export main types for convenience
 pub use backend::ffi::PrologEnvironment;
-pub use backend::ffi::{register_clara_evaluate, rust_clara_evaluate, rust_free_string};
+pub use backend::ffi::register_clara_evaluate;
 pub use error::{PrologError, PrologResult};
+
+// Re-export FFI functions from clara-toolbox
+pub use clara_toolbox::ffi::{evaluate_json_string, free_c_string};
 
 /// Initialize the global Prolog system
 ///

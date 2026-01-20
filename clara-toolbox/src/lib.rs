@@ -1,5 +1,6 @@
 // Clara Toolbox - Tool registry and execution framework
 
+pub mod ffi;
 pub mod manager;
 pub mod tool;
 pub mod tools;
@@ -8,3 +9,6 @@ pub mod tools;
 pub use manager::ToolboxManager;
 pub use tool::{Tool, ToolError, ToolRequest, ToolResponse};
 pub use tools::{ClaraSplinteredMindTool, EchoTool, EvaluateTool};
+
+// Re-export FFI functions for convenience
+pub use ffi::{evaluate_json_string, free_c_string};

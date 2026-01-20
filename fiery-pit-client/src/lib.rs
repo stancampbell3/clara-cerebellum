@@ -165,6 +165,7 @@ impl FieryPitClient {
 
     /// Evaluate using current evaluator - POST /evaluate
     pub fn evaluate(&self, data: Value) -> Result<Value, FieryPitError> {
+        log::debug!("FieryPitClient evaluate with data: {}", data);
         self.post("/evaluate", &json!({ "data": data }))
     }
 
@@ -174,16 +175,19 @@ impl FieryPitClient {
 
     /// List all evaluators - GET /evaluators
     pub fn list_evaluators(&self) -> Result<Value, FieryPitError> {
+        log::debug!("FieryPitClient list_evaluators");
         self.get("/evaluators")
     }
 
     /// Get evaluator details - GET /evaluators/{name}
     pub fn get_evaluator(&self, name: &str) -> Result<Value, FieryPitError> {
+        log::debug!("FieryPitClient get_evaluator {}", name);
         self.get(&format!("/evaluators/{}", name))
     }
 
     /// Set current evaluator - POST /evaluators/set
     pub fn set_evaluator(&self, evaluator: &str) -> Result<Value, FieryPitError> {
+        log::debug!("FieryPitClient set_evaluator to {}", evaluator);
         self.post("/evaluators/set", &SetEvaluatorRequest {
             evaluator: evaluator.to_string(),
         })
@@ -191,6 +195,7 @@ impl FieryPitClient {
 
     /// Reset to default evaluator - POST /evaluators/reset
     pub fn reset_evaluator(&self) -> Result<Value, FieryPitError> {
+        log::debug!("FieryPitClient reset_evaluator");
         self.post("/evaluators/reset", &json!({}))
     }
 

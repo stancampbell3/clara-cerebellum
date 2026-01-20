@@ -12,8 +12,13 @@ serde_json = "1.0"
 thiserror = "2.0"
 lazy_static = "1.4"
 log = "0.4"
+libc = "0.2"
 demonic-voice = { path = "../demonic-voice" }
 fiery-pit-client = { path = "../fiery-pit-client" }
+
+[features]
+default = []
+ffi = []
 
 [dev-dependencies]
 env_logger = "0.11"

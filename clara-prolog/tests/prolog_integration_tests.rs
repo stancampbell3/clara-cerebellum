@@ -315,35 +315,35 @@ fn test_consult_file_with_clara_evaluate() {
     let registered = register_clara_evaluate();
     assert!(registered, "clara_evaluate/2 should be registered");
 
-    // Determine the path to builtins_test.pl relative to the workspace root
+    // Determine the path to front_desk3.pl relative to the workspace root
     // Tests run from the package directory, so we need to go up to workspace root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_root = std::path::Path::new(manifest_dir).parent().unwrap();
-    let builtins_path = workspace_root.join("wok/builtins_test.pl");
-    let builtins_path_str = builtins_path.to_string_lossy();
+    let front_desk_path = workspace_root.join("wok/front_desk3.pl");
+    let front_desk_path_str = front_desk_path.to_string_lossy();
 
-    // Test consulting builtins_test.pl which uses clara_evaluate/2
-    println!("\n[1] Consulting {}...", builtins_path_str);
-    let consult_result = env.consult_file(&builtins_path_str);
+    // Test consulting front_desk3.pl which uses clara_evaluate/2
+    println!("\n[1] Consulting {}...", front_desk_path_str);
+    let consult_result = env.consult_file(&front_desk_path_str);
 
     match &consult_result {
-        Ok(_) => println!("    OK: builtins_test.pl consulted successfully"),
+        Ok(_) => println!("    OK: front_desk3.pl consulted successfully"),
         Err(e) => {
-            println!("    ERROR: Failed to consult builtins_test.pl: {}", e);
+            println!("    ERROR: Failed to consult front_desk3.pl: {}", e);
             panic!(
-                "Failed to consult builtins_test.pl: {}\n\
+                "Failed to consult front_desk3.pl: {}\n\
                 This is likely because clara_evaluate/2 is not available when the file is loaded.",
                 e
             );
         }
     }
 
-    // Verify predicates from builtins_test.pl are available
-    println!("\n[2] Checking if ask_llm/2 predicate is available...");
-    let result = env.query_once("current_predicate(ask_llm/2)");
+    // Verify predicates from front_desk3.pl are available
+    println!("\n[2] Checking if ask_llm/3 predicate is available...");
+    let result = env.query_once("current_predicate(ask_llm/3)");
     match &result {
-        Ok(r) => println!("    ask_llm/2 exists: {}", r),
-        Err(e) => println!("    ask_llm/2 check error: {}", e),
+        Ok(r) => println!("    ask_llm/3 exists: {}", r),
+        Err(e) => println!("    ask_llm/3 check error: {}", e),
     }
 
     println!("\n[3] Checking if example_ask_front_desk/1 predicate is available...");
@@ -355,7 +355,7 @@ fn test_consult_file_with_clara_evaluate() {
         Err(e) => {
             panic!(
                 "example_ask_front_desk/1 NOT FOUND: {}\n\
-                This predicate should be defined in builtins_test.pl and depends on clara_evaluate/2.",
+                This predicate should be defined in front_desk3.pl and depends on clara_evaluate/2.",
                 e
             );
         }

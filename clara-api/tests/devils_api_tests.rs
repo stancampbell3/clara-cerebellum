@@ -306,3 +306,7 @@ async fn test_get_nonexistent_session() {
     let resp = test::call_service(&app, req).await;
     assert!(!resp.status().is_success(), "Get non-existent session should fail");
 }
+
+// Note: Server startup and splinteredmind integration tests are in startup_tests.rs
+// Those tests must run outside of an async runtime because the splinteredmind tool
+// uses reqwest::blocking which cannot be initialized inside a Tokio runtime.

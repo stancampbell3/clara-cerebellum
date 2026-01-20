@@ -1,7 +1,6 @@
 use clara_api::start_server;
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+fn main() -> std::io::Result<()> {
     // Initialize logging
     env_logger::Builder::from_default_env()
         .format_timestamp_millis()
@@ -10,6 +9,8 @@ async fn main() -> std::io::Result<()> {
     log::info!("Starting Clara Cerebrum API Server");
 
     // Initialize global ToolboxManager with default tools
+    // NOTE: Must happen BEFORE async runtime starts because splinteredmind tool
+    // uses reqwest::blocking::Client which can't be created inside async context
     log::info!("Initializing ToolboxManager");
     clara_toolbox::ToolboxManager::init_global();
 
@@ -17,6 +18,8 @@ async fn main() -> std::io::Result<()> {
     log::info!("Initializing Prolog (LilDevils)");
     clara_prolog::init_global();
 
-    // Start server on localhost:8080
-    start_server("0.0.0.0", 8080).await
+    // Start the async runtime and server
+    actix_web::rt::System::new().block_on(async {
+        start_server("0.0.0.0", 8080).await
+    })
 }

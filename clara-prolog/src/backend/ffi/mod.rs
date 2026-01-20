@@ -12,6 +12,9 @@ pub mod conversion;
 pub mod environment;
 
 pub use bindings::*;
-pub use callbacks::{register_clara_evaluate, rust_clara_evaluate, rust_free_string};
+pub use callbacks::register_clara_evaluate;
 pub use conversion::*;
 pub use environment::PrologEnvironment;
+
+// Re-export FFI functions from clara-toolbox for convenience
+pub use clara_toolbox::ffi::{evaluate_json_string, free_c_string};
