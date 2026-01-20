@@ -41,3 +41,10 @@ ask_clara_llm(Prompt, Response) :-
 % Example usage:
 % ?- ask_llm('What is the capital of France?', R).
 % ?- ask_llm('mistral', 'Explain quantum computing briefly.', R).
+
+% -----------------------------------------------------------------
+reset_clara_session :-
+    clara_evaluate(
+        '{"tool":"splinteredmind","arguments":{"operation":"reset_session"}}',
+        _Result
+    ).
