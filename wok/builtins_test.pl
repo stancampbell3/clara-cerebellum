@@ -1,6 +1,12 @@
 % Known models
 known_model(clara_splinter_model, 'hf.co/bartowski/Qwen2.5-14B-Instruct-1M-GGUF:Q4_0').
 
+% DEBUGGING
+trace.
+
+% dynamic current_messages_context/1.
+current_messages_context('[]').
+
 % Switch to the ollama evaluator for LLM queries
 use_ollama :-
     clara_evaluate(
@@ -74,11 +80,14 @@ ask_llm_with_context(Model, SystemPrompt, UserPrompt, MessagesContext, Response)
     clara_evaluate(Json, Response).
 
 % Example: As front desk receptionist with message context, greeting the visitor.  Using the clara_splinter_model.
+
 example_1(R) :-
     known_model(clara_splinter_model, Model),
     SystemPrompt = 'You are a friendly front desk receptionist at Seashell Analytics LLC which provides expert software consulting and enterprise system development services.',
     UserPrompt = 'A visitor has just arrived. Greet them warmly and ask how you can assist them today.',
     MessagesContext = '[{"role":"user","content":"Hello!"}]',
+    format('ask_llm_with_context : Model=~w~nSystemPrompt=~w~nUserPrompt=~w~nMessagesContext=~w~n',
+        [Model, SystemPrompt, UserPrompt, MessagesContext]),
     ask_llm_with_context(Model, SystemPrompt, UserPrompt, MessagesContext, R).
 
 % -----------------------------------------------------------------
