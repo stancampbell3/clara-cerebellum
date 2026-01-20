@@ -96,9 +96,14 @@ impl PrologEnvironment {
     /// Create a new Prolog engine for session isolation
     ///
     /// Each call creates a fresh engine with no loaded predicates
-    /// (except built-ins).
+    /// (except built-ins). Also ensures the clara_evaluate/2 foreign
+    /// predicate is registered.
     pub fn new() -> PrologResult<Self> {
         ensure_prolog_initialized()?;
+
+        // Register clara_evaluate/2 foreign predicate if not already registered
+        // This must happen after Prolog is initialized but can be called multiple times safely
+        super::callbacks::register_clara_evaluate();
 
         unsafe {
             let engine = PL_create_engine(std::ptr::null_mut());

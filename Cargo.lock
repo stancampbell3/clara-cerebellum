@@ -584,6 +584,7 @@ dependencies = [
  "clara-clips",
  "clara-config",
  "clara-core",
+ "clara-prolog",
  "clara-session",
  "clara-toolbox",
  "env_logger",

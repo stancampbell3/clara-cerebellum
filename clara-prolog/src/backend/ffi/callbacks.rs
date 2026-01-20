@@ -184,38 +184,43 @@ pub extern "C" fn pl_clara_evaluate(t0: term_t, t1: term_t) -> c_int {
     }
 }
 
+/// Track whether clara_evaluate/2 has been registered
+static CLARA_EVALUATE_REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 /// Register the clara_evaluate/2 predicate with Prolog
 ///
-/// Call this once after Prolog initialization to make clara_evaluate/2
-/// available to Prolog code.
+/// This can be called multiple times safely - subsequent calls will return
+/// the cached registration result without re-registering.
 ///
 /// # Returns
-/// true if registration succeeded, false otherwise
+/// true if registration succeeded (or was already registered), false otherwise
 pub fn register_clara_evaluate() -> bool {
-    unsafe {
-        let name = match CString::new("clara_evaluate") {
-            Ok(s) => s,
-            Err(e) => {
-                log::error!("Failed to create predicate name: {}", e);
-                return false;
+    *CLARA_EVALUATE_REGISTERED.get_or_init(|| {
+        unsafe {
+            let name = match CString::new("clara_evaluate") {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to create predicate name: {}", e);
+                    return false;
+                }
+            };
+
+            let result = PL_register_foreign(
+                name.as_ptr(),
+                2, // arity
+                pl_clara_evaluate as pl_function_t,
+                0, // flags (deterministic)
+            );
+
+            if result != 0 {
+                log::info!("Registered clara_evaluate/2 predicate");
+                true
+            } else {
+                log::error!("Failed to register clara_evaluate/2");
+                false
             }
-        };
-
-        let result = PL_register_foreign(
-            name.as_ptr(),
-            2, // arity
-            pl_clara_evaluate as pl_function_t,
-            0, // flags (deterministic)
-        );
-
-        if result != 0 {
-            log::info!("Registered clara_evaluate/2 predicate");
-            true
-        } else {
-            log::error!("Failed to register clara_evaluate/2");
-            false
         }
-    }
+    })
 }
 
 #[cfg(test)]

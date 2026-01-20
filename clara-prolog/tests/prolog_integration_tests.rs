@@ -4,6 +4,7 @@
 //! including FFI bindings, query execution, and knowledge base management.
 
 use clara_prolog::PrologEnvironment;
+use clara_prolog::register_clara_evaluate;
 
 /// Test that we can create a Prolog environment
 #[test]
@@ -237,4 +238,128 @@ fn test_findall() {
 
     let output = result.unwrap();
     println!("Findall result: {}", output);
+}
+
+/// Test that clara_evaluate/2 foreign predicate is registered and callable
+///
+/// This is a critical integration test that verifies:
+/// 1. The clara_evaluate/2 predicate is properly registered with SWI-Prolog
+/// 2. The predicate can be called from Prolog code
+/// 3. It correctly invokes the Rust toolbox manager
+#[test]
+fn test_clara_evaluate_predicate_registration() {
+    println!("=== Testing clara_evaluate/2 Foreign Predicate Registration ===");
+
+    // Initialize the toolbox (provides the echo tool)
+    clara_toolbox::ToolboxManager::init_global();
+
+    // Create a Prolog environment - this initializes Prolog
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    // Register the clara_evaluate/2 predicate
+    // Note: This needs to be called after Prolog is initialized
+    let registered = register_clara_evaluate();
+    assert!(registered, "clara_evaluate/2 should be registered successfully");
+    println!("clara_evaluate/2 registered: {}", registered);
+
+    // Test 1: Check that the predicate exists
+    println!("\n[1] Checking if clara_evaluate/2 exists...");
+    let result = env.query_once("current_predicate(clara_evaluate/2)");
+    match &result {
+        Ok(r) => println!("    current_predicate result: {}", r),
+        Err(e) => println!("    Error: {}", e),
+    }
+    assert!(result.is_ok(), "current_predicate/1 check should succeed");
+
+    // Test 2: Call clara_evaluate/2 with the echo tool
+    println!("\n[2] Calling clara_evaluate/2 with echo tool...");
+    let result = env.query_once(
+        r#"clara_evaluate('{"tool":"echo","arguments":{"message":"hello from prolog test"}}', Result)"#
+    );
+
+    match &result {
+        Ok(r) => {
+            println!("    clara_evaluate/2 result: {}", r);
+            // The result should contain success or the echoed message
+            assert!(
+                r.contains("success") || r.contains("hello"),
+                "Expected success response from echo tool, got: {}", r
+            );
+        }
+        Err(e) => {
+            panic!(
+                "clara_evaluate/2 call FAILED: {}\n\
+                This indicates the foreign predicate is not properly registered.\n\
+                Make sure register_clara_evaluate() is called after Prolog initialization.",
+                e
+            );
+        }
+    }
+
+    println!("\n=== clara_evaluate/2 Foreign Predicate Test PASSED ===");
+}
+
+/// Test consulting a file that uses clara_evaluate/2
+///
+/// This test verifies that Prolog files which depend on clara_evaluate/2
+/// can be properly consulted and their predicates can be called.
+#[test]
+fn test_consult_file_with_clara_evaluate() {
+    println!("=== Testing Consult with clara_evaluate/2 ===");
+
+    // Initialize toolbox
+    clara_toolbox::ToolboxManager::init_global();
+
+    // Create environment and register the predicate
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    let registered = register_clara_evaluate();
+    assert!(registered, "clara_evaluate/2 should be registered");
+
+    // Determine the path to builtins_test.pl relative to the workspace root
+    // Tests run from the package directory, so we need to go up to workspace root
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = std::path::Path::new(manifest_dir).parent().unwrap();
+    let builtins_path = workspace_root.join("wok/builtins_test.pl");
+    let builtins_path_str = builtins_path.to_string_lossy();
+
+    // Test consulting builtins_test.pl which uses clara_evaluate/2
+    println!("\n[1] Consulting {}...", builtins_path_str);
+    let consult_result = env.consult_file(&builtins_path_str);
+
+    match &consult_result {
+        Ok(_) => println!("    OK: builtins_test.pl consulted successfully"),
+        Err(e) => {
+            println!("    ERROR: Failed to consult builtins_test.pl: {}", e);
+            panic!(
+                "Failed to consult builtins_test.pl: {}\n\
+                This is likely because clara_evaluate/2 is not available when the file is loaded.",
+                e
+            );
+        }
+    }
+
+    // Verify predicates from builtins_test.pl are available
+    println!("\n[2] Checking if ask_llm/2 predicate is available...");
+    let result = env.query_once("current_predicate(ask_llm/2)");
+    match &result {
+        Ok(r) => println!("    ask_llm/2 exists: {}", r),
+        Err(e) => println!("    ask_llm/2 check error: {}", e),
+    }
+
+    println!("\n[3] Checking if example_ask_front_desk/1 predicate is available...");
+    let result = env.query_once("current_predicate(example_ask_front_desk/1)");
+    match &result {
+        Ok(r) => {
+            println!("    example_ask_front_desk/1 exists: {}", r);
+        }
+        Err(e) => {
+            panic!(
+                "example_ask_front_desk/1 NOT FOUND: {}\n\
+                This predicate should be defined in builtins_test.pl and depends on clara_evaluate/2.",
+                e
+            );
+        }
+    }
+
+    println!("\n=== Consult with clara_evaluate/2 Test PASSED ===");
 }

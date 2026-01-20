@@ -13,6 +13,10 @@ async fn main() -> std::io::Result<()> {
     log::info!("Initializing ToolboxManager");
     clara_toolbox::ToolboxManager::init_global();
 
+    // Initialize Prolog with clara_evaluate/2 foreign predicate
+    log::info!("Initializing Prolog (LilDevils)");
+    clara_prolog::init_global();
+
     // Start server on localhost:8080
     start_server("0.0.0.0", 8080).await
 }

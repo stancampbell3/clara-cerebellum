@@ -269,3 +269,116 @@ fn stress_test_sequential_queries() {
 
     println!("\n=== Prolog Sequential Query Stress Test PASSED ===");
 }
+
+/// Integration test for clara_evaluate/2 foreign predicate registration
+///
+/// This test verifies that:
+/// 1. clara_evaluate/2 is properly registered as a foreign predicate
+/// 2. Prolog files that use clara_evaluate/2 can be consulted
+/// 3. Predicates that call clara_evaluate/2 work correctly
+#[test]
+fn integration_test_clara_evaluate_predicate() {
+    println!("=== Clara Evaluate Foreign Predicate Integration Test ===");
+
+    // Step 1: Initialize the toolbox (provides the echo tool)
+    println!("\n[1] Initializing ToolboxManager...");
+    ToolboxManager::init_global();
+    println!("    OK: ToolboxManager initialized");
+
+    // Step 2: Initialize Prolog with clara_evaluate/2 registration
+    println!("\n[2] Initializing Prolog with clara_evaluate/2...");
+    clara_prolog::init_global();
+    println!("    OK: Prolog initialized with clara_evaluate/2");
+
+    // Step 3: Create a session
+    let manager = create_manager();
+    println!("\n[3] Creating Prolog session...");
+    let session = manager
+        .create_prolog_session("clara-evaluate-test".to_string(), None)
+        .expect("Failed to create session");
+    println!("    Session ID: {}", session.session_id);
+
+    // Step 4: Test that clara_evaluate/2 predicate exists
+    println!("\n[4] Verifying clara_evaluate/2 predicate exists...");
+    let result = manager.with_prolog_env(&session.session_id, |env| {
+        // Check if the predicate exists using current_predicate/1
+        env.query_once("current_predicate(clara_evaluate/2)")
+            .map_err(|e| e.to_string())
+    });
+
+    match &result {
+        Ok(r) => println!("    clara_evaluate/2 exists: {}", r),
+        Err(e) => println!("    Error checking predicate: {}", e),
+    }
+
+    // Step 5: Test calling clara_evaluate/2 directly with echo tool
+    println!("\n[5] Testing clara_evaluate/2 with echo tool...");
+    let result = manager.with_prolog_env(&session.session_id, |env| {
+        // Call clara_evaluate with a JSON request for the echo tool
+        env.query_once(r#"clara_evaluate('{"tool":"echo","arguments":{"message":"hello from prolog"}}', Result)"#)
+            .map_err(|e| e.to_string())
+    });
+
+    match &result {
+        Ok(r) => {
+            println!("    clara_evaluate/2 result: {}", r);
+            assert!(r.contains("success") || r.contains("hello"),
+                "Expected success response from echo tool, got: {}", r);
+        },
+        Err(e) => {
+            panic!("clara_evaluate/2 call failed: {}. This indicates the foreign predicate is not properly registered.", e);
+        }
+    }
+
+    // Step 6: Consult builtins_test.pl which uses clara_evaluate/2
+    println!("\n[6] Consulting builtins_test.pl...");
+    let consult_result = manager.with_prolog_env(&session.session_id, |env| {
+        env.consult_file("./wok/builtins_test.pl")
+            .map_err(|e| e.to_string())
+    });
+
+    match &consult_result {
+        Ok(_) => println!("    OK: builtins_test.pl consulted successfully"),
+        Err(e) => {
+            println!("    ERROR consulting builtins_test.pl: {}", e);
+            // Don't panic yet - let's see if we can still use the predicates
+        }
+    }
+
+    // Step 7: Test that predicates from builtins_test.pl are available
+    println!("\n[7] Checking if builtins_test.pl predicates are available...");
+    let result = manager.with_prolog_env(&session.session_id, |env| {
+        env.query_once("current_predicate(example_ask_front_desk/1)")
+            .map_err(|e| e.to_string())
+    });
+
+    match &result {
+        Ok(r) => println!("    example_ask_front_desk/1 exists: {}", r),
+        Err(e) => {
+            println!("    example_ask_front_desk/1 NOT FOUND: {}", e);
+            println!("    This indicates the consult failed silently or the predicate wasn't defined");
+        }
+    }
+
+    // Step 8: Test the ask_llm predicate definition
+    println!("\n[8] Checking if ask_llm/2 predicate is available...");
+    let result = manager.with_prolog_env(&session.session_id, |env| {
+        env.query_once("current_predicate(ask_llm/2)")
+            .map_err(|e| e.to_string())
+    });
+
+    match &result {
+        Ok(r) => println!("    ask_llm/2 exists: {}", r),
+        Err(e) => println!("    ask_llm/2 NOT FOUND: {}", e),
+    }
+
+    // Cleanup
+    println!("\n[9] Cleaning up...");
+    manager.terminate_prolog_session(&session.session_id).ok();
+
+    // Final assertions
+    assert!(consult_result.is_ok(),
+        "builtins_test.pl should consult successfully when clara_evaluate/2 is registered");
+
+    println!("\n=== Clara Evaluate Foreign Predicate Integration Test PASSED ===");
+}
