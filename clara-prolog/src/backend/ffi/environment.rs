@@ -159,6 +159,19 @@ impl PrologEnvironment {
         })
     }
 
+    /// Execute a query and return variable bindings for REPL display
+    ///
+    /// Returns JSON array of binding objects like [{"A": "stan"}, {"B": 42}]
+    /// This is suitable for interactive REPL output showing variable assignments.
+    pub fn query_with_bindings(&self, goal: &str) -> PrologResult<String> {
+        self.with_engine(|| unsafe {
+            let fid = PL_open_foreign_frame();
+            let result = self.execute_query_with_bindings(goal);
+            PL_close_foreign_frame(fid);
+            result
+        })
+    }
+
     /// Assert a clause (fact or rule) into the database
     ///
     /// # Arguments
@@ -260,6 +273,130 @@ impl PrologEnvironment {
 
             result
         }
+    }
+
+    /// Execute query with variable bindings extraction (for REPL)
+    ///
+    /// Uses a wrapper query to extract variable names and their bindings.
+    unsafe fn execute_query_with_bindings(&self, goal: &str) -> PrologResult<String> {
+        // Escape the goal for embedding in an atom
+        let escaped_goal = goal
+            .replace("\\", "\\\\")
+            .replace("'", "\\'");
+
+        // Wrapper query that:
+        // 1. Parses the goal with variable_names option to capture variable names
+        // 2. Calls the goal
+        // 3. Builds a list of VarName=Value pairs
+        let wrapper = format!(
+            r#"(
+                atom_codes(GoalAtom, "{}"),
+                read_term_from_atom(GoalAtom, Goal, [variable_names(VarNames)]),
+                call(Goal),
+                findall(Name-Val, member(Name=Val, VarNames), Bindings)
+            )"#,
+            escaped_goal
+        );
+
+        let wrapper_c = string_to_c_string(&wrapper)?;
+        let term = PL_new_term_ref();
+
+        if PL_chars_to_term(wrapper_c.as_ptr(), term) == 0 {
+            return Err(PrologError::ParseError(format!(
+                "Failed to parse goal: {}",
+                goal
+            )));
+        }
+
+        // Get the 'call' predicate
+        let call_name = CString::new("call").unwrap();
+        let pred = PL_predicate(call_name.as_ptr(), 1, std::ptr::null());
+
+        if pred.is_null() {
+            return Err(PrologError::Internal("Failed to get call/1 predicate".to_string()));
+        }
+
+        let qid = PL_open_query(
+            std::ptr::null_mut(),
+            PL_Q_NORMAL | PL_Q_CATCH_EXCEPTION,
+            pred,
+            term,
+        );
+
+        if qid.is_null() {
+            return Err(PrologError::QueryFailed("Failed to open query".to_string()));
+        }
+
+        let mut solutions = Vec::new();
+
+        loop {
+            let rc = PL_next_solution(qid);
+
+            if rc == 0 {
+                // Check for exception
+                let ex = PL_exception(qid);
+                if ex != 0 {
+                    let ex_str =
+                        term_to_string(ex).unwrap_or_else(|_| "unknown error".to_string());
+                    PL_close_query(qid);
+                    return Err(PrologError::PrologException(ex_str));
+                }
+                break;
+            }
+
+            // The wrapper is a nested conjunction: ','(A, ','(B, ','(C, D)))
+            // Navigate to the Bindings variable in findall(..., ..., Bindings)
+            // Structure: ','(atom_codes(...), ','(read_term(...), ','(call(...), findall(...))))
+            let level2 = PL_new_term_ref();
+            let level3 = PL_new_term_ref();
+            let findall_term = PL_new_term_ref();
+            let bindings_term = PL_new_term_ref();
+
+            PL_get_arg(2, term, level2);        // Get second part of top-level ','
+            PL_get_arg(2, level2, level3);      // Get second part of next ','
+            PL_get_arg(2, level3, findall_term); // Get findall(...) term
+            PL_get_arg(3, findall_term, bindings_term); // Get Bindings (3rd arg of findall)
+
+            // Convert bindings list to JSON object
+            let mut binding_obj = serde_json::Map::new();
+            let head = PL_new_term_ref();
+            let tail = PL_copy_term_ref(bindings_term);
+
+            while PL_get_list(tail, head, tail) != 0 {
+                // Each element is Name-Value pair
+                let mut f: functor_t = 0;
+                if PL_get_functor(head, &mut f) != 0 {
+                    let arity = PL_functor_arity(f);
+                    if arity == 2 {
+                        let name_term = PL_new_term_ref();
+                        let value_term = PL_new_term_ref();
+                        PL_get_arg(1, head, name_term);
+                        PL_get_arg(2, head, value_term);
+
+                        // Get variable name as string
+                        if let Ok(name) = term_to_string(name_term) {
+                            // Get value
+                            if let Ok(value) = term_to_json(value_term) {
+                                binding_obj.insert(name, value);
+                            } else if let Ok(value_str) = term_to_string(value_term) {
+                                binding_obj.insert(name, serde_json::Value::String(value_str));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If no bindings (query like `true` or `man(stan)`), just indicate success
+            if binding_obj.is_empty() {
+                solutions.push(serde_json::json!(true));
+            } else {
+                solutions.push(serde_json::Value::Object(binding_obj));
+            }
+        }
+
+        PL_close_query(qid);
+
+        serde_json::to_string(&solutions).map_err(|e| PrologError::JsonError(e))
     }
 
     /// Execute query and collect all solutions

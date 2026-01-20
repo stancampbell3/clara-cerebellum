@@ -74,8 +74,8 @@ fn main() {
             continue;
         }
 
-        // Execute the goal
-        match env.query(goal) {
+        // Execute the goal with variable bindings for REPL-style output
+        match env.query_with_bindings(goal) {
             Ok(result) => {
                 // Parse and pretty-print the JSON result
                 match serde_json::from_str::<serde_json::Value>(&result) {
@@ -88,7 +88,24 @@ fn main() {
                                     if i > 0 {
                                         println!(" ;");
                                     }
-                                    println!("{}", serde_json::to_string_pretty(solution).unwrap());
+                                    // Format variable bindings nicely
+                                    if let Some(obj) = solution.as_object() {
+                                        if obj.is_empty() {
+                                            print!("true");
+                                        } else {
+                                            let bindings: Vec<String> = obj
+                                                .iter()
+                                                .map(|(name, val)| {
+                                                    format!("{} = {}", name, format_value(val))
+                                                })
+                                                .collect();
+                                            print!("{}", bindings.join(",\n"));
+                                        }
+                                    } else if solution.as_bool() == Some(true) {
+                                        print!("true");
+                                    } else {
+                                        print!("{}", solution);
+                                    }
                                 }
                                 println!(".");
                             }
@@ -104,6 +121,35 @@ fn main() {
             Err(e) => {
                 println!("Error: {}", e);
             }
+        }
+    }
+}
+
+/// Format a JSON value for Prolog-style output
+fn format_value(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => "_".to_string(),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(format_value).collect();
+            format!("[{}]", items.join(", "))
+        }
+        serde_json::Value::Object(obj) => {
+            // Check if it's a functor representation
+            if let (Some(functor), Some(args)) = (obj.get("functor"), obj.get("args")) {
+                if let (Some(f), Some(a)) = (functor.as_str(), args.as_array()) {
+                    let formatted_args: Vec<String> = a.iter().map(format_value).collect();
+                    return format!("{}({})", f, formatted_args.join(", "));
+                }
+            }
+            // Otherwise format as Prolog-style key-value pairs
+            let items: Vec<String> = obj
+                .iter()
+                .map(|(k, v)| format!("{}-{}", k, format_value(v)))
+                .collect();
+            format!("[{}]", items.join(", "))
         }
     }
 }
