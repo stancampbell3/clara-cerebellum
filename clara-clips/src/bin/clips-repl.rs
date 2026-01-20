@@ -1,7 +1,7 @@
 // CLIPS REPL with full Rust callback support
 
 use clara_clips::ClipsEnvironment;
-use clara_toolbox::{ToolboxManager, EvaluateTool};
+use clara_toolbox::{ClaraSplinteredMindTool, EvaluateTool, ToolboxManager};
 use demonic_voice::DemonicVoice;
 use std::env;
 use std::io::{self, Write};
@@ -44,14 +44,20 @@ fn main() {
     ToolboxManager::init_global();
 
     // Register the EvaluateTool with a DemonicVoice client
+    let fierypit_url =
+        env::var("FIERYPIT_URL").unwrap_or_else(|_| "http://localhost:6666".to_string());
     {
         let mut manager = ToolboxManager::global().lock().unwrap();
-        let daemon_voice = Arc::new(DemonicVoice::new("http://localhost:8000"));
+        let daemon_voice = Arc::new(DemonicVoice::new(&fierypit_url));
         manager.register_tool(Arc::new(EvaluateTool::new(daemon_voice)));
+
+        // Register SplinteredMind tool for FieryPit API access
+        manager.register_tool(Arc::new(ClaraSplinteredMindTool::with_url(&fierypit_url)));
 
         // Set the default evaluator
         manager.set_default_evaluator(&default_evaluator);
     }
+    println!("FieryPit URL: {}", fierypit_url);
 
     let manager = ToolboxManager::global().lock().unwrap();
     let tools = manager.list_tools();

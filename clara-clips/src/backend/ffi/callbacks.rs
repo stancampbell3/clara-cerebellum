@@ -26,8 +26,6 @@ pub extern "C" fn rust_clara_evaluate(
     _env: *mut c_void,
     input_json: *const c_char,
 ) -> *mut c_char {
-    // For Phase 2: Return hardcoded JSON response for testing
-    // In Phase 3, this will be wired to ToolboxManager
 
     unsafe {
         // Convert C string to Rust string

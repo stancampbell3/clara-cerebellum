@@ -13,6 +13,7 @@ members = ["caw",
   "clara-toolbox",
   "clips-mcp-adapter",
   "demonic-voice",
+  "fiery-pit-client",
   "prolog-mcp-adapter"]
 resolver = "2"
 

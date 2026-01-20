@@ -1,7 +1,9 @@
 //! Simple REPL for testing the Prolog integration
 
 use clara_prolog::PrologEnvironment;
+use clara_toolbox::{ClaraSplinteredMindTool, ToolboxManager};
 use std::io::{self, BufRead, Write};
+use std::sync::Arc;
 
 fn main() {
     env_logger::init();
@@ -11,7 +13,16 @@ fn main() {
     println!("--------------------------------------------");
 
     // Initialize the global ToolboxManager with default tools (echo, etc.)
-    clara_toolbox::ToolboxManager::init_global();
+    ToolboxManager::init_global();
+
+    // Register the SplinteredMind tool for FieryPit API access
+    let fierypit_url =
+        std::env::var("FIERYPIT_URL").unwrap_or_else(|_| "http://localhost:6666".to_string());
+    {
+        let mut manager = ToolboxManager::global().lock().unwrap();
+        manager.register_tool(Arc::new(ClaraSplinteredMindTool::with_url(&fierypit_url)));
+    }
+    println!("SplinteredMind tool registered (FieryPit: {})", fierypit_url);
 
     // Initialize Prolog
     clara_prolog::init_global();

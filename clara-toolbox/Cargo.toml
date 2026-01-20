@@ -13,6 +13,7 @@ thiserror = "2.0"
 lazy_static = "1.4"
 log = "0.4"
 demonic-voice = { path = "../demonic-voice" }
+fiery-pit-client = { path = "../fiery-pit-client" }
 
 [dev-dependencies]
 env_logger = "0.11"
