@@ -1,7 +1,7 @@
 // ToolboxManager: Registry and execution engine for tools
 
 use crate::tool::{Tool, ToolError, ToolRequest, ToolResponse};
-use crate::tools::{ClaraSplinteredMindTool, EchoTool};
+use crate::tools::{ClassifyTool, ClaraSplinteredMindTool, EchoTool};
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -102,6 +102,15 @@ impl ToolboxManager {
             .unwrap_or_else(|_| "http://localhost:6666".to_string());
         log::info!("Registering splinteredmind tool with FieryPit URL: {}", fierypit_url);
         mgr.register_tool(Arc::new(ClaraSplinteredMindTool::with_url(&fierypit_url)));
+
+        // Register classify tool with model from environment (optional)
+        if let Ok(model_path) = std::env::var("DAGDA_MODEL_PATH") {
+            log::info!("Loading classify tool with model: {}", model_path);
+            match ClassifyTool::new(&model_path) {
+                Ok(tool) => mgr.register_tool(Arc::new(tool)),
+                Err(e) => log::warn!("Failed to load classify model: {}", e),
+            }
+        }
 
         log::info!("Global ToolboxManager initialized with {} tools", mgr.tools.len());
     }
