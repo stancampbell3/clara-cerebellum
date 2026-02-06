@@ -1,5 +1,5 @@
 use crate::config::FrontDeskConfig;
-use fiery_pit_client::{CreateSessionRequest, FieryPitClient};
+use fiery_pit_client::{CreateSessionRequest, FieryPitClient, FieryPitError};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -29,6 +29,27 @@ pub struct FrontDeskAgent {
 // (FieryPitClient wraps reqwest::blocking::Client which is Send)
 unsafe impl Send for FrontDeskAgent {}
 
+// Utility extraction function to get string from JSON value, handling different possible formats
+fn extract_session_id(v: &Result<serde_json::Value, FieryPitError>) -> Option<String> {
+    match v {
+        Ok(json) => {
+            if let Some(s) = json.as_str() {
+                Some(s.to_string())
+            } else if let Some(obj) = json.as_object() {
+                obj.get("session_id")
+                    .or_else(|| obj.get("id"))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+            } else {
+                None
+            }
+        }
+        Err(e) => {
+            log::error!("Error from Fiery Pit: {}", e);
+            None
+        }
+    }
+}
+
 impl FrontDeskAgent {
     /// Create a new agent. Must be called from a blocking context (not inside tokio runtime).
     pub fn new(
@@ -38,7 +59,12 @@ impl FrontDeskAgent {
         let evaluator_resp = fiery_pit.set_evaluator("ember");
         // todo : handle error
 
-        let ember_session_id = "EMBER_EVALUATOR".to_string();
+        // Robustly extract a session id from several possible shapes
+        let ember_session_id = if let Some(id) = extract_session_id(&evaluator_resp) {
+            id
+        } else {
+            return Err("Missing session_id in Fiery Pit response".into());
+        };
 
         log::info!("Created Ember session: {}", ember_session_id);
 
