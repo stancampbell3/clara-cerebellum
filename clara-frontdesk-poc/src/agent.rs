@@ -18,7 +18,7 @@ pub struct AgentResponse {
 
 pub struct FrontDeskAgent {
     fiery_pit: Arc<FieryPitClient>,
-    prolog_session_id: String,
+    ember_session_id: String,
     current_state: String,
     config: FrontDeskConfig,
     turn_count: u32,
@@ -35,31 +35,16 @@ impl FrontDeskAgent {
         fiery_pit: Arc<FieryPitClient>,
         config: FrontDeskConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let session_resp = fiery_pit.prolog_create_session(CreateSessionRequest {
-            user_id: "frontdesk".to_string(),
-            name: Some(format!("frontdesk-{}", uuid::Uuid::new_v4())),
-            config: None,
-        })?;
+        let evaluator_resp = fiery_pit.set_evaluator("ember");
+        // todo : handle error
 
-        let prolog_session_id = session_resp["session_id"]
-            .as_str()
-            .ok_or("No session_id in create response")?
-            .to_string();
+        let ember_session_id = "EMBER_EVALUATOR".to_string();
 
-        log::info!("Created Prolog session: {}", prolog_session_id);
-
-        let clauses: Vec<String> = PROLOG_RULES
-            .split('\n')
-            .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('%'))
-            .map(|s| s.to_string())
-            .collect();
-
-        fiery_pit.prolog_consult(&prolog_session_id, clauses)?;
-        log::info!("Consulted Prolog rules into session");
+        log::info!("Created Ember session: {}", ember_session_id);
 
         Ok(Self {
             fiery_pit,
-            prolog_session_id,
+            ember_session_id: ember_session_id,
             current_state: "greeting".to_string(),
             config,
             turn_count: 0,
@@ -138,14 +123,7 @@ impl FrontDeskAgent {
 
     /// Terminate the Prolog session. Must be called from a blocking context.
     pub fn cleanup(&self) {
-        if let Err(e) = self
-            .fiery_pit
-            .prolog_terminate_session(&self.prolog_session_id)
-        {
-            log::warn!("Failed to terminate Prolog session: {}", e);
-        } else {
-            log::info!("Terminated Prolog session: {}", self.prolog_session_id);
-        }
+        log::info!("Done with Ember session: {}", self.ember_session_id);
     }
 
     fn classify_intent(&self, user_input: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -202,7 +180,7 @@ impl FrontDeskAgent {
 
         let result = self
             .fiery_pit
-            .prolog_query(&self.prolog_session_id, &goal, false)?;
+            .prolog_query(&self.ember_session_id, &goal, false)?;
 
         let (next_state, action) = parse_prolog_bindings(&result)?;
         Ok((next_state, action))
@@ -218,7 +196,7 @@ impl FrontDeskAgent {
         ];
 
         self.fiery_pit
-            .prolog_consult(&self.prolog_session_id, clauses)?;
+            .prolog_consult(&self.ember_session_id, clauses)?;
         Ok(())
     }
 
