@@ -15,6 +15,8 @@ pub enum FieryPitError {
     Http(#[from] reqwest::Error),
     #[error("Non-success status {0}: {1}")]
     Status(reqwest::StatusCode, Value),
+    #[error("JSON parse error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 /// Session configuration for CLIPS/Prolog sessions
@@ -82,6 +84,83 @@ pub struct PrologConsultRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct SetEvaluatorRequest {
     pub evaluator: String,
+}
+
+// =========================================================================
+// Response types
+// =========================================================================
+
+/// Response from POST /evaluators/set or POST /evaluators/reset
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvaluatorActionResponse {
+    pub status: String,
+    pub evaluator: Option<String>,
+}
+
+/// Success payload inside a Tephra response
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hohi {
+    pub response: Value,
+    #[serde(default)]
+    pub code: Option<i32>,
+}
+
+/// Error payload inside a Tephra response
+#[derive(Debug, Clone, Deserialize)]
+pub struct Tabu {
+    pub message: String,
+    #[serde(default)]
+    pub code: Option<i32>,
+    #[serde(default)]
+    pub details: Option<Value>,
+}
+
+/// Tephra response envelope from POST /evaluate
+#[derive(Debug, Clone, Deserialize)]
+pub struct Tephra {
+    #[serde(default)]
+    pub timestamp: Option<i64>,
+    #[serde(default)]
+    pub hohi: Option<Hohi>,
+    #[serde(default)]
+    pub tabu: Option<Tabu>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+}
+
+impl Tephra {
+    /// Returns true if the response contains a success payload
+    pub fn is_success(&self) -> bool {
+        self.hohi.is_some()
+    }
+
+    /// Extract the inner response value from a successful evaluation
+    pub fn response(&self) -> Option<&Value> {
+        self.hohi.as_ref().map(|h| &h.response)
+    }
+
+    /// Extract the error message if this is an error response
+    pub fn error_message(&self) -> Option<&str> {
+        self.tabu.as_ref().map(|t| t.message.as_str())
+    }
+
+    /// Consume self and return the inner response or an error
+    pub fn into_response(self) -> Result<Value, FieryPitError> {
+        if let Some(hohi) = self.hohi {
+            Ok(hohi.response)
+        } else if let Some(tabu) = self.tabu {
+            Err(FieryPitError::Status(
+                reqwest::StatusCode::from_u16(tabu.code.unwrap_or(400) as u16)
+                    .unwrap_or(reqwest::StatusCode::BAD_REQUEST),
+                serde_json::json!({ "message": tabu.message, "details": tabu.details }),
+            ))
+        } else {
+            Err(FieryPitError::Status(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({ "message": "Empty Tephra response" }),
+            ))
+        }
+    }
 }
 
 /// FieryPit REST API Client
@@ -163,10 +242,16 @@ impl FieryPitClient {
     // Evaluation Endpoints
     // =========================================================================
 
-    /// Evaluate using current evaluator - POST /evaluate
+    /// Evaluate using current evaluator - POST /evaluate (raw JSON)
     pub fn evaluate(&self, data: Value) -> Result<Value, FieryPitError> {
         log::debug!("FieryPitClient evaluate with data: {}", data);
         self.post("/evaluate", &json!({ "data": data }))
+    }
+
+    /// Evaluate and return a typed Tephra response
+    pub fn evaluate_tephra(&self, data: Value) -> Result<Tephra, FieryPitError> {
+        let value = self.evaluate(data)?;
+        Ok(serde_json::from_value(value)?)
     }
 
     // =========================================================================
@@ -185,12 +270,18 @@ impl FieryPitClient {
         self.get(&format!("/evaluators/{}", name))
     }
 
-    /// Set current evaluator - POST /evaluators/set
+    /// Set current evaluator - POST /evaluators/set (raw JSON)
     pub fn set_evaluator(&self, evaluator: &str) -> Result<Value, FieryPitError> {
         log::debug!("FieryPitClient set_evaluator to {}", evaluator);
         self.post("/evaluators/set", &SetEvaluatorRequest {
             evaluator: evaluator.to_string(),
         })
+    }
+
+    /// Set current evaluator and return typed response
+    pub fn set_evaluator_typed(&self, evaluator: &str) -> Result<EvaluatorActionResponse, FieryPitError> {
+        let value = self.set_evaluator(evaluator)?;
+        Ok(serde_json::from_value(value)?)
     }
 
     /// Reset to default evaluator - POST /evaluators/reset
@@ -298,9 +389,30 @@ impl FieryPitClient {
     // Prolog Session Endpoints
     // =========================================================================
 
-    /// Create Prolog session - POST /prolog/sessions
+    /// Create Prolog session - POST /prolog/sessions (raw JSON)
     pub fn prolog_create_session(&self, req: CreateSessionRequest) -> Result<Value, FieryPitError> {
         self.post("/prolog/sessions", &req)
+    }
+
+    /// Create a Prolog session and return just the session_id
+    pub fn prolog_create_session_id(&self, req: CreateSessionRequest) -> Result<String, FieryPitError> {
+        let value = self.prolog_create_session(req)?;
+        // Try several common shapes: direct string, .session_id, .id
+        if let Some(s) = value.as_str() {
+            return Ok(s.to_string());
+        }
+        if let Some(obj) = value.as_object() {
+            if let Some(id) = obj.get("session_id").and_then(|v| v.as_str()) {
+                return Ok(id.to_string());
+            }
+            if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
+                return Ok(id.to_string());
+            }
+        }
+        Err(FieryPitError::Status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "message": format!("No session_id in response: {}", value) }),
+        ))
     }
 
     /// List Prolog sessions - GET /prolog/sessions

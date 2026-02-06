@@ -1,5 +1,5 @@
 use crate::config::FrontDeskConfig;
-use fiery_pit_client::{CreateSessionRequest, FieryPitClient, FieryPitError};
+use fiery_pit_client::{CreateSessionRequest, FieryPitClient};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -18,7 +18,7 @@ pub struct AgentResponse {
 
 pub struct FrontDeskAgent {
     fiery_pit: Arc<FieryPitClient>,
-    ember_session_id: String,
+    prolog_session_id: String,
     current_state: String,
     config: FrontDeskConfig,
     turn_count: u32,
@@ -29,48 +29,42 @@ pub struct FrontDeskAgent {
 // (FieryPitClient wraps reqwest::blocking::Client which is Send)
 unsafe impl Send for FrontDeskAgent {}
 
-// Utility extraction function to get string from JSON value, handling different possible formats
-fn extract_session_id(v: &Result<serde_json::Value, FieryPitError>) -> Option<String> {
-    match v {
-        Ok(json) => {
-            if let Some(s) = json.as_str() {
-                Some(s.to_string())
-            } else if let Some(obj) = json.as_object() {
-                obj.get("session_id")
-                    .or_else(|| obj.get("id"))
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-            } else {
-                None
-            }
-        }
-        Err(e) => {
-            log::error!("Error from Fiery Pit: {}", e);
-            None
-        }
-    }
-}
-
 impl FrontDeskAgent {
     /// Create a new agent. Must be called from a blocking context (not inside tokio runtime).
     pub fn new(
         fiery_pit: Arc<FieryPitClient>,
         config: FrontDeskConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let evaluator_resp = fiery_pit.set_evaluator("ember");
-        // todo : handle error
+        // 1. Set the evaluator to "ember" for LLM evaluate calls
+        match fiery_pit.set_evaluator_typed("ember") {
+            Ok(resp) => log::info!("Set evaluator: status={}, evaluator={:?}", resp.status, resp.evaluator),
+            Err(e) => return Err(format!("Failed to set evaluator to ember: {}", e).into()),
+        }
 
-        // Robustly extract a session id from several possible shapes
-        let ember_session_id = if let Some(id) = extract_session_id(&evaluator_resp) {
-            id
-        } else {
-            return Err("Missing session_id in Fiery Pit response".into());
-        };
+        // 2. Create a Prolog session for state-machine queries
+        let prolog_session_id = fiery_pit.prolog_create_session_id(CreateSessionRequest {
+            user_id: "frontdesk-agent".to_string(),
+            name: Some("frontdesk-state-machine".to_string()),
+            config: None,
+        }).map_err(|e| format!("Failed to create Prolog session: {}", e))?;
 
-        log::info!("Created Ember session: {}", ember_session_id);
+        log::info!("Created Prolog session: {}", prolog_session_id);
+
+        // 3. Consult the state-machine rules into the Prolog session
+        let clauses: Vec<String> = PROLOG_RULES
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('%'))
+            .map(|line| line.to_string())
+            .collect();
+
+        fiery_pit.prolog_consult(&prolog_session_id, clauses)
+            .map_err(|e| format!("Failed to consult Prolog rules: {}", e))?;
+
+        log::info!("Consulted Prolog rules into session {}", prolog_session_id);
 
         Ok(Self {
             fiery_pit,
-            ember_session_id: ember_session_id,
+            prolog_session_id,
             current_state: "greeting".to_string(),
             config,
             turn_count: 0,
@@ -149,7 +143,11 @@ impl FrontDeskAgent {
 
     /// Terminate the Prolog session. Must be called from a blocking context.
     pub fn cleanup(&self) {
-        log::info!("Done with Ember session: {}", self.ember_session_id);
+        log::info!("Terminating Prolog session: {}", self.prolog_session_id);
+        match self.fiery_pit.prolog_terminate_session(&self.prolog_session_id) {
+            Ok(_) => log::info!("Prolog session {} terminated", self.prolog_session_id),
+            Err(e) => log::warn!("Failed to terminate Prolog session {}: {}", self.prolog_session_id, e),
+        }
     }
 
     fn classify_intent(&self, user_input: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -163,18 +161,10 @@ impl FrontDeskAgent {
             self.config.company.name, user_input, self.current_state
         );
 
-        let result = self.fiery_pit.evaluate(json!(prompt))?;
+        let tephra = self.fiery_pit.evaluate_tephra(json!(prompt))?;
+        let result = tephra.into_response()?;
 
-        let intent_raw = if let Some(s) = result.as_str() {
-            s.to_string()
-        } else if let Some(s) = result.get("result").and_then(|v| v.as_str()) {
-            s.to_string()
-        } else if let Some(s) = result.get("response").and_then(|v| v.as_str()) {
-            s.to_string()
-        } else {
-            result.to_string()
-        };
-
+        let intent_raw = extract_text_from_value(&result);
         let intent = intent_raw.trim().to_lowercase();
 
         let valid_intents = [
@@ -206,7 +196,7 @@ impl FrontDeskAgent {
 
         let result = self
             .fiery_pit
-            .prolog_query(&self.ember_session_id, &goal, false)?;
+            .prolog_query(&self.prolog_session_id, &goal, false)?;
 
         let (next_state, action) = parse_prolog_bindings(&result)?;
         Ok((next_state, action))
@@ -222,7 +212,7 @@ impl FrontDeskAgent {
         ];
 
         self.fiery_pit
-            .prolog_consult(&self.ember_session_id, clauses)?;
+            .prolog_consult(&self.prolog_session_id, clauses)?;
         Ok(())
     }
 
@@ -252,18 +242,10 @@ impl FrontDeskAgent {
             recent_history
         );
 
-        let result = self.fiery_pit.evaluate(json!(prompt))?;
+        let tephra = self.fiery_pit.evaluate_tephra(json!(prompt))?;
+        let result = tephra.into_response()?;
 
-        let text = if let Some(s) = result.as_str() {
-            s.to_string()
-        } else if let Some(s) = result.get("result").and_then(|v| v.as_str()) {
-            s.to_string()
-        } else if let Some(s) = result.get("response").and_then(|v| v.as_str()) {
-            s.to_string()
-        } else {
-            result.to_string()
-        };
-
+        let text = extract_text_from_value(&result);
         Ok(text.trim().to_string())
     }
 }
@@ -327,4 +309,21 @@ fn extract_atom(val: Option<&Value>) -> Option<String> {
             Some(v.to_string().trim_matches('"').to_string())
         }
     })
+}
+
+/// Extract a text string from a Tephra inner response value.
+/// The response from the Ember evaluator may be a plain string, or an object
+/// with a "result", "response", or "text" field.
+fn extract_text_from_value(value: &Value) -> String {
+    if let Some(s) = value.as_str() {
+        return s.to_string();
+    }
+    if let Some(obj) = value.as_object() {
+        for key in &["result", "response", "text", "output", "content"] {
+            if let Some(s) = obj.get(*key).and_then(|v| v.as_str()) {
+                return s.to_string();
+            }
+        }
+    }
+    value.to_string()
 }
