@@ -1,0 +1,25 @@
+[company]
+name = "Infernal Solutions"
+tagline = "Forging the future, one flame at a time"
+industry = "Enterprise Software"
+
+[company.services]
+list = [
+  "Custom Knowledge Graph Development",
+  "AI-Powered Reasoning Engines",
+  "Expert System Consulting",
+  "Neural-Symbolic Integration",
+]
+
+[company.contact]
+email = "info@infernal.dev"
+phone = "1-800-INFERNAL"
+address = "666 Ember Lane, Pyreville, CA"
+
+[company.hours]
+weekdays = "9:00 AM - 6:00 PM"
+weekends = "Closed"
+
+[agent]
+name = "Ember"
+greeting = "Welcome to {company_name}! I'm {agent_name}, your front desk assistant. How can I help you today?"

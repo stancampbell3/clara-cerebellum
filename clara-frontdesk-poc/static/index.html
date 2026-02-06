@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clara FrontDesk</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: linear-gradient(135deg, #16213e, #0f3460);
+    padding: 16px 24px;
+    border-bottom: 2px solid #e94560;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  header h1 {
+    font-size: 1.3rem;
+    color: #e94560;
+    font-weight: 600;
+  }
+
+  header h1 span {
+    color: #a0a0b8;
+    font-weight: 400;
+    font-size: 0.9rem;
+  }
+
+  #status {
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  #status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #666;
+    transition: background 0.3s;
+  }
+
+  #status-dot.connected { background: #4caf50; }
+  #status-dot.disconnected { background: #e94560; }
+  #status-dot.connecting { background: #ff9800; animation: pulse 1s infinite; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  #chat-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .message {
+    max-width: 75%;
+    padding: 12px 16px;
+    border-radius: 16px;
+    line-height: 1.5;
+    font-size: 0.95rem;
+    word-wrap: break-word;
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .message.agent {
+    align-self: flex-start;
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-bottom-left-radius: 4px;
+    color: #d0d0e0;
+  }
+
+  .message.user {
+    align-self: flex-end;
+    background: #e94560;
+    border-bottom-right-radius: 4px;
+    color: #fff;
+  }
+
+  .message.error {
+    align-self: center;
+    background: #3d1a1a;
+    border: 1px solid #e94560;
+    color: #ff8a8a;
+    font-size: 0.85rem;
+  }
+
+  .message.system {
+    align-self: center;
+    color: #888;
+    font-size: 0.8rem;
+    font-style: italic;
+    padding: 4px 12px;
+  }
+
+  #input-area {
+    padding: 16px 24px;
+    background: #16213e;
+    border-top: 1px solid #0f3460;
+    display: flex;
+    gap: 12px;
+  }
+
+  #message-input {
+    flex: 1;
+    padding: 12px 16px;
+    border: 1px solid #0f3460;
+    border-radius: 24px;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  #message-input:focus {
+    border-color: #e94560;
+  }
+
+  #message-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  #send-btn {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 24px;
+    background: #e94560;
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, opacity 0.2s;
+  }
+
+  #send-btn:hover:not(:disabled) {
+    background: #d63851;
+  }
+
+  #send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  #debug-toggle {
+    position: fixed;
+    bottom: 80px;
+    right: 16px;
+    background: #0f3460;
+    border: 1px solid #e94560;
+    color: #a0a0b8;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    z-index: 10;
+  }
+
+  #debug-panel {
+    position: fixed;
+    bottom: 80px;
+    right: 16px;
+    width: 280px;
+    max-height: 300px;
+    overflow-y: auto;
+    background: #0d1b2a;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    padding: 12px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.75rem;
+    color: #888;
+    display: none;
+    z-index: 10;
+  }
+
+  #debug-panel.visible {
+    display: block;
+  }
+
+  #debug-panel .entry {
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #1a2a3a;
+  }
+
+  #debug-panel .label {
+    color: #e94560;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Clara FrontDesk <span>// PoC</span></h1>
+    <div id="status">
+      <div id="status-dot" class="connecting"></div>
+      <span id="status-text">Connecting...</span>
+    </div>
+  </header>
+
+  <div id="chat-container"></div>
+
+  <div id="input-area">
+    <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" disabled>
+    <button id="send-btn" disabled>Send</button>
+  </div>
+
+  <button id="debug-toggle" onclick="toggleDebug()">Debug</button>
+  <div id="debug-panel"></div>
+
+<script>
+  const chatContainer = document.getElementById('chat-container');
+  const messageInput = document.getElementById('message-input');
+  const sendBtn = document.getElementById('send-btn');
+  const statusDot = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+  const debugPanel = document.getElementById('debug-panel');
+  const debugToggle = document.getElementById('debug-toggle');
+
+  let ws = null;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
+
+  function connect() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${location.host}/ws`;
+
+    setStatus('connecting');
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      setStatus('connected');
+      reconnectAttempts = 0;
+      messageInput.disabled = false;
+      sendBtn.disabled = false;
+      messageInput.focus();
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'error') {
+          addMessage(data.text, 'error');
+        } else {
+          addMessage(data.text, 'agent');
+        }
+        addDebugEntry(data);
+
+        if (data.state === 'farewell') {
+          addMessage('Conversation ended. Refresh to start a new one.', 'system');
+          messageInput.disabled = true;
+          sendBtn.disabled = true;
+        }
+      } catch (e) {
+        addMessage(event.data, 'agent');
+      }
+    };
+
+    ws.onclose = () => {
+      setStatus('disconnected');
+      messageInput.disabled = true;
+      sendBtn.disabled = true;
+
+      if (reconnectAttempts < maxReconnectAttempts) {
+        reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+        addMessage(`Disconnected. Reconnecting in ${delay/1000}s...`, 'system');
+        setTimeout(connect, delay);
+      } else {
+        addMessage('Connection lost. Refresh the page to reconnect.', 'system');
+      }
+    };
+
+    ws.onerror = () => {
+      setStatus('disconnected');
+    };
+  }
+
+  function sendMessage() {
+    const text = messageInput.value.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    addMessage(text, 'user');
+    ws.send(text);
+    messageInput.value = '';
+    messageInput.focus();
+  }
+
+  function addMessage(text, type) {
+    const div = document.createElement('div');
+    div.className = `message ${type}`;
+    div.textContent = text;
+    chatContainer.appendChild(div);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+  }
+
+  function setStatus(state) {
+    statusDot.className = state;
+    const labels = { connected: 'Connected', disconnected: 'Disconnected', connecting: 'Connecting...' };
+    statusText.textContent = labels[state] || state;
+  }
+
+  function addDebugEntry(data) {
+    const entry = document.createElement('div');
+    entry.className = 'entry';
+    entry.innerHTML = `
+      <span class="label">Turn ${data.turn || '?'}</span><br>
+      State: ${data.state || '?'}<br>
+      Intent: ${data.intent || '?'}<br>
+      Type: ${data.type || '?'}
+    `;
+    debugPanel.prepend(entry);
+  }
+
+  function toggleDebug() {
+    debugPanel.classList.toggle('visible');
+    debugToggle.textContent = debugPanel.classList.contains('visible') ? 'Hide Debug' : 'Debug';
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  messageInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendMessage();
+  });
+
+  connect();
+</script>
+</body>
+</html>

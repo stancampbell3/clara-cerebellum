@@ -1,0 +1,26 @@
+[package]
+name = "clara-frontdesk-poc"
+version = "0.1.0"
+edition = "2021"
+description = "Proof-of-concept front desk agent demo for Clara Cerebrum"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "clara-frontdesk"
+path = "src/main.rs"
+
+[dependencies]
+fiery-pit-client = { path = "../fiery-pit-client" }
+actix-web = "4.4"
+actix-web-actors = "4"
+actix = "0.13"
+actix-rt = "2.9"
+actix-files = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+log = "0.4"
+env_logger = "0.11"
+uuid = { version = "1", features = ["v4"] }
