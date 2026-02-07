@@ -18,7 +18,6 @@ pub struct AgentResponse {
 
 pub struct FrontDeskAgent {
     fiery_pit: Arc<FieryPitClient>,
-    prolog_session_id: String,
     current_state: String,
     config: FrontDeskConfig,
     turn_count: u32,
@@ -35,36 +34,15 @@ impl FrontDeskAgent {
         fiery_pit: Arc<FieryPitClient>,
         config: FrontDeskConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        // 1. Set the evaluator to "ember" for LLM evaluate calls
         match fiery_pit.set_evaluator_typed("ember") {
             Ok(resp) => log::info!("Set evaluator: status={}, evaluator={:?}", resp.status, resp.evaluator),
             Err(e) => return Err(format!("Failed to set evaluator to ember: {}", e).into()),
         }
 
-        // 2. Create a Prolog session for state-machine queries
-        let prolog_session_id = fiery_pit.prolog_create_session_id(CreateSessionRequest {
-            user_id: "frontdesk-agent".to_string(),
-            name: Some("frontdesk-state-machine".to_string()),
-            config: None,
-        }).map_err(|e| format!("Failed to create Prolog session: {}", e))?;
-
-        log::info!("Created Prolog session: {}", prolog_session_id);
-
-        // 3. Consult the state-machine rules into the Prolog session
-        let clauses: Vec<String> = PROLOG_RULES
-            .lines()
-            .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('%'))
-            .map(|line| line.to_string())
-            .collect();
-
-        fiery_pit.prolog_consult(&prolog_session_id, clauses)
-            .map_err(|e| format!("Failed to consult Prolog rules: {}", e))?;
-
-        log::info!("Consulted Prolog rules into session {}", prolog_session_id);
+        log::info!("FrontDeskAgent initialized.");
 
         Ok(Self {
             fiery_pit,
-            prolog_session_id,
             current_state: "greeting".to_string(),
             config,
             turn_count: 0,
@@ -141,13 +119,8 @@ impl FrontDeskAgent {
         self.current_state == "farewell"
     }
 
-    /// Terminate the Prolog session. Must be called from a blocking context.
     pub fn cleanup(&self) {
-        log::info!("Terminating Prolog session: {}", self.prolog_session_id);
-        match self.fiery_pit.prolog_terminate_session(&self.prolog_session_id) {
-            Ok(_) => log::info!("Prolog session {} terminated", self.prolog_session_id),
-            Err(e) => log::warn!("Failed to terminate Prolog session {}: {}", self.prolog_session_id, e),
-        }
+        log::info!("Closing FronDeskAgent");
     }
 
     fn classify_intent(&self, user_input: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -161,7 +134,10 @@ impl FrontDeskAgent {
             self.config.company.name, user_input, self.current_state
         );
 
-        let tephra = self.fiery_pit.evaluate_tephra(json!(prompt))?;
+        let tephra = self.fiery_pit.evaluate_tephra(json!({
+            "prompt": prompt,
+            "model" : "qwen2.5:7b", // TODO: make this configurable
+        }))?;
         let result = tephra.into_response()?;
 
         let intent_raw = extract_text_from_value(&result);
@@ -194,10 +170,21 @@ impl FrontDeskAgent {
             self.current_state, intent
         );
 
-        let result = self
-            .fiery_pit
-            .prolog_query(&self.prolog_session_id, &goal, false)?;
+        // let result = self
+        //   .fiery_pit
+        //    .prolog_query(&self.prolog_session_id, &goal, false)?;
+        // Process this on our evaluator by wrapping it in a "goal" JSON object for our Evaluator to recognize and handle with our Prolog rules
+        let query_json = json!({
+            "goal": {
+                "predicate": "next_state",
+                "args": [self.current_state.clone(), intent.to_string()],
+                "vars": ["NextState", "Action"]
+            },
+            "model" : "qwen2.5:7b", // TODO: make this configurable
+        });
 
+        let tephra = self.fiery_pit.evaluate_tephra(query_json)?;
+        let result = tephra.into_response()?;
         let (next_state, action) = parse_prolog_bindings(&result)?;
         Ok((next_state, action))
     }
@@ -211,8 +198,7 @@ impl FrontDeskAgent {
             format!("conversation_context(session, last_intent, {}).", intent),
         ];
 
-        self.fiery_pit
-            .prolog_consult(&self.prolog_session_id, clauses)?;
+        // TODO: implement this
         Ok(())
     }
 
@@ -242,7 +228,12 @@ impl FrontDeskAgent {
             recent_history
         );
 
-        let tephra = self.fiery_pit.evaluate_tephra(json!(prompt))?;
+        let tephra = self.fiery_pit.evaluate_tephra(json!(
+            {
+                "prompt": prompt,
+                "model" : "qwen2.5:7b", // TODO: make this configurable
+            }
+        ))?;
         let result = tephra.into_response()?;
 
         let text = extract_text_from_value(&result);
