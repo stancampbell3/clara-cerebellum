@@ -54,7 +54,6 @@ impl Tool for EvaluateTool {
 mod tests {
     use super::*;
     use demonic_voice::DemonicVoice;
-    use serde_json::json;
     use std::sync::Arc;
 
     #[test]

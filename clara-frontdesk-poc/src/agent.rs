@@ -1,10 +1,8 @@
 use crate::config::FrontDeskConfig;
-use fiery_pit_client::{CreateSessionRequest, FieryPitClient};
+use fiery_pit_client::{FieryPitClient};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
-
-const PROLOG_RULES: &str = include_str!("prolog_rules.pl");
 
 #[derive(Debug, Serialize, Clone)]
 pub struct AgentResponse {
@@ -154,6 +152,7 @@ impl FrontDeskAgent {
         ];
 
         if valid_intents.contains(&intent.as_str()) {
+            log::debug!("Classified intent: '{}'", intent);
             Ok(intent)
         } else {
             log::warn!("LLM returned unexpected intent '{}', defaulting to unknown", intent);
@@ -165,11 +164,6 @@ impl FrontDeskAgent {
         &self,
         intent: &str,
     ) -> Result<(String, String), Box<dyn std::error::Error>> {
-        let goal = format!(
-            "next_state({}, {}, NextState, Action)",
-            self.current_state, intent
-        );
-
         // let result = self
         //   .fiery_pit
         //    .prolog_query(&self.prolog_session_id, &goal, false)?;
