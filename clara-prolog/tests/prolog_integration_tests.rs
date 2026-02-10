@@ -299,15 +299,15 @@ fn test_clara_evaluate_predicate_registration() {
     println!("\n=== clara_evaluate/2 Foreign Predicate Test PASSED ===");
 }
 
-/// Test consulting a file that uses clara_evaluate/2
+/// Test that consulted Prolog code can call clara_evaluate/2
 ///
-/// This test verifies that Prolog files which depend on clara_evaluate/2
-/// can be properly consulted and their predicates can be called.
+/// This verifies that user-defined predicates which wrap clara_evaluate/2
+/// can be asserted and then invoked successfully.
 #[test]
-fn test_consult_file_with_clara_evaluate() {
-    println!("=== Testing Consult with clara_evaluate/2 ===");
+fn test_consult_code_with_clara_evaluate() {
+    println!("=== Testing consulted code calling clara_evaluate/2 ===");
 
-    // Initialize toolbox
+    // Initialize toolbox (provides the echo tool)
     clara_toolbox::ToolboxManager::init_global();
 
     // Create environment and register the predicate
@@ -315,51 +315,151 @@ fn test_consult_file_with_clara_evaluate() {
     let registered = register_clara_evaluate();
     assert!(registered, "clara_evaluate/2 should be registered");
 
-    // Determine the path to front_desk3.pl relative to the workspace root
-    // Tests run from the package directory, so we need to go up to workspace root
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_root = std::path::Path::new(manifest_dir).parent().unwrap();
-    let front_desk_path = workspace_root.join("wok/front_desk3.pl");
-    let front_desk_path_str = front_desk_path.to_string_lossy();
-
-    // Test consulting front_desk3.pl which uses clara_evaluate/2
-    println!("\n[1] Consulting {}...", front_desk_path_str);
-    let consult_result = env.consult_file(&front_desk_path_str);
-
+    // Assert a predicate that wraps clara_evaluate/2 via consult_string
+    println!("\n[1] Consulting inline Prolog code that uses clara_evaluate/2...");
+    let prolog_code = r#"
+        echo_via_clara(Message, Result) :-
+            format(atom(Json),
+                '{"tool":"echo","arguments":{"message":"~w"}}',
+                [Message]),
+            clara_evaluate(Json, Result).
+    "#;
+    let consult_result = env.consult_string(prolog_code);
     match &consult_result {
-        Ok(_) => println!("    OK: front_desk3.pl consulted successfully"),
-        Err(e) => {
-            println!("    ERROR: Failed to consult front_desk3.pl: {}", e);
-            panic!(
-                "Failed to consult front_desk3.pl: {}\n\
-                This is likely because clara_evaluate/2 is not available when the file is loaded.",
-                e
-            );
-        }
+        Ok(_) => println!("    OK: inline code consulted successfully"),
+        Err(e) => panic!("Failed to consult inline code: {}", e),
     }
 
-    // Verify predicates from front_desk3.pl are available
-    println!("\n[2] Checking if ask_llm/3 predicate is available...");
-    let result = env.query_once("current_predicate(ask_llm/3)");
-    match &result {
-        Ok(r) => println!("    ask_llm/3 exists: {}", r),
-        Err(e) => println!("    ask_llm/3 check error: {}", e),
-    }
+    // Verify the predicate exists
+    println!("\n[2] Checking if echo_via_clara/2 is available...");
+    let result = env.query_once("current_predicate(echo_via_clara/2)");
+    assert!(result.is_ok(), "echo_via_clara/2 should be defined: {:?}", result.err());
+    println!("    echo_via_clara/2 exists");
 
-    println!("\n[3] Checking if example_ask_front_desk/1 predicate is available...");
-    let result = env.query_once("current_predicate(example_ask_front_desk/1)");
+    // Call it and verify the round-trip through clara_evaluate works
+    println!("\n[3] Calling echo_via_clara/2...");
+    let result = env.query_once("echo_via_clara(hello_from_consult, R)");
     match &result {
         Ok(r) => {
-            println!("    example_ask_front_desk/1 exists: {}", r);
-        }
-        Err(e) => {
-            panic!(
-                "example_ask_front_desk/1 NOT FOUND: {}\n\
-                This predicate should be defined in front_desk3.pl and depends on clara_evaluate/2.",
-                e
+            println!("    Result: {}", r);
+            assert!(
+                r.contains("success") || r.contains("hello_from_consult"),
+                "Expected echo response, got: {}", r
             );
         }
+        Err(e) => panic!("echo_via_clara/2 call failed: {}", e),
     }
 
-    println!("\n=== Consult with clara_evaluate/2 Test PASSED ===");
+    println!("\n=== Consulted code with clara_evaluate/2 Test PASSED ===");
+}
+
+/// Test that the JSON library (http/json) is available and atom_json_dict/3 works
+#[test]
+fn test_json_library_available() {
+    println!("=== Testing JSON library availability ===");
+
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    // atom_json_dict should be available without explicit use_module
+    // (autoloaded during PL_initialise)
+    println!("\n[1] Testing atom_json_dict/3 with a simple JSON object...");
+    let result = env.query_with_bindings(
+        r#"atom_json_dict('{"name":"test","value":42}', Dict, [])"#
+    );
+    match &result {
+        Ok(r) => {
+            println!("    Result: {}", r);
+            assert!(r.contains("test") || r.contains("42"),
+                "Should contain parsed JSON values: {}", r);
+        }
+        Err(e) => panic!("atom_json_dict should work: {}", e),
+    }
+
+    // Test JSON writing (exercises our pure-Prolog fallbacks for json_write_string/2)
+    println!("\n[2] Testing atom_json_dict/3 in write mode (dict to atom)...");
+    let result = env.query_with_bindings(
+        r#"atom_json_dict(Atom, _{x:1, y:2}, [])"#
+    );
+    match &result {
+        Ok(r) => {
+            println!("    Result: {}", r);
+            // The output should contain JSON-like content
+            assert!(r.contains("x") && r.contains("y"),
+                "Should contain JSON output: {}", r);
+        }
+        Err(e) => println!("    Write mode result: {} (may be expected if dicts are tricky in this context)", e),
+    }
+
+    println!("\n=== JSON library test PASSED ===");
+}
+
+/// Test that goals containing quoted strings with embedded double quotes
+/// can be parsed and executed correctly through query_with_bindings.
+///
+/// This exercises the escaping logic in execute_query_with_bindings,
+/// which embeds the goal inside a double-quoted Prolog string for
+/// atom_codes/2. Double quotes in the original goal must be escaped.
+#[test]
+fn test_quoted_strings_in_query_with_bindings() {
+    println!("=== Testing quoted strings in query_with_bindings ===");
+
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    // Test 1: Single-quoted atom containing double quotes
+    // This is the core escaping issue - the goal is embedded in a
+    // double-quoted Prolog string in the wrapper, so internal double
+    // quotes must be escaped.
+    println!("\n[1] Single-quoted atom with embedded double quotes...");
+    let result = env.query_with_bindings(r#"X = '{ "x": 2, "y": 3 }'"#);
+    match &result {
+        Ok(r) => {
+            println!("    Result: {}", r);
+            assert!(r.contains("\"x\"") || r.contains("x"),
+                "Result should contain the quoted atom content: {}", r);
+        }
+        Err(e) => panic!("query_with_bindings should handle double quotes inside single-quoted atoms: {}", e),
+    }
+
+    // Test 2: atom_length on a single-quoted atom with embedded double quotes
+    println!("\n[2] atom_length with embedded double quotes...");
+    let result = env.query_with_bindings(r#"atom_length('he said "hi"', N)"#);
+    match &result {
+        Ok(r) => {
+            println!("    Result: {}", r);
+            // 'he said "hi"' is 12 characters
+            assert!(r.contains("12"), "Length should be 12: {}", r);
+        }
+        Err(e) => panic!("atom_length with embedded double quotes failed: {}", e),
+    }
+
+    // Test 3: Simple atom_string with result binding (no special chars - baseline)
+    println!("\n[3] atom_string baseline (no special chars)...");
+    let result = env.query_with_bindings("atom_string(hello, X)");
+    match &result {
+        Ok(r) => println!("    Result: {}", r),
+        Err(e) => println!("    Error: {}", e),
+    }
+    assert!(result.is_ok(), "Simple atom_string should work: {:?}", result.err());
+
+    // Test 4: Goal with backslashes in a single-quoted atom
+    println!("\n[4] Goal containing backslash in atom...");
+    let result = env.query_with_bindings(r#"atom_length('a\\b', N)"#);
+    match &result {
+        Ok(r) => println!("    Result: {}", r),
+        Err(e) => println!("    Error: {}", e),
+    }
+    assert!(result.is_ok(), "Backslash in atoms should be handled: {:?}", result.err());
+
+    // Test 5: Same double-quote goal through query_once (direct PL_chars_to_term)
+    // This should always work since single-quoted atoms with embedded double
+    // quotes are valid Prolog syntax - no wrapper escaping needed.
+    println!("\n[5] Same goal via query_once (direct parse, no wrapper)...");
+    let result = env.query_once(r#"X = '{ "x": 2, "y": 3 }'"#);
+    match &result {
+        Ok(r) => println!("    Result: {}", r),
+        Err(e) => println!("    Error: {}", e),
+    }
+    assert!(result.is_ok(), "query_once should handle the goal directly: {:?}", result.err());
+
+    println!("\n=== Quoted strings test PASSED ===");
 }

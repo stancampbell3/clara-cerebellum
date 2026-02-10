@@ -50,6 +50,23 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
 
         if init_result != 0 {
             log::info!("SWI-Prolog initialized successfully");
+
+            // Autoload the JSON library so atom_json_dict/3 etc. are globally available.
+            // This uses our patched version with pure-Prolog write fallbacks.
+            unsafe {
+                let json_goal = CString::new("use_module(library(http/json))").unwrap();
+                let json_term = PL_new_term_ref();
+                if PL_chars_to_term(json_goal.as_ptr(), json_term) != 0 {
+                    if PL_call(json_term, std::ptr::null_mut()) != 0 {
+                        log::info!("JSON library (http/json) loaded successfully");
+                    } else {
+                        log::warn!("Failed to load JSON library (http/json) — JSON predicates may be unavailable");
+                    }
+                } else {
+                    log::warn!("Failed to parse JSON library load goal");
+                }
+            }
+
             Ok(())
         } else {
             log::error!("Failed to initialize SWI-Prolog");
@@ -287,6 +304,7 @@ impl PrologEnvironment {
         // Escape the goal for embedding in an atom
         let escaped_goal = goal
             .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
             .replace("'", "\\'");
 
         // Wrapper query that:

@@ -82,6 +82,18 @@ fn main() {
         panic!("Build succeeded but {} not found", lib_name);
     }
 
+    // Copy prolog-lib overlay into swipl-build/home/library/
+    // This provides patched JSON libraries with pure-Prolog write fallbacks
+    let prolog_lib_src = manifest_dir.join("prolog-lib");
+    if prolog_lib_src.exists() {
+        let library_dst = home_dir.join("library");
+        copy_dir_recursive(&prolog_lib_src, &library_dst);
+        println!(
+            "cargo:warning=Copied prolog-lib overlay to {}",
+            library_dst.display()
+        );
+    }
+
     // Link configuration
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=swipl");
@@ -102,10 +114,33 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=swipl-src/CMakeLists.txt");
     println!("cargo:rerun-if-changed=swipl-src/src");
+    println!("cargo:rerun-if-changed=prolog-lib");
 
     println!(
         "cargo:warning=SWI-Prolog built at {} (home: {})",
         lib_dir.display(),
         home_dir.display()
     );
+}
+
+/// Recursively copy a directory tree, creating destination dirs as needed.
+fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) {
+    fs::create_dir_all(dst).expect("Failed to create destination directory");
+    for entry in fs::read_dir(src).expect("Failed to read source directory") {
+        let entry = entry.expect("Failed to read directory entry");
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path);
+        } else {
+            fs::copy(&src_path, &dst_path).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to copy {} -> {}: {}",
+                    src_path.display(),
+                    dst_path.display(),
+                    e
+                )
+            });
+        }
+    }
 }
