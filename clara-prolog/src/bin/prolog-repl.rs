@@ -6,7 +6,9 @@ use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .init();
 
     println!("Clara-Prolog REPL (LilDevils)");
     println!("Type Prolog goals to execute, or 'quit' to exit.");
