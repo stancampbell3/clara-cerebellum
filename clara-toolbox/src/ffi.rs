@@ -60,7 +60,7 @@ pub fn evaluate_json_string(input_str: &str) -> *mut c_char {
     let json_value: serde_json::Value = match serde_json::from_str(input_str) {
         Ok(val) => val,
         Err(e) => {
-            log::error!("Failed to parse JSON: {}", e);
+            log::error!("Failed to parse JSON: {}\n\tin : {}", e, input_str);
             return CString::new(format!(
                 "{{\"status\":\"error\",\"message\":\"Invalid JSON: {}\"}}",
                 e
