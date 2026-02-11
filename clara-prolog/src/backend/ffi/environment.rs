@@ -51,8 +51,9 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
         if init_result != 0 {
             log::info!("SWI-Prolog initialized successfully");
 
-            // Autoload the JSON library so atom_json_dict/3 etc. are globally available.
-            // This uses our patched version with pure-Prolog write fallbacks.
+            // Autoload JSON libraries so predicates are globally available.
+            // json: atom_json_dict/3, json_read/write etc. (patched with pure-Prolog fallbacks)
+            // json_convert: prolog_to_json/2, json_to_prolog/2, json_object declarations
             unsafe {
                 let json_goal = CString::new("use_module(library(http/json))").unwrap();
                 let json_term = PL_new_term_ref();
@@ -64,6 +65,18 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
                     }
                 } else {
                     log::warn!("Failed to parse JSON library load goal");
+                }
+
+                let json_convert_goal = CString::new("use_module(library(http/json_convert))").unwrap();
+                let json_convert_term = PL_new_term_ref();
+                if PL_chars_to_term(json_convert_goal.as_ptr(), json_convert_term) != 0 {
+                    if PL_call(json_convert_term, std::ptr::null_mut()) != 0 {
+                        log::info!("JSON convert library (http/json_convert) loaded successfully");
+                    } else {
+                        log::warn!("Failed to load JSON convert library (http/json_convert) — json_convert predicates may be unavailable");
+                    }
+                } else {
+                    log::warn!("Failed to parse JSON convert library load goal");
                 }
             }
 

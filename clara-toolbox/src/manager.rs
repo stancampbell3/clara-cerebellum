@@ -95,6 +95,7 @@ impl ToolboxManager {
         let mut mgr = GLOBAL_TOOLBOX.lock().unwrap();
 
         // Register default tools
+        log::info!("Register default tools.. echo.. ");
         mgr.register_tool(Arc::new(EchoTool));
 
         // Register splinteredmind tool with FieryPit URL from environment
@@ -107,9 +108,14 @@ impl ToolboxManager {
         if let Ok(model_path) = std::env::var("DAGDA_MODEL_PATH") {
             log::info!("Loading classify tool with model: {}", model_path);
             match ClassifyTool::new(&model_path) {
-                Ok(tool) => mgr.register_tool(Arc::new(tool)),
-                Err(e) => log::warn!("Failed to load classify model: {}", e),
+                Ok(tool) => {
+                    mgr.register_tool(Arc::new(tool));
+                    log::info!("Classify tool registered successfully");
+                },
+                Err(e) => log::warn!("!! Failed to load classify model: {}", e),
             }
+        } else {
+            log::info!("No DAGDA_MODEL_PATH set, skipping classify tool registration");
         }
 
         log::info!("Global ToolboxManager initialized with {} tools", mgr.tools.len());

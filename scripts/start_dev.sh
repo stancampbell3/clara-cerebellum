@@ -1,3 +1,5 @@
 #!/usr/bin/bash
+set -a
 source .env
-RUST_LOG=debug JWT_SECRET=mysecretjwt cargo run --bin clara-api
+set +a
+RUST_LOG=debug cargo run --bin clara-api

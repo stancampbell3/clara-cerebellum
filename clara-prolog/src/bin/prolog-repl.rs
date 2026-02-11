@@ -6,7 +6,29 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::sync::Arc;
 
+/// Load .env file from current directory if present, setting any vars not already in env
+fn load_dotenv() {
+    let path = std::path::Path::new(".env");
+    if let Ok(contents) = std::fs::read_to_string(path) {
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                let key = key.trim();
+                let value = value.trim().trim_matches('"');
+                if std::env::var(key).is_err() {
+                    std::env::set_var(key, value);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
+    load_dotenv();
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp(None)
         .init();
