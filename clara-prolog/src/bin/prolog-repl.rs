@@ -2,7 +2,8 @@
 
 use clara_prolog::PrologEnvironment;
 use clara_toolbox::{ClaraSplinteredMindTool, ToolboxManager};
-use std::io::{self, BufRead, Write};
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use std::sync::Arc;
 
 fn main() {
@@ -38,28 +39,35 @@ fn main() {
         }
     };
 
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    let mut rl = DefaultEditor::new().expect("Failed to create line editor");
+
+    let history_path = dirs::home_dir()
+        .map(|h| h.join(".clara-prolog-history"))
+        .unwrap_or_else(|| ".clara-prolog-history".into());
+    let _ = rl.load_history(&history_path);
 
     loop {
-        print!("?- ");
-        stdout.flush().unwrap();
-
-        let mut line = String::new();
-        match stdin.lock().read_line(&mut line) {
-            Ok(0) => break, // EOF
-            Ok(_) => {}
+        let readline = rl.readline("?- ");
+        let line = match readline {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                println!("^C");
+                continue;
+            }
+            Err(ReadlineError::Eof) => break,
             Err(e) => {
                 eprintln!("Error reading input: {}", e);
                 continue;
             }
-        }
+        };
 
         let goal = line.trim();
 
         if goal.is_empty() {
             continue;
         }
+
+        let _ = rl.add_history_entry(goal);
 
         if goal == "quit" || goal == "halt" || goal == "exit" {
             println!("Goodbye!");
@@ -125,6 +133,8 @@ fn main() {
             }
         }
     }
+
+    let _ = rl.save_history(&history_path);
 }
 
 /// Format a JSON value for Prolog-style output
