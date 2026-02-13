@@ -230,6 +230,8 @@ pub async fn consult_prolog(
         state
             .session_manager
             .with_prolog_env(&session_id, |env| {
+                // Debug log the clause for visibility
+                log::debug!("Asserting clause into session {}: {}", session_id.0, clause);
                 env.assertz(clause).map_err(|e| e.to_string())
             })
             .map_err(ApiError::from)?;
