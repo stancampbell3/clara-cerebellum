@@ -234,10 +234,13 @@ pub async fn consult_prolog(
                 // but if the clause is a directive (starts with ':-' ), we use assertz/1
                 // with the directive as-is.
                 if clause.trim_start().starts_with(":-") {
-                    log::debug!("Asserting directive into session {}: {}", session_id.0, clause);
-                    env.assertz(clause).map_err(|e| e.to_string())
+                    log::debug!("Consulting directive into session {}: {}", session_id.0, clause);
+                    // Rather than asserting the directive as a fact, we consult it directly
+                    env.consult_string(clause).map_err(|e| e.to_string())
                 } else {
                     log::debug!("Asserting clause into session {}: {}", session_id.0, clause);
+                    // remove trailing dot if present, since assertz expects a term
+                    let clause = clause.trim_end_matches('.').trim();
                     env.assertz(&clause).map_err(|e| e.to_string())
                 }
             })
