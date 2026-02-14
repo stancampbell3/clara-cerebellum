@@ -168,7 +168,7 @@ fn test_consult_front_desk_with_splinteredmind_predicates() {
     // Consult front_desk3.pl
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_root = std::path::Path::new(manifest_dir).parent().unwrap();
-    let front_desk_path = workspace_root.join("wok/front_desk3.pl");
+    let front_desk_path = workspace_root.join("tests/fixtures/front_desk3.pl");
     let front_desk_path_str = front_desk_path.to_string_lossy();
 
     println!("[1] Consulting {}...", front_desk_path_str);
@@ -221,7 +221,7 @@ fn test_invoke_use_echo_predicate() {
     // Consult front_desk3.pl
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_root = std::path::Path::new(manifest_dir).parent().unwrap();
-    let front_desk_path = workspace_root.join("wok/front_desk3.pl");
+    let front_desk_path = workspace_root.join("tests/fixtures/front_desk3.pl");
 
     println!("[1] Consulting front_desk3.pl...");
     env.consult_file(&front_desk_path.to_string_lossy())

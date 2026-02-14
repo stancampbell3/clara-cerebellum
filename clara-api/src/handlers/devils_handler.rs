@@ -237,10 +237,8 @@ pub async fn consult_prolog(
                     log::debug!("Asserting directive into session {}: {}", session_id.0, clause);
                     env.assertz(clause).map_err(|e| e.to_string())
                 } else {
-                    // For regular clauses, we wrap them in assertz/1 to ensure they are added to the session
-                    let wrapped_clause = format!("assertz({}).", clause);
-                    log::debug!("Asserting clause into session {}: {}", session_id.0, wrapped_clause);
-                    env.assertz(&wrapped_clause).map_err(|e| e.to_string())
+                    log::debug!("Asserting clause into session {}: {}", session_id.0, clause);
+                    env.assertz(&clause).map_err(|e| e.to_string())
                 }
             })
             .map_err(ApiError::from)?;
