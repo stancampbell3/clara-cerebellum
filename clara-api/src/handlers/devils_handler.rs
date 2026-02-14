@@ -225,22 +225,42 @@ pub async fn consult_prolog(
         ))));
     }
 
-    // Load each clause via assertz
+    // Known directive predicates that must be executed (called) rather than asserted.
+    // These are top-level Prolog directives that have side effects when loaded.
+    const DIRECTIVE_PREFIXES: &[&str] = &[
+        "use_module(",
+        "ensure_loaded(",
+        "consult(",
+        "module(",
+        "reexport(",
+        "load_files(",
+    ];
+
+    // Load each clause via assertz, or execute if it's a directive
     for clause in &req.clauses {
         state
             .session_manager
             .with_prolog_env(&session_id, |env| {
-                // Special handling.  We use assertz/1 to load clauses,
-                // but if the clause is a directive (starts with ':-' ), we use assertz/1
-                // with the directive as-is.
-                if clause.trim_start().starts_with(":-") {
-                    log::debug!("Consulting directive into session {}: {}", session_id.0, clause);
-                    // Rather than asserting the directive as a fact, we consult it directly
-                    env.consult_string(clause).map_err(|e| e.to_string())
-                } else {
+                let trimmed = clause.trim_start();
+
+                // Check if this is a :- directive
+                if trimmed.starts_with(":-") {
+                    log::debug!("Executing :- directive in session {}: {}", session_id.0, clause);
+                    // Strip the :- prefix and execute as a goal
+                    let goal = trimmed.trim_start_matches(":-").trim().trim_end_matches('.').trim();
+                    env.query_once(goal).map(|_| ()).map_err(|e| e.to_string())
+                }
+                // Check if this is a bare directive (e.g. use_module(...))
+                else if DIRECTIVE_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
+                    log::debug!("Executing directive in session {}: {}", session_id.0, clause);
+                    let goal = trimmed.trim_end_matches('.').trim();
+                    env.query_once(goal).map(|_| ()).map_err(|e| e.to_string())
+                }
+                // Otherwise, assert as a regular clause/rule
+                else {
                     log::debug!("Asserting clause into session {}: {}", session_id.0, clause);
                     // remove trailing dot if present, since assertz expects a term
-                    let clause = clause.trim_end_matches('.').trim();
+                    let clause = trimmed.trim_end_matches('.').trim();
                     env.assertz(&clause).map_err(|e| e.to_string())
                 }
             })
