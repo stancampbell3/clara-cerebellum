@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 clara-clips = { path = "../clara-clips", features = ["ffi"] }
+clara-coire = { path = "../clara-coire" }
 clara-config = { path = "../clara-config", features = ["toml"] }
 clara-session = { path = "../clara-session" }
 clara-core = { path = "../clara-core" }

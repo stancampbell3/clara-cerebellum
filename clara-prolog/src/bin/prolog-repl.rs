@@ -37,6 +37,9 @@ fn main() {
     println!("Type Prolog goals to execute, or 'quit' to exit.");
     println!("--------------------------------------------");
 
+    // Initialize global Coire (shared event mailbox)
+    clara_coire::init_global().expect("Failed to initialize Coire");
+
     // Initialize the global ToolboxManager with default tools (echo, etc.)
     ToolboxManager::init_global();
 

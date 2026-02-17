@@ -15,7 +15,8 @@ members = ["caw",
   "demonic-voice",
   "fiery-pit-client",
   "prolog-mcp-adapter",
-  "clara-frontdesk-poc"]
+  "clara-frontdesk-poc",
+  "clara-coire"]
 resolver = "2"
 
 [workspace.package]

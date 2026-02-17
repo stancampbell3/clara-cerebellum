@@ -39,6 +39,10 @@ fn main() {
     println!("======================================");
     println!();
 
+    // Initialize global Coire (shared event mailbox)
+    println!("Initializing Coire...");
+    clara_coire::init_global().expect("Failed to initialize Coire");
+
     // Initialize the global ToolboxManager
     println!("Initializing ToolboxManager...");
     ToolboxManager::init_global();

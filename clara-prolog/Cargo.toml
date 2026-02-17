@@ -20,6 +20,8 @@ log = "0.4"
 env_logger = "0.11"
 thiserror = "1.0"
 clara-toolbox = { path = "../clara-toolbox", features = ["ffi"] }
+clara-coire = { path = "../clara-coire" }
+uuid = { version = "1", features = ["v4"] }
 demonic-voice = { path = "../demonic-voice" }
 fiery-pit-client = { path = "../fiery-pit-client" }
 rustyline = "15"

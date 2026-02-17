@@ -56,6 +56,13 @@ void UserFunctions(Environment *);
 extern char* rust_clara_evaluate(void* env, const char* input);
 extern void rust_free_string(char* s);
 
+/* External declarations for Coire FFI callbacks */
+extern char* rust_coire_emit(const char* session, const char* origin, const char* payload);
+extern char* rust_coire_poll(const char* session);
+extern char* rust_coire_mark(const char* event_id);
+extern long long rust_coire_count(const char* session);
+extern void rust_coire_free_string(char* s);
+
 /*********************************************************/
 /* ClaraEvaluateWrapper: C wrapper for Rust callback     */
 /* This function is registered with CLIPS and calls the  */
@@ -88,6 +95,89 @@ static void ClaraEvaluateWrapper(
   }
 
 /*********************************************************/
+/* CoireEmitWrapper: (coire-emit "session" "origin" "{}") */
+/* Returns string: "ok" or error JSON                    */
+/*********************************************************/
+static void CoireEmitWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argSession, argOrigin, argPayload;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argSession))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing session_id\"}"); return; }
+   if (! UDFNextArgument(context, LEXEME_BITS, &argOrigin))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing origin\"}"); return; }
+   if (! UDFNextArgument(context, LEXEME_BITS, &argPayload))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing payload\"}"); return; }
+
+   char* result = rust_coire_emit(
+     argSession.lexemeValue->contents,
+     argOrigin.lexemeValue->contents,
+     argPayload.lexemeValue->contents);
+
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_coire_free_string(result);
+  }
+
+/*********************************************************/
+/* CoirePollWrapper: (coire-poll "session")              */
+/* Returns string: JSON array of events                  */
+/*********************************************************/
+static void CoirePollWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argSession;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argSession))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing session_id\"}"); return; }
+
+   char* result = rust_coire_poll(argSession.lexemeValue->contents);
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_coire_free_string(result);
+  }
+
+/*********************************************************/
+/* CoireMarkWrapper: (coire-mark "event-uuid")           */
+/* Returns string: "ok" or error JSON                    */
+/*********************************************************/
+static void CoireMarkWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argEventId;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argEventId))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing event_id\"}"); return; }
+
+   char* result = rust_coire_mark(argEventId.lexemeValue->contents);
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_coire_free_string(result);
+  }
+
+/*********************************************************/
+/* CoireCountWrapper: (coire-count "session")            */
+/* Returns integer: count of pending events              */
+/*********************************************************/
+static void CoireCountWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argSession;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argSession))
+     { returnValue->integerValue = CreateInteger(env, -1); return; }
+
+   long long count = rust_coire_count(argSession.lexemeValue->contents);
+   returnValue->integerValue = CreateInteger(env, count);
+  }
+
+/*********************************************************/
 /* UserFunctions: Informs the expert system environment  */
 /*   of any user defined functions. In the default case, */
 /*   there are no user defined functions. To define      */
@@ -102,4 +192,10 @@ void UserFunctions(
    /* Register clara-evaluate function */
    /* Signature: "s" = returns string, 1,1 = min/max args, "s" = arg must be string */
    AddUDF(env, "clara-evaluate", "s", 1, 1, "s", ClaraEvaluateWrapper, "ClaraEvaluateWrapper", NULL);
+
+   /* Register coire functions */
+   AddUDF(env, "coire-emit", "s", 3, 3, "s;s;s", CoireEmitWrapper, "CoireEmitWrapper", NULL);
+   AddUDF(env, "coire-poll", "s", 1, 1, "s", CoirePollWrapper, "CoirePollWrapper", NULL);
+   AddUDF(env, "coire-mark", "s", 1, 1, "s", CoireMarkWrapper, "CoireMarkWrapper", NULL);
+   AddUDF(env, "coire-count", "l", 1, 1, "s", CoireCountWrapper, "CoireCountWrapper", NULL);
   }

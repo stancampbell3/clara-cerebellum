@@ -28,6 +28,7 @@ pub mod error;
 // Re-export main types for convenience
 pub use backend::ffi::PrologEnvironment;
 pub use backend::ffi::register_clara_evaluate;
+pub use backend::ffi::register_coire_predicates;
 pub use error::{PrologError, PrologResult};
 
 // Re-export FFI functions from clara-toolbox
@@ -41,6 +42,7 @@ pub fn init_global() {
     backend::ffi::environment::ensure_prolog_initialized()
         .expect("Failed to initialize Prolog");
     register_clara_evaluate();
+    register_coire_predicates();
     log::info!("Clara-Prolog (LilDevils) initialized");
 }
 

@@ -8,6 +8,10 @@ fn main() -> std::io::Result<()> {
 
     log::info!("Starting Clara Cerebrum API Server");
 
+    // Initialize global Coire (shared event mailbox)
+    log::info!("Initializing Coire");
+    clara_coire::init_global().expect("Failed to initialize Coire");
+
     // Initialize global ToolboxManager with default tools
     // NOTE: Must happen BEFORE async runtime starts because splinteredmind tool
     // uses reqwest::blocking::Client which can't be created inside async context

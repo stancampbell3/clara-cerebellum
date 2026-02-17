@@ -8,11 +8,13 @@
 
 pub mod bindings;
 pub mod callbacks;
+pub mod coire_bridge;
 pub mod conversion;
 pub mod environment;
 
 pub use bindings::*;
 pub use callbacks::register_clara_evaluate;
+pub use coire_bridge::register_coire_predicates;
 pub use conversion::*;
 pub use environment::PrologEnvironment;
 
