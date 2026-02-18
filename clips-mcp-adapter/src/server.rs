@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,6 +13,7 @@ use crate::tools;
 #[derive(Debug, Serialize, Deserialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
+    #[serde(default)]
     id: Value,
     method: String,
     #[serde(default)]
@@ -54,11 +55,10 @@ impl McpServer {
         }
     }
 
-    pub async fn run(&self) -> Result<()> {
-        info!("MCP Server starting");
-
-        // Create the session on startup
-        let client = crate::client::ClipsClient::new(
+    /// Create/verify the CLIPS session. Call once before serving.
+    pub async fn initialize(&self) -> Result<()> {
+        info!("CLIPS MCP Server initializing");
+        let client = ClipsClient::new(
             self.rest_api_url.clone(),
             self.session_id.lock().await.clone(),
         );
@@ -66,12 +66,18 @@ impl McpServer {
             Ok(real_session_id) => {
                 info!("Created session: {}", real_session_id);
                 *self.session_id.lock().await = real_session_id;
+                Ok(())
             }
             Err(e) => {
                 error!("Failed to create initial session: {}", e);
-                return Err(e);
+                Err(e)
             }
         }
+    }
+
+    /// Stdio transport loop (call after initialize).
+    pub async fn run_stdio(&self) -> Result<()> {
+        info!("CLIPS MCP Server starting (stdio)");
 
         let stdin = io::stdin();
         let mut stdout = io::stdout();
@@ -83,7 +89,6 @@ impl McpServer {
 
             let response = self.handle_line(&line).await;
 
-            // Write response to stdout
             if let Ok(json) = serde_json::to_string(&response) {
                 debug!("Sending response: {}", json);
                 writeln!(stdout, "{}", json)?;
@@ -93,8 +98,36 @@ impl McpServer {
             }
         }
 
-        info!("MCP Server shutting down");
+        info!("CLIPS MCP Server shutting down");
         Ok(())
+    }
+
+    /// Convenience wrapper: initialize then run stdio.
+    #[allow(dead_code)]
+    pub async fn run(&self) -> Result<()> {
+        self.initialize().await?;
+        self.run_stdio().await
+    }
+
+    /// HTTP transport entry point: process a parsed JSON-RPC Value.
+    pub async fn handle_json(&self, request: Value) -> Value {
+        match serde_json::from_value::<JsonRpcRequest>(request) {
+            Ok(req) => {
+                let resp = self.handle_request(&req).await;
+                serde_json::to_value(resp).unwrap_or_else(|_| json!({"error": "serialization"}))
+            }
+            Err(e) => serde_json::to_value(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: Value::Null,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32700,
+                    message: "Parse error".to_string(),
+                    data: Some(json!({"error": e.to_string()})),
+                }),
+            })
+            .unwrap(),
+        }
     }
 
     async fn handle_line(&self, line: &str) -> JsonRpcResponse {
@@ -121,6 +154,14 @@ impl McpServer {
 
         let result = match req.method.as_str() {
             "initialize" => self.handle_initialize(),
+            "notifications/initialized" => {
+                return JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: req.id.clone(),
+                    result: Some(Value::Null),
+                    error: None,
+                };
+            }
             "tools/list" => self.handle_tools_list(),
             "tools/call" => self.handle_tools_call(&req.params).await,
             _ => {

@@ -32,7 +32,7 @@ RUST_LOG=info cargo run --bin prolog-repl
 ```
 
 ```prolog
-%% Pick a session UUID (use any valid v4 UUID)
+`%% Pick a session UUID (use any valid v4 UUID)
 ?- coire_emit('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'prolog', '{"msg":"hello from prolog"}').
 %% Expected: true
 
@@ -43,7 +43,7 @@ RUST_LOG=info cargo run --bin prolog-repl
 %% Expected: Events = JSON array string with one event, status "Processed"
 
 ?- coire_count('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', N).
-%% Expected: N = 0 (poll marked it processed)
+%% Expected: N = 0 (poll marked it processed)`
 ```
 
 ### 3. CLIPS REPL round-trip

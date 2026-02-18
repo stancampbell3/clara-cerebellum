@@ -1,0 +1,62 @@
+{
+  "id": "prolog-mcp",
+  "name": "clara-prolog",
+  "type": "mcp",
+  "command": "/usr/local/bin/prolog-mcp-adapter",
+  "args": ["--rest-api-url", "http://pineal:8080"],
+  "stdio": { "stdin": true, "stdout": true },
+  "capabilities": {
+    "tools": true,
+    "resources": false
+  },
+  "methods": ["initialize", "tools/list", "tools/call"],
+  "tools": [
+    {
+      "name": "prolog.query",
+      "description": "Execute a Prolog query and return results (first solution or all if requested).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "all": { "type": "boolean", "default": false }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "prolog.consult",
+      "description": "Load Prolog clauses into the knowledge base using assertz.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "clauses": { "type": "string" }
+        },
+        "required": ["clauses"]
+      }
+    },
+    {
+      "name": "prolog.retract",
+      "description": "Remove clauses from the Prolog knowledge base.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "clause": { "type": "string" }
+        },
+        "required": ["clause"]
+      }
+    },
+    {
+      "name": "prolog.status",
+      "description": "Get status of the Prolog engine and session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "session": {
+    "mode": "server-generated",
+    "sessionKey": "session_id",
+    "notes": "Server returns/updates session_id; client should forward any provided session_id in subsequent calls."
+  }
+}
