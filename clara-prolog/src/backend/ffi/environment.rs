@@ -8,6 +8,7 @@ use super::conversion::*;
 use crate::error::{PrologError, PrologResult};
 use std::ffi::CString;
 use std::sync::OnceLock;
+use uuid::Uuid;
 
 /// Compile-time SWI_HOME_DIR from build.rs
 const SWI_HOME_DIR: &str = env!("SWI_HOME_DIR");
@@ -98,6 +99,33 @@ pub fn is_prolog_initialized() -> bool {
         .unwrap_or(false)
 }
 
+/// Tracks whether `the_coire` library has been loaded into the Prolog system.
+///
+/// Separate from `INIT_RESULT` because foreign predicates (`coire_emit/3` etc.)
+/// must be registered BEFORE `use_module(library(the_coire))` is called.
+static COIRE_LIB_LOADED: OnceLock<Result<(), String>> = OnceLock::new();
+
+/// Load `library(the_coire)` into the global Prolog system.
+///
+/// Must be called AFTER `register_coire_predicates()` so that the foreign
+/// predicates used by `the_coire.pl` are already registered. Safe to call
+/// multiple times — subsequent calls are no-ops.
+pub fn load_coire_library() -> PrologResult<()> {
+    let result = COIRE_LIB_LOADED.get_or_init(|| unsafe {
+        let goal = CString::new("use_module(library(the_coire))").unwrap();
+        let term = PL_new_term_ref();
+        if PL_chars_to_term(goal.as_ptr(), term) != 0
+            && PL_call(term, std::ptr::null_mut()) != 0
+        {
+            log::info!("the_coire library loaded");
+            Ok(())
+        } else {
+            Err("Failed to load library(the_coire)".to_string())
+        }
+    });
+    result.clone().map_err(PrologError::InitializationFailed)
+}
+
 /// Safe wrapper around a SWI-Prolog Engine
 ///
 /// Each `PrologEnvironment` represents an isolated Prolog engine.
@@ -111,6 +139,7 @@ pub fn is_prolog_initialized() -> bool {
 pub struct PrologEnvironment {
     engine: PL_engine_t,
     is_main: bool,
+    session_id: Uuid,
 }
 
 impl std::fmt::Debug for PrologEnvironment {
@@ -118,6 +147,7 @@ impl std::fmt::Debug for PrologEnvironment {
         f.debug_struct("PrologEnvironment")
             .field("engine", &format!("{:p}", self.engine))
             .field("is_main", &self.is_main)
+            .field("session_id", &self.session_id)
             .finish()
     }
 }
@@ -125,32 +155,40 @@ impl std::fmt::Debug for PrologEnvironment {
 impl PrologEnvironment {
     /// Create a new Prolog engine for session isolation
     ///
-    /// Each call creates a fresh engine with no loaded predicates
-    /// (except built-ins). Also ensures the clara_evaluate/2 foreign
-    /// predicate is registered.
+    /// Each call creates a fresh engine with its own Coire session UUID.
+    /// The engine is seeded with a `thread_local` `coire_session_id/1` fact
+    /// so that `the_coire` predicates know which session they belong to.
     pub fn new() -> PrologResult<Self> {
         ensure_prolog_initialized()?;
 
-        // Register clara_evaluate/2 foreign predicate if not already registered
-        // This must happen after Prolog is initialized but can be called multiple times safely
+        // Register callbacks (idempotent via OnceLock)
         super::callbacks::register_clara_evaluate();
+        super::coire_bridge::register_coire_predicates();
 
-        unsafe {
-            let engine = PL_create_engine(std::ptr::null_mut());
+        // Load the_coire.pl AFTER foreign predicates are registered (idempotent)
+        load_coire_library()?;
 
-            if engine.is_null() {
+        let session_id = Uuid::new_v4();
+
+        let engine = unsafe {
+            let e = PL_create_engine(std::ptr::null_mut());
+            if e.is_null() {
                 return Err(PrologError::EngineCreationFailed(
                     "PL_create_engine returned null".to_string(),
                 ));
             }
+            log::debug!("Created new Prolog engine: {:p}", e);
+            e
+        };
 
-            log::debug!("Created new Prolog engine: {:p}", engine);
+        let env = Self { engine, is_main: false, session_id };
 
-            Ok(Self {
-                engine,
-                is_main: false,
-            })
-        }
+        // Seed the engine's thread_local coire_session_id/1 with this session's UUID.
+        // Must be module-qualified so it lands in the_coire's thread-local storage.
+        let clause = format!("the_coire:coire_session_id('{}')", session_id);
+        env.assertz(&clause)?;
+
+        Ok(env)
     }
 
     /// Get reference to the main Prolog engine (singleton)
@@ -163,7 +201,24 @@ impl PrologEnvironment {
         Ok(Self {
             engine: PL_ENGINE_MAIN,
             is_main: true,
+            session_id: Uuid::nil(),
         })
+    }
+
+    /// Return this environment's Coire session UUID.
+    pub fn session_id(&self) -> Uuid {
+        self.session_id
+    }
+
+    /// Poll Coire for pending events and dispatch them via `coire_consume/0`.
+    ///
+    /// Returns the number of pending events that were processed.
+    pub fn consume_coire_events(&self) -> PrologResult<usize> {
+        let before = clara_coire::global()
+            .count_pending(self.session_id)
+            .map_err(|e| PrologError::Internal(e.to_string()))?;
+        self.query_once("coire_consume")?;
+        Ok(before)
     }
 
     /// Execute a query and return all solutions as JSON

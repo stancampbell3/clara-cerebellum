@@ -99,6 +99,11 @@ extern "C" {
 
     /// Deactivate string router
     pub fn DeactivateRouter(env: *mut Environment, router_name: *const c_char) -> bool;
+
+    /// Build (compile) a single construct definition string into the environment.
+    /// Handles defglobal, deftemplate, deffunction, defrule, etc.
+    /// Returns true on success.
+    pub fn Build(env: *mut Environment, build_string: *const c_char) -> bool;
 }
 
 #[cfg(test)]

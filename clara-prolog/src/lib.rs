@@ -29,6 +29,7 @@ pub mod error;
 pub use backend::ffi::PrologEnvironment;
 pub use backend::ffi::register_clara_evaluate;
 pub use backend::ffi::register_coire_predicates;
+pub use backend::ffi::environment::load_coire_library;
 pub use error::{PrologError, PrologResult};
 
 // Re-export FFI functions from clara-toolbox
@@ -43,6 +44,7 @@ pub fn init_global() {
         .expect("Failed to initialize Prolog");
     register_clara_evaluate();
     register_coire_predicates();
+    load_coire_library().expect("Failed to load the_coire library");
     log::info!("Clara-Prolog (LilDevils) initialized");
 }
 

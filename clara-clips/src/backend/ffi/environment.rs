@@ -3,10 +3,12 @@
 use super::bindings::{self, CLIPSValue, Environment, EvalError};
 use std::ffi::{CStr, CString};
 use libc::c_void;
+use uuid::Uuid;
 
 /// Safe wrapper around a CLIPS Environment
 pub struct ClipsEnvironment {
     env: *mut Environment,
+    session_id: Uuid,
 }
 
 /// Router callback to determine if we should capture output from this logical name
@@ -43,20 +45,42 @@ impl std::fmt::Debug for ClipsEnvironment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClipsEnvironment")
             .field("env", &format!("{:p}", self.env))
+            .field("session_id", &self.session_id)
             .finish()
     }
 }
 
 impl ClipsEnvironment {
-    /// Create a new CLIPS environment
+    /// Create a new CLIPS environment with its own Coire session UUID.
+    ///
+    /// Automatically loads `the_coire.clp` constructs and seeds the
+    /// `?*coire-session-id*` defglobal so that publish functions work
+    /// without any additional setup.
     pub fn new() -> Result<Self, String> {
-        unsafe {
-            let env = bindings::CreateEnvironment();
-            if env.is_null() {
+        let session_id = Uuid::new_v4();
+
+        let env = unsafe {
+            let e = bindings::CreateEnvironment();
+            if e.is_null() {
                 return Err("Failed to create CLIPS environment".to_string());
             }
-            Ok(Self { env })
-        }
+            e
+        };
+
+        let mut ce = Self { env, session_id };
+
+        // Load the_coire.clp constructs (defglobal, deftemplate, deffunction)
+        ce.load_coire_library()?;
+
+        // Seed the session global so (coire-publish ...) knows which mailbox to use
+        ce.eval(&format!("(bind ?*coire-session-id* \"{}\")", session_id))?;
+
+        Ok(ce)
+    }
+
+    /// Return this environment's Coire session UUID.
+    pub fn session_id(&self) -> Uuid {
+        self.session_id
     }
 
     /// Evaluate a CLIPS expression and return the result as a string
@@ -115,6 +139,96 @@ impl ClipsEnvironment {
         }
     }
 
+    /// Build (compile) a single CLIPS construct definition into this environment.
+    ///
+    /// Handles `defglobal`, `deftemplate`, `deffunction`, `defrule`, etc.
+    /// Use [`eval`] for expressions like `(assert ...)` or `(run)`.
+    pub fn build(&mut self, construct: &str) -> Result<(), String> {
+        unsafe {
+            let c_str = CString::new(construct)
+                .map_err(|e| format!("Invalid construct string: {}", e))?;
+            if bindings::Build(self.env, c_str.as_ptr()) {
+                Ok(())
+            } else {
+                let preview = &construct[..construct.len().min(80)];
+                Err(format!("CLIPS Build failed for: {}", preview))
+            }
+        }
+    }
+
+    /// Load the `the_coire.clp` library constructs into this environment.
+    ///
+    /// Called automatically by [`new`]. Safe to call again after [`clear`]
+    /// to restore the event API. Each call re-builds all constructs.
+    pub fn load_coire_library(&mut self) -> Result<(), String> {
+        let source = include_str!("../../../clp-lib/the_coire.clp");
+        for construct in split_clips_constructs(source) {
+            self.build(&construct)
+                .map_err(|e| format!("load_coire_library: {}", e))?;
+        }
+        log::debug!("the_coire CLIPS library loaded for session {}", self.session_id);
+        Ok(())
+    }
+
+    /// Poll the Coire mailbox and dispatch all pending events into this environment.
+    ///
+    /// Dispatch rules:
+    /// - `"assert"` events → `(assert <data>)` — data must be valid CLIPS fact syntax
+    /// - `"goal"` events   → `<data>` is eval'd directly as a CLIPS expression
+    /// - all other types   → asserted as `(coire-event ...)` template facts, then `(run)`
+    ///
+    /// Returns the number of events that were pending (and dispatched).
+    pub fn consume_coire_events(&mut self) -> Result<usize, String> {
+        let before = clara_coire::global()
+            .count_pending(self.session_id)
+            .map_err(|e| e.to_string())?;
+
+        let events = clara_coire::global()
+            .poll_pending(self.session_id)
+            .map_err(|e| e.to_string())?;
+
+        for event in events {
+            let ev_type = event.payload
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let data = event.payload
+                .get("data")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            match ev_type.as_str() {
+                "assert" => {
+                    if let Err(e) = self.eval(&format!("(assert {})", data)) {
+                        log::warn!("consume_coire_events: assert failed: {}", e);
+                    }
+                }
+                "goal" => {
+                    if let Err(e) = self.eval(&data) {
+                        log::warn!("consume_coire_events: goal eval failed: {}", e);
+                    }
+                }
+                _ => {
+                    // Assert as (coire-event ...) template fact for rule-based dispatch
+                    let escaped = data.replace('\\', "\\\\").replace('"', "\\\"");
+                    let assert_str = format!(
+                        r#"(assert (coire-event (event-id "{}") (origin "{}") (ev-type "{}") (data "{}")))"#,
+                        event.event_id, event.origin, ev_type, escaped
+                    );
+                    if let Err(e) = self.eval(&assert_str) {
+                        log::warn!("consume_coire_events: coire-event assert failed: {}", e);
+                    } else {
+                        self.eval("(run)").ok();
+                    }
+                }
+            }
+        }
+
+        Ok(before)
+    }
+
     /// Reset the CLIPS environment
     pub fn reset(&mut self) -> Result<(), String> {
         unsafe {
@@ -167,6 +281,80 @@ impl Drop for ClipsEnvironment {
 unsafe impl Send for ClipsEnvironment {}
 unsafe impl Sync for ClipsEnvironment {}
 
+/// Parse a CLIPS source string into individual top-level construct strings.
+///
+/// Handles:
+/// - `;` line comments
+/// - quoted strings (skips content, handles `\"` escapes)
+/// - balanced parentheses to find construct boundaries
+fn split_clips_constructs(source: &str) -> Vec<String> {
+    let mut constructs = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start: Option<usize> = None;
+    let mut in_string = false;
+    let mut in_comment = false;
+    let bytes = source.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if in_comment {
+            if b == b'\n' {
+                in_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_string {
+            match b {
+                b'\\' if i + 1 < bytes.len() => {
+                    // skip escaped character
+                    i += 2;
+                    continue;
+                }
+                b'"' => {
+                    in_string = false;
+                }
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b';' => {
+                in_comment = true;
+            }
+            b'"' => {
+                in_string = true;
+            }
+            b'(' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start.take() {
+                        let construct = source[s..=i].trim().to_string();
+                        if !construct.is_empty() {
+                            constructs.push(construct);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    constructs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +385,27 @@ mod tests {
         let mut env = ClipsEnvironment::new().expect("Failed to create environment");
         let result = env.clear();
         assert!(result.is_ok(), "Should clear environment successfully");
+    }
+
+    #[test]
+    fn test_session_id_set() {
+        let env = ClipsEnvironment::new().expect("Failed to create environment");
+        let id = env.session_id();
+        assert_ne!(id, Uuid::nil(), "Session ID should not be nil");
+    }
+
+    #[test]
+    fn test_split_clips_constructs() {
+        let src = r#"
+; a comment
+(defglobal ?*foo* = "")
+; another comment
+(deffunction bar () (+ 1 2))
+"#;
+        let constructs = split_clips_constructs(src);
+        assert_eq!(constructs.len(), 2);
+        assert!(constructs[0].starts_with("(defglobal"));
+        assert!(constructs[1].starts_with("(deffunction"));
     }
 
     #[test]
