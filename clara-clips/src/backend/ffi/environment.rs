@@ -147,11 +147,13 @@ impl ClipsEnvironment {
         unsafe {
             let c_str = CString::new(construct)
                 .map_err(|e| format!("Invalid construct string: {}", e))?;
-            if bindings::Build(self.env, c_str.as_ptr()) {
+            // Build returns BuildError: 0 = BE_NO_ERROR (success), non-zero = failure
+            let result = bindings::Build(self.env, c_str.as_ptr());
+            if result == 0 {
                 Ok(())
             } else {
                 let preview = &construct[..construct.len().min(80)];
-                Err(format!("CLIPS Build failed for: {}", preview))
+                Err(format!("CLIPS Build failed (code {}) for: {}", result, preview))
             }
         }
     }

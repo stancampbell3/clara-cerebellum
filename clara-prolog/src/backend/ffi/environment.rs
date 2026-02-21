@@ -49,43 +49,59 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
 
         let init_result = unsafe { PL_initialise(argc, argv_ptrs.as_mut_ptr()) };
 
-        if init_result != 0 {
-            log::info!("SWI-Prolog initialized successfully");
+        if init_result == 0 {
+            log::error!("Failed to initialize SWI-Prolog");
+            return Err("PL_initialise returned 0".to_string());
+        }
 
-            // Autoload JSON libraries so predicates are globally available.
-            // json: atom_json_dict/3, json_read/write etc. (patched with pure-Prolog fallbacks)
-            // json_convert: prolog_to_json/2, json_to_prolog/2, json_object declarations
-            unsafe {
-                let json_goal = CString::new("use_module(library(http/json))").unwrap();
-                let json_term = PL_new_term_ref();
-                if PL_chars_to_term(json_goal.as_ptr(), json_term) != 0 {
-                    if PL_call(json_term, std::ptr::null_mut()) != 0 {
-                        log::info!("JSON library (http/json) loaded successfully");
-                    } else {
-                        log::warn!("Failed to load JSON library (http/json) — JSON predicates may be unavailable");
-                    }
-                } else {
-                    log::warn!("Failed to parse JSON library load goal");
-                }
+        log::info!("SWI-Prolog initialized successfully");
 
-                let json_convert_goal = CString::new("use_module(library(http/json_convert))").unwrap();
-                let json_convert_term = PL_new_term_ref();
-                if PL_chars_to_term(json_convert_goal.as_ptr(), json_convert_term) != 0 {
-                    if PL_call(json_convert_term, std::ptr::null_mut()) != 0 {
-                        log::info!("JSON convert library (http/json_convert) loaded successfully");
+        // All PL_call() invocations below run in the initializing thread, which
+        // owns the main Prolog engine after PL_initialise(). This is the ONLY safe
+        // place to call PL_call() globally — other threads may not have an active
+        // engine and would SIGSEGV if they called PL_call() outside a with_engine block.
+
+        unsafe {
+            // Load JSON libraries
+            for goal_str in &[
+                "use_module(library(http/json))",
+                "use_module(library(http/json_convert))",
+            ] {
+                let goal = CString::new(*goal_str).unwrap();
+                let term = PL_new_term_ref();
+                if PL_chars_to_term(goal.as_ptr(), term) != 0 {
+                    if PL_call(term, std::ptr::null_mut()) != 0 {
+                        log::info!("{} loaded successfully", goal_str);
                     } else {
-                        log::warn!("Failed to load JSON convert library (http/json_convert) — json_convert predicates may be unavailable");
+                        log::warn!("Failed to load {} — predicates may be unavailable", goal_str);
                     }
-                } else {
-                    log::warn!("Failed to parse JSON convert library load goal");
                 }
             }
-
-            Ok(())
-        } else {
-            log::error!("Failed to initialize SWI-Prolog");
-            Err("PL_initialise returned 0".to_string())
         }
+
+        // Register foreign predicates while we own the main engine.
+        // Both register_* functions are idempotent (OnceLock) so it is safe to
+        // call them again later from new(); they will just return the cached result.
+        super::callbacks::register_clara_evaluate();
+        super::coire_bridge::register_coire_predicates();
+
+        // Load the_coire.pl now that its foreign predicates are registered.
+        // Must happen here (in the main-engine thread) not in a separate OnceLock
+        // that might execute from a worker thread with no engine context.
+        unsafe {
+            let goal = CString::new("use_module(library(the_coire))").unwrap();
+            let term = PL_new_term_ref();
+            if PL_chars_to_term(goal.as_ptr(), term) != 0 {
+                if PL_call(term, std::ptr::null_mut()) != 0 {
+                    log::info!("the_coire library loaded");
+                } else {
+                    log::warn!("Failed to load library(the_coire)");
+                    return Err("Failed to load library(the_coire)".to_string());
+                }
+            }
+        }
+
+        Ok(())
     });
 
     result.clone().map_err(PrologError::InitializationFailed)
@@ -99,31 +115,12 @@ pub fn is_prolog_initialized() -> bool {
         .unwrap_or(false)
 }
 
-/// Tracks whether `the_coire` library has been loaded into the Prolog system.
-///
-/// Separate from `INIT_RESULT` because foreign predicates (`coire_emit/3` etc.)
-/// must be registered BEFORE `use_module(library(the_coire))` is called.
-static COIRE_LIB_LOADED: OnceLock<Result<(), String>> = OnceLock::new();
-
 /// Load `library(the_coire)` into the global Prolog system.
 ///
-/// Must be called AFTER `register_coire_predicates()` so that the foreign
-/// predicates used by `the_coire.pl` are already registered. Safe to call
-/// multiple times — subsequent calls are no-ops.
+/// This is a no-op: the library is loaded as part of `ensure_prolog_initialized()`.
+/// Kept as a public API for callers that call it explicitly (e.g., `init_global()`).
 pub fn load_coire_library() -> PrologResult<()> {
-    let result = COIRE_LIB_LOADED.get_or_init(|| unsafe {
-        let goal = CString::new("use_module(library(the_coire))").unwrap();
-        let term = PL_new_term_ref();
-        if PL_chars_to_term(goal.as_ptr(), term) != 0
-            && PL_call(term, std::ptr::null_mut()) != 0
-        {
-            log::info!("the_coire library loaded");
-            Ok(())
-        } else {
-            Err("Failed to load library(the_coire)".to_string())
-        }
-    });
-    result.clone().map_err(PrologError::InitializationFailed)
+    ensure_prolog_initialized()
 }
 
 /// Safe wrapper around a SWI-Prolog Engine
@@ -159,14 +156,10 @@ impl PrologEnvironment {
     /// The engine is seeded with a `thread_local` `coire_session_id/1` fact
     /// so that `the_coire` predicates know which session they belong to.
     pub fn new() -> PrologResult<Self> {
+        // ensure_prolog_initialized() handles all one-time global setup:
+        // PL_initialise, JSON libraries, foreign predicate registration,
+        // and the_coire library loading — all in the safe main-engine thread.
         ensure_prolog_initialized()?;
-
-        // Register callbacks (idempotent via OnceLock)
-        super::callbacks::register_clara_evaluate();
-        super::coire_bridge::register_coire_predicates();
-
-        // Load the_coire.pl AFTER foreign predicates are registered (idempotent)
-        load_coire_library()?;
 
         let session_id = Uuid::new_v4();
 

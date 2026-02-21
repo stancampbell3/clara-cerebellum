@@ -102,8 +102,8 @@ extern "C" {
 
     /// Build (compile) a single construct definition string into the environment.
     /// Handles defglobal, deftemplate, deffunction, defrule, etc.
-    /// Returns true on success.
-    pub fn Build(env: *mut Environment, build_string: *const c_char) -> bool;
+    /// Returns BuildError enum: 0 = BE_NO_ERROR (success), non-zero = failure.
+    pub fn Build(env: *mut Environment, build_string: *const c_char) -> c_int;
 }
 
 #[cfg(test)]
