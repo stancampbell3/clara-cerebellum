@@ -1,17 +1,33 @@
 use actix_web::{web, HttpResponse};
 use clara_session::SessionManager;
 use crate::subprocess::SubprocessPool;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::AtomicBool;
+use uuid::Uuid;
+use clara_cycle::{CycleStatus, DeductionResult};
 
 use crate::models::{
     ApiError, CreateSessionRequest, SaveSessionRequest, ResourceInfo, SessionResponse,
     TerminateResponse, LoadRulesRequest, LoadFactsRequest, RunRequest, RunResponse, QueryFactsResponse
 };
 
+/// In-flight or completed deduction run tracked in `AppState::deductions`.
+pub struct DeductionEntry {
+    pub status:            CycleStatus,
+    pub result:            Option<DeductionResult>,
+    pub cycles:            u32,
+    pub interrupt:         Arc<AtomicBool>,
+    pub created_at:        std::time::Instant,
+}
+
 /// Application state
 #[derive(Clone)]
 pub struct AppState {
     pub session_manager: SessionManager,
     pub subprocess_pool: SubprocessPool,
+    /// Map of deduction_id → entry for all active / completed deductions.
+    pub deductions: Arc<RwLock<HashMap<Uuid, DeductionEntry>>>,
 }
 
 /// Convert a clara-session::Session to API SessionResponse

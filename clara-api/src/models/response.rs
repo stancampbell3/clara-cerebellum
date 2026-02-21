@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Session response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +121,30 @@ pub struct PrologQueryResponse {
     pub success: bool,
     /// Execution time in milliseconds
     pub runtime_ms: u64,
+}
+
+/// Response for POST /deduce — deduction accepted and running asynchronously.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeduceStartResponse {
+    pub deduction_id: Uuid,
+    pub status: String,
+}
+
+/// Response for GET /deduce/{id} — current state of a deduction run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeduceStatusResponse {
+    pub deduction_id: Uuid,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    pub cycles: u32,
+}
+
+/// Response for DELETE /deduce/{id} — confirms interrupt was requested.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeduceInterruptResponse {
+    pub deduction_id: Uuid,
+    pub status: String,
 }
 
 #[cfg(test)]

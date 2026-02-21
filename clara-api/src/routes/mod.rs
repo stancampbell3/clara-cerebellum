@@ -3,6 +3,8 @@ pub mod health;
 pub mod metrics;
 pub mod eval;
 pub mod devils;
+pub mod deduce;
+pub mod coire;
 
 use actix_web::web;
 
@@ -35,5 +37,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/devils/sessions/{session_id}", web::delete().to(devils::terminate_prolog_session))
             .route("/devils/sessions/{session_id}/query", web::post().to(devils::query_prolog))
             .route("/devils/sessions/{session_id}/consult", web::post().to(devils::consult_prolog))
+            // Deduction cycle routes
+            .route("/deduce",          web::post().to(deduce::start_deduce))
+            .route("/deduce/{id}",     web::get().to(deduce::poll_deduce))
+            .route("/deduce/{id}",     web::delete().to(deduce::interrupt_deduce))
+            // Coire observability / push hooks
+            .route("/cycle/coire/snapshot", web::get().to(coire::snapshot))
+            .route("/cycle/coire/push",     web::post().to(coire::push))
     );
 }

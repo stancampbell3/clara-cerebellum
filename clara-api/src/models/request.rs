@@ -99,6 +99,32 @@ pub struct PrologConsultRequest {
     pub clauses: Vec<String>,
 }
 
+/// Request to start a new deduction cycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeduceRequest {
+    /// Prolog clauses (facts and rules) to seed the Prolog engine.
+    #[serde(default)]
+    pub prolog_clauses: Vec<String>,
+    /// CLIPS constructs (`defrule`, `deftemplate`, etc.) to seed the CLIPS engine.
+    #[serde(default)]
+    pub clips_constructs: Vec<String>,
+    /// Optional Prolog goal to execute on the first cycle.
+    #[serde(default)]
+    pub initial_goal: Option<String>,
+    /// Maximum number of Prolog↔CLIPS cycles before aborting (default: 100).
+    #[serde(default)]
+    pub max_cycles: Option<u32>,
+}
+
+/// Request body for the Coire push endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoirePushRequest {
+    pub session_id:  uuid::Uuid,
+    pub origin:      String,
+    pub event_type:  String,
+    pub data:        String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,8 @@ use actix_web::{web, App, HttpServer};
 use clara_session::{SessionManager, ManagerConfig};
 use clara_config::ConfigLoader;
 use log::info;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use crate::handlers::AppState;
 use crate::routes;
@@ -41,6 +43,7 @@ pub async fn start_server(
     let app_state = web::Data::new(AppState {
         session_manager,
         subprocess_pool,
+        deductions: Arc::new(RwLock::new(HashMap::new())),
     });
 
     // Create and start server
@@ -70,6 +73,7 @@ mod tests {
         let state = AppState {
             session_manager: manager,
             subprocess_pool: pool,
+            deductions: Arc::new(RwLock::new(HashMap::new())),
         };
         // Just verify it can be created
         let _cloned = state.clone();

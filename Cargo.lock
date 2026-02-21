@@ -992,6 +992,7 @@ dependencies = [
  "clara-coire",
  "clara-config",
  "clara-core",
+ "clara-cycle",
  "clara-prolog",
  "clara-session",
  "clara-toolbox",
@@ -1057,6 +1058,20 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.17",
  "tokio",
+]
+
+[[package]]
+name = "clara-cycle"
+version = "0.1.0"
+dependencies = [
+ "clara-clips",
+ "clara-coire",
+ "clara-prolog",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "uuid",
 ]
 
 [[package]]
