@@ -122,7 +122,7 @@ impl ClipsTranspiler {
             }
             Expression::AgentCall(ac) => {
                 // Agent calls become function calls in CLIPS
-                format!("({}.{}", ac.agent, ac.method)
+                format!("({}.{})", ac.agent, ac.method)
             }
             Expression::MessageSend(lhs, rhs) => {
                 format!("(send {} {})",
