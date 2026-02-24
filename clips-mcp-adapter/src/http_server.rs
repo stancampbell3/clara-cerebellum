@@ -1,6 +1,6 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
@@ -84,6 +84,33 @@ async fn message_handler(
     StatusCode::ACCEPTED.into_response()
 }
 
+async fn mcp_handler(
+    State(state): State<AppState>,
+    body: String,
+) -> Response {
+    let request: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response();
+        }
+    };
+
+    let response = state.server.handle_json(request).await;
+    match serde_json::to_string(&response) {
+        Ok(s) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            s,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Serialization error: {}", e),
+        )
+            .into_response(),
+    }
+}
+
 async fn health_handler() -> &'static str {
     "ok"
 }
@@ -95,13 +122,14 @@ pub async fn run(server: Arc<McpServer>, port: u16) -> anyhow::Result<()> {
     };
 
     let app = Router::new()
+        .route("/mcp", post(mcp_handler))
         .route("/sse", get(sse_handler))
         .route("/message", post(message_handler))
         .route("/health", get(health_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
-    info!("SSE MCP server listening on 0.0.0.0:{}", port);
+    info!("MCP server listening on 0.0.0.0:{}", port);
     axum::serve(listener, app).await?;
     Ok(())
 }

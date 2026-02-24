@@ -183,7 +183,7 @@ impl FrontDeskAgent {
         Ok((next_state, action))
     }
 
-    fn assert_context(&self, intent: &str) -> Result<(), Box<dyn std::error::Error>> {
+    fn assert_context(&self, _intent: &str) -> Result<(), Box<dyn std::error::Error>> {
        /* let clauses = vec![
             format!(
                 "conversation_context(session, turn_count, {}).",

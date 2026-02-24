@@ -47,8 +47,9 @@ POST /deduce
  │     • same mechanism in reverse                          │
  │                                                          │
  │  6. Convergence check                                    │
- │     • both Coire mailboxes empty                         │
- │     • CLIPS agenda empty                                 │
+ │     • Prolog's Coire mailbox has zero pending events     │
+ │     • CLIPS's Coire mailbox has zero pending events      │
+ │     • CLIPS agenda empty (no rules ready to fire)        │
  │     • pending-event snapshot unchanged from last cycle   │
  │     → if all four true: CONVERGED, exit loop             │
  │                                                          │
@@ -99,9 +100,19 @@ at the end of a cycle:
 Condition 4 guards against a pathological case where rules continuously produce
 and consume events at equilibrium without making forward progress.
 
+### Prolog goal failure is non-fatal
+
+If `query_once` returns an error (e.g. the goal fails, throws, or causes a
+stack overflow), the cycle logs a `WARN` and continues. Only Coire or session
+creation errors propagate as a fatal `CycleError`.
+
 ---
 
 ## API Reference
+
+> **Important:** All `POST` requests to `/deduce` and `/cycle/coire/push` must
+> include the header `Content-Type: application/json`. Without it actix-web's
+> JSON extractor will reject the request with `400 Bad Request`.
 
 ### `POST /deduce` — start a deduction run
 
@@ -122,8 +133,20 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 |-------|------|---------|-------------|
 | `prolog_clauses` | `string[]` | `[]` | Standard Prolog clause syntax (periods included). Loaded via `consult_string`. |
 | `clips_constructs` | `string[]` | `[]` | CLIPS `deftemplate`, `defrule`, `defglobal`, etc. Each string is passed to `Build`. |
-| `initial_goal` | `string \| null` | `null` | Prolog goal executed on cycle 0 only. Omit to run a no-op (`true`). |
+| `initial_goal` | `string \| null` | `null` | Prolog goal executed on cycle 0 only. Omit or set to `null` to run a no-op (`true`). |
 | `max_cycles` | `uint \| null` | `100` | Cycle budget. Exhausting it without convergence results in `error` status. |
+
+All fields are optional. An empty body `{}` is valid and will run a single
+no-op cycle that converges immediately.
+
+**Minimal smoke test**
+
+```bash
+curl -s -X POST http://localhost:8080/deduce \
+  -H 'Content-Type: application/json' \
+  -d '{}' | jq .
+# → { "deduction_id": "<uuid>", "status": "running" }
+```
 
 **Response** `202 Accepted`
 
@@ -138,7 +161,20 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 
 ### `GET /deduce/{deduction_id}` — poll status
 
-**Response** `200 OK`
+**Response while running** `200 OK`
+
+```json
+{
+  "deduction_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status":       "running",
+  "cycles":       0
+}
+```
+
+The `result` field is absent while the run is still executing. `cycles` reflects
+the count completed so far (starts at `0`).
+
+**Response when converged** `200 OK`
 
 ```json
 {
@@ -148,21 +184,64 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
   "result": {
     "status":            "Converged",
     "cycles":            3,
-    "prolog_session_id": "...",
-    "clips_session_id":  "..."
+    "prolog_session_id": "a1b2c3d4-...",
+    "clips_session_id":  "e5f6a7b8-..."
   }
 }
 ```
 
-| `status` | Meaning |
-|----------|---------|
-| `running` | Cycle is still executing. |
-| `converged` | Both engines reached stable state — this is the happy path. |
-| `interrupted` | `DELETE /deduce/{id}` was called; run stopped at next cycle boundary. |
-| `error: <msg>` | Prolog/CLIPS exception, Coire failure, or `max_cycles` exceeded. |
+Note: `status` at the top level is a lowercase display string (`"converged"`).
+`result.status` is the serialised Rust enum variant name (`"Converged"`).
 
-The `result` field is absent while the run is still `running`. It appears
-alongside `converged` or `interrupted` status.
+**Response when interrupted** `200 OK`
+
+```json
+{
+  "deduction_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status":       "interrupted",
+  "cycles":       7,
+  "result": {
+    "status":            "Interrupted",
+    "cycles":            7,
+    "prolog_session_id": "a1b2c3d4-...",
+    "clips_session_id":  "e5f6a7b8-..."
+  }
+}
+```
+
+`result` may be temporarily absent immediately after `DELETE /deduce/{id}` is
+called — the interrupt flag is set optimistically and `result` is populated once
+the background task actually exits.
+
+**Response when error** `200 OK`
+
+```json
+{
+  "deduction_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status":       "error: Max cycles (100) exceeded without convergence",
+  "cycles":       100
+}
+```
+
+`result` is **absent** for error status. The `status` string prefix matches the
+underlying `CycleError` variant:
+
+| Error prefix | Cause |
+|---|---|
+| `error: Max cycles (N) exceeded without convergence` | Cycle budget exhausted |
+| `error: Prolog error: …` | Exception from the Prolog engine |
+| `error: CLIPS error: …` | Exception from the CLIPS engine |
+| `error: Coire error: …` | Coire mailbox failure |
+| `error: Session creation failed: …` | Engine initialisation failure |
+
+**Status values summary**
+
+| `status` | Terminal? | `result` present? | Meaning |
+|----------|-----------|-------------------|---------|
+| `running` | No | No | Background task is active. |
+| `converged` | Yes | Yes | Both engines reached stable state — happy path. |
+| `interrupted` | Yes | Yes (once task exits) | Cancelled via `DELETE /deduce/{id}`. |
+| `error: <msg>` | Yes | No | Unrecoverable failure or `max_cycles` exceeded. |
 
 **Response** `404 Not Found` — unknown `deduction_id`.
 
@@ -171,8 +250,8 @@ alongside `converged` or `interrupted` status.
 ### `DELETE /deduce/{deduction_id}` — interrupt a running deduction
 
 Sets an atomic interrupt flag. The background task checks it at the end of every
-cycle and exits cleanly. Status transitions to `interrupted` immediately in the
-response; the background task will confirm this when it next checks the flag.
+cycle and exits cleanly. Status transitions to `interrupted` optimistically in
+the response; `result` is populated once the background task confirms.
 
 **Response** `200 OK`
 
@@ -189,9 +268,9 @@ response; the background task will confirm this when it next checks the flag.
 
 ### `GET /cycle/coire/snapshot` — observe Coire state
 
-Returns pending event counts for all Coire sessions that belong to completed
-deduction results. Useful for debugging relay behaviour and verifying events
-were consumed.
+Returns pending event counts for the Coire sessions of **converged or
+interrupted** deduction runs. Error runs are excluded because their
+`DeductionResult` is never stored. Useful for debugging relay behaviour.
 
 **Response** `200 OK`
 
@@ -205,7 +284,8 @@ were consumed.
 ```
 
 `pending_count` will be `0` for a converged run — all events were consumed.
-A non-zero count after convergence would indicate a bug in the relay.
+A non-zero count after convergence indicates events that were never consumed —
+a signal that a rule or predicate failed silently.
 
 ---
 
@@ -214,11 +294,11 @@ A non-zero count after convergence would indicate a bug in the relay.
 Write a synthetic event directly into a Coire session. The receiving engine
 will pick it up via `consume_coire_events()` on its next cycle pass.
 
-**Request body**
+**Request body** (`application/json`)
 
 ```json
 {
-  "session_id":  "<uuid of prolog or clips session>",
+  "session_id":  "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6",
   "origin":      "external-test",
   "event_type":  "assert",
   "data":        "(person (name \"Alice\") (age 30))"
@@ -229,8 +309,8 @@ will pick it up via `consume_coire_events()` on its next cycle pass.
 |-------|-------------|
 | `session_id` | UUID from a `DeductionResult` (`prolog_session_id` or `clips_session_id`). |
 | `origin` | Free-form label for the event source. |
-| `event_type` | `"assert"` → `(assert <data>)` in CLIPS; `"goal"` → eval `<data>` directly; anything else → asserts a `(coire-event ...)` template fact. |
-| `data` | Payload string; interpretation depends on `event_type`. |
+| `event_type` | Stored in the event payload as `"type"`; interpretation is up to the engine's `consume_coire_events` logic. |
+| `data` | Payload string stored as `"data"` in the event. |
 
 **Response** `200 OK`
 
@@ -292,26 +372,35 @@ Cycle 0:
 
 ## Walkthrough: cancel a long-running deduction
 
+To demonstrate cancellation, seed a CLIPS rule that continuously re-asserts
+events so the cycle never converges:
+
 ```bash
-# Start a long deduction
+# Start a non-converging deduction
 ID=$(curl -s -X POST http://localhost:8080/deduce \
   -H 'Content-Type: application/json' \
-  -d '{ "prolog_clauses": ["loop :- loop."], "initial_goal": "loop", "max_cycles": 9999 }' \
-  | jq -r .deduction_id)
+  -d '{
+    "clips_constructs": [
+      "(defrule always-fire => (assert (tick)))"
+    ],
+    "max_cycles": 9999
+  }' | jq -r .deduction_id)
 
 # Cancel it
 curl -s -X DELETE http://localhost:8080/deduce/$ID | jq .
-# → { "status": "interrupted" }
+# → { "deduction_id": "...", "status": "interrupted" }
 
 # Confirm
 curl -s http://localhost:8080/deduce/$ID | jq .status
 # → "interrupted"
 ```
 
-Note: the `loop` goal would cause Prolog to fail on the first pass (stack
-overflow or time-out at the SWI-Prolog level), but the interrupt mechanism works
-correctly for any long-running CLIPS inference or deeply recursive goal that
-exceeds its cycle budget.
+> **Note on `initial_goal`:** The initial goal only executes on cycle 0. Goals
+> that would recurse infinitely (e.g. `loop :- loop.`) cause the Prolog engine
+> to fail or overflow on that one call; the error is logged as a `WARN` and the
+> cycle continues normally. To produce a genuinely long-running deduction for
+> cancellation testing, use CLIPS rules that keep generating facts (as above)
+> rather than a recursive Prolog goal.
 
 ---
 
@@ -343,17 +432,17 @@ There is no WebSocket or long-poll for deduction results yet. Poll
 
 ### Observe via snapshot
 
-`GET /cycle/coire/snapshot` shows post-run Coire state. A fully-converged run
-should show `pending_count: 0` for both sessions. Non-zero counts after
-convergence indicate events that were never consumed — a useful signal that a
-rule or predicate failed silently.
+`GET /cycle/coire/snapshot` shows post-run Coire state for converged and
+interrupted runs (error runs are excluded). A fully-converged run should show
+`pending_count: 0` for both sessions. Non-zero counts after convergence indicate
+events that were never consumed — a useful signal that a rule or predicate failed
+silently.
 
 ### Inject events for testing
 
 `POST /cycle/coire/push` lets you write events into a session's mailbox outside
 of a running deduction. This is useful for:
-- Unit-testing CLIPS rules in isolation by injecting synthetic `(coire-event …)`
-  facts.
+- Unit-testing CLIPS rules in isolation by injecting synthetic events.
 - Exploring how CLIPS reacts to specific event payloads before wiring up the
   full Prolog side.
 - Simulating LilDaemon/LilDevil output ahead of the evaluator-pass integration.
@@ -366,6 +455,12 @@ integration lands, this step will invoke registered CycleMember LilDaemons
 (LLM-based) and LilDevils (logic-based) between the Prolog and CLIPS passes,
 allowing neural and symbolic reasoning to interleave within a single cycle.
 
+### Debug logging
+
+Run the server with `RUST_LOG=debug` to see per-cycle trace output from the
+controller, including convergence check details and relay counts. The Logger
+middleware also emits an `INFO` line per HTTP request.
+
 ---
 
 ## Status reference
@@ -375,4 +470,4 @@ allowing neural and symbolic reasoning to interleave within a single cycle.
 | `running` | No | Background task is active. |
 | `converged` | Yes | Both engines stable; deduction complete. |
 | `interrupted` | Yes | Cancelled via `DELETE /deduce/{id}`. |
-| `error: <msg>` | Yes | Unrecoverable failure (exception, panic, or `max_cycles` exceeded). |
+| `error: <msg>` | Yes | Unrecoverable failure (see error prefix table above). |

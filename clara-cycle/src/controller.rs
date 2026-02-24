@@ -48,21 +48,32 @@ impl CycleController {
             log::debug!("CycleController: cycle {}", cycle);
 
             // 1. Prolog pass — consume Coire events + run goal
+            log::debug!("Prolog pass");
             self.prolog_pass(cycle)?;
+            log::debug!("... prolog pass complete");
 
             // 2. Relay Prolog → CLIPS
+            log::debug!("Relay Prolog → CLIPS");
             relay_prolog_to_clips(&mut self.session)?;
+            log::debug!("... relay clips complete");
 
             // 3. Evaluator pass (structural stub — no LLM/FieryPit yet)
+            log::debug!("Evaluator pass");
             self.evaluator_pass();
+            log::debug!("... evaluator pass complete");
 
             // 4. CLIPS pass — consume Coire events + run inference engine
+            log::debug!("CLIPS pass");
             self.clips_pass()?;
+            log::debug!("... CLIPS pass complete");
 
             // 5. Relay CLIPS → Prolog
+            log::debug!("Relay CLIPS → Prolog");
             relay_clips_to_prolog(&mut self.session)?;
+            log::debug!("... relay prolog complete");
 
             // 6. Convergence check
+            log::debug!("Convergence check");
             let curr_snapshot = self.snapshot();
             if self.has_converged(&prev_snapshot, &curr_snapshot) {
                 log::info!("CycleController: converged after {} cycle(s)", cycle + 1);
@@ -72,10 +83,13 @@ impl CycleController {
                     prolog_session_id: self.session.prolog_id,
                     clips_session_id:  self.session.clips_id,
                 });
+            } else {
+                log::debug!("... not converged yet");
             }
             prev_snapshot = curr_snapshot;
 
             // 7. Interrupt check
+            log::debug!("Interrupt check");
             if self.interrupt.load(Ordering::SeqCst) {
                 log::info!("CycleController: interrupted after {} cycle(s)", cycle + 1);
                 return Ok(DeductionResult {
@@ -84,9 +98,14 @@ impl CycleController {
                     prolog_session_id: self.session.prolog_id,
                     clips_session_id:  self.session.clips_id,
                 });
+            } else {
+                log::debug!("... no interrupt signal");
             }
         }
-
+        log::warn!(
+            "CycleController: max cycles exceeded ({} cycles) without convergence",
+            self.max_cycles
+        );
         Err(CycleError::MaxCyclesExceeded(self.max_cycles))
     }
 
