@@ -471,3 +471,70 @@ middleware also emits an `INFO` line per HTTP request.
 | `converged` | Yes | Both engines stable; deduction complete. |
 | `interrupted` | Yes | Cancelled via `DELETE /deduce/{id}`. |
 | `error: <msg>` | Yes | Unrecoverable failure (see error prefix table above). |
+
+---
+
+## Source code index
+
+File paths are relative to the workspace root. Line numbers reference the
+function or type definition start.
+
+### Pre-cycle setup
+
+| Topic | File : line | Function / symbol |
+|---|---|---|
+| Create engine pair | `clara-cycle/src/session.rs:21` | `DeductionSession::new()` |
+| Seed Prolog clauses | `clara-cycle/src/session.rs:33` | `DeductionSession::seed_prolog()` |
+| — load via `consult_string` | `clara-prolog/src/backend/ffi/environment.rs:296` | `PrologEnvironment::consult_string()` |
+| Seed CLIPS constructs | `clara-cycle/src/session.rs:45` | `DeductionSession::seed_clips()` |
+| — compile via `build` | `clara-clips/src/backend/ffi/environment.rs:146` | `ClipsEnvironment::build()` |
+| Construct the controller | `clara-cycle/src/controller.rs:24` | `CycleController::new()` |
+| Start the cycle loop | `clara-cycle/src/controller.rs:38` | `CycleController::run()` |
+
+### Cycle steps 1–7
+
+| Step | Topic | File : line | Function / symbol |
+|---|---|---|---|
+| **1** | Prolog pass (dispatcher) | `clara-cycle/src/controller.rs:116` | `CycleController::prolog_pass()` |
+| 1a | Consume Coire events — Rust side | `clara-prolog/src/backend/ffi/environment.rs:209` | `PrologEnvironment::consume_coire_events()` |
+| 1a | Dispatch events — Prolog side | `clara-prolog/prolog-lib/the_coire.pl:32` | `coire_consume/0` |
+| 1a | Publish events from Prolog rules | `clara-prolog/prolog-lib/the_coire.pl:21` | `coire_publish/2` (+ `_assert/1`, `_retract/1`, `_goal/1`) |
+| 1b | Execute goal (`initial_goal` or `"true"`) | `clara-prolog/src/backend/ffi/environment.rs:236` | `PrologEnvironment::query_once()` |
+| **2** | Relay Prolog → CLIPS | `clara-cycle/src/relay.rs:13` | `relay_prolog_to_clips()` |
+| **3** | Evaluator pass (stub) | `clara-cycle/src/controller.rs:136` | `CycleController::evaluator_pass()` |
+| **4** | CLIPS pass (dispatcher) | `clara-cycle/src/controller.rs:142` | `CycleController::clips_pass()` |
+| 4a | Consume Coire events — Rust side | `clara-clips/src/backend/ffi/environment.rs:183` | `ClipsEnvironment::consume_coire_events()` |
+| 4a | Event type dispatch (`assert` / `goal` / other) | `clara-clips/src/backend/ffi/environment.rs:204` | `match ev_type.as_str()` in `consume_coire_events` |
+| 4a | `(coire-event …)` template definition | `clara-clips/clp-lib/the_coire.clp:37` | `(deftemplate coire-event ...)` |
+| 4b | Run inference engine to saturation | `clara-clips/src/backend/ffi/environment.rs:87` | `ClipsEnvironment::eval()` called with `"(run)"` |
+| **5** | Relay CLIPS → Prolog | `clara-cycle/src/relay.rs:34` | `relay_clips_to_prolog()` |
+| **6** | Convergence check | `clara-cycle/src/controller.rs:169` | `CycleController::has_converged()` |
+| 6a | Per-cycle snapshot (conditions 1 & 2) | `clara-cycle/src/controller.rs:159` | `CycleController::snapshot()` |
+| 6a | Snapshot type | `clara-cycle/src/result.rs:34` | `CoireSnapshot` |
+| 6b | CLIPS agenda empty check (condition 3) | `clara-cycle/src/controller.rs:172` | `clips.eval("(= (length$ (get-agenda)) 0)")` |
+| 6c | Snapshot stability check (condition 4) | `clara-cycle/src/controller.rs:178` | `prev == curr` in `has_converged` |
+| **7** | Interrupt check | `clara-cycle/src/controller.rs:93` | `interrupt.load(Ordering::SeqCst)` in `run` |
+| 7 | Set interrupt flag via HTTP | `clara-api/src/handlers/deduce_handler.rs:116` | `interrupt_deduce()` |
+
+### Supporting types and errors
+
+| Symbol | File : line | Notes |
+|---|---|---|
+| `CycleStatus` | `clara-cycle/src/result.rs:6` | `Running \| Converged \| Interrupted \| Error(String)` |
+| `DeductionResult` | `clara-cycle/src/result.rs:26` | Returned by `run()`; stored in `DeductionEntry.result` |
+| `CoireSnapshot` | `clara-cycle/src/result.rs:34` | `prolog_pending` + `clips_pending` counts |
+| `CycleError` | `clara-cycle/src/error.rs:4` | All fatal error variants with `thiserror` Display strings |
+| `DeductionSession` | `clara-cycle/src/session.rs:12` | Holds `PrologEnvironment` + `ClipsEnvironment` + their UUIDs |
+| `CycleController` | `clara-cycle/src/controller.rs:14` | Owns the session; drives the loop |
+| `DeductionEntry` | `clara-api/src/handlers/session_handler.rs:16` | In-flight record stored in `AppState::deductions` |
+
+### HTTP handler wiring
+
+| Endpoint | File : line | Handler |
+|---|---|---|
+| `POST /deduce` | `clara-api/src/handlers/deduce_handler.rs:17` | `start_deduce()` |
+| `GET /deduce/{id}` | `clara-api/src/handlers/deduce_handler.rs:87` | `poll_deduce()` |
+| `DELETE /deduce/{id}` | `clara-api/src/handlers/deduce_handler.rs:116` | `interrupt_deduce()` |
+| `GET /cycle/coire/snapshot` | `clara-api/src/handlers/coire_handler.rs:12` | `snapshot()` |
+| `POST /cycle/coire/push` | `clara-api/src/handlers/coire_handler.rs:37` | `push()` |
+| Route registration | `clara-api/src/routes/mod.rs:41` | `.route("/deduce", …)` in `configure()` |
