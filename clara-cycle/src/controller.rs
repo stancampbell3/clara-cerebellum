@@ -43,13 +43,17 @@ impl CycleController {
         );
 
         let mut prev_snapshot = self.snapshot();
+        let mut initial_solutions: Option<serde_json::Value> = None;
 
         for cycle in 0..self.max_cycles {
             log::debug!("CycleController: cycle {}", cycle);
 
             // 1. Prolog pass — consume Coire events + run goal
             log::debug!("Prolog pass");
-            self.prolog_pass(cycle)?;
+            let solutions = self.prolog_pass(cycle)?;
+            if cycle == 0 {
+                initial_solutions = solutions;
+            }
             log::debug!("... prolog pass complete");
 
             // 2. Relay Prolog → CLIPS
@@ -82,6 +86,7 @@ impl CycleController {
                     cycles:            cycle + 1,
                     prolog_session_id: self.session.prolog_id,
                     clips_session_id:  self.session.clips_id,
+                    prolog_solutions:  initial_solutions,
                 });
             } else {
                 log::debug!("... not converged yet");
@@ -97,6 +102,7 @@ impl CycleController {
                     cycles:            cycle + 1,
                     prolog_session_id: self.session.prolog_id,
                     clips_session_id:  self.session.clips_id,
+                    prolog_solutions:  initial_solutions,
                 });
             } else {
                 log::debug!("... no interrupt signal");
@@ -113,24 +119,38 @@ impl CycleController {
     // Private helpers
     // -------------------------------------------------------------------------
 
-    fn prolog_pass(&mut self, cycle: u32) -> Result<(), CycleError> {
+    /// Run one Prolog pass.
+    ///
+    /// On cycle 0 the `initial_goal` is executed and **all** solutions are
+    /// collected with their variable bindings (e.g. `[{"Man": "stan"}]`).
+    /// On subsequent cycles only `true` is run to keep the engine ticking.
+    ///
+    /// Returns `Some(solutions)` on cycle 0, `None` on all later cycles.
+    fn prolog_pass(&mut self, cycle: u32) -> Result<Option<serde_json::Value>, CycleError> {
         // Dispatch any events waiting in Prolog's Coire mailbox.
         self.session.prolog.consume_coire_events()?;
 
-        // On the first cycle, execute the caller-supplied goal (or "true").
-        // On subsequent cycles, just tick with "true" so the engine is active.
-        let goal = if cycle == 0 {
-            self.initial_goal.clone().unwrap_or_else(|| "true".to_string())
+        if cycle == 0 {
+            let goal = self.initial_goal.clone().unwrap_or_else(|| "true".to_string());
+            let solutions = match self.session.prolog.query_with_bindings(&goal) {
+                Ok(json_str) => {
+                    log::debug!("CycleController: prolog_pass goal succeeded: {}", goal);
+                    serde_json::from_str::<serde_json::Value>(&json_str)
+                        .unwrap_or(serde_json::json!([]))
+                }
+                Err(e) => {
+                    log::warn!("CycleController: prolog_pass goal failed: {}: {}", goal, e);
+                    serde_json::json!([])
+                }
+            };
+            Ok(Some(solutions))
         } else {
-            "true".to_string()
-        };
-
-        match self.session.prolog.query_once(&goal) {
-            Ok(_)  => log::debug!("CycleController: prolog_pass goal succeeded: {}", goal),
-            Err(e) => log::warn!("CycleController: prolog_pass goal failed: {}: {}", goal, e),
+            match self.session.prolog.query_once("true") {
+                Ok(_)  => {}
+                Err(e) => log::warn!("CycleController: prolog_pass tick failed: {}", e),
+            }
+            Ok(None)
         }
-
-        Ok(())
     }
 
     fn evaluator_pass(&self) {

@@ -24,10 +24,17 @@ impl std::fmt::Display for CycleStatus {
 /// Final result produced when a cycle run completes (successfully or not).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeductionResult {
-    pub status:           CycleStatus,
-    pub cycles:           u32,
+    pub status:            CycleStatus,
+    pub cycles:            u32,
     pub prolog_session_id: Uuid,
     pub clips_session_id:  Uuid,
+    /// All solutions produced by the `initial_goal` on cycle 0.
+    /// Each element is a JSON object mapping variable name → value,
+    /// e.g. `[{"Man": "stan"}]`.  Empty array means the goal succeeded
+    /// with no variable bindings; absent means no goal was run or the
+    /// run did not complete normally.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prolog_solutions:  Option<serde_json::Value>,
 }
 
 /// Point-in-time snapshot of pending Coire event counts used for convergence

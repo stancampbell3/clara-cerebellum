@@ -29,8 +29,10 @@ POST /deduce
  │  1. Prolog pass                                          │
  │     • consume_coire_events() — dispatch any Coire        │
  │       events waiting in Prolog's mailbox                 │
- │     • query_once(initial_goal | "true")                  │
- │       (initial_goal runs on cycle 0 only)                │
+ │     • cycle 0: query_with_bindings(initial_goal | "true")│
+ │       — all solutions collected with variable bindings   │
+ │       and stored in DeductionResult.prolog_solutions     │
+ │     • cycle 1+: query_once("true") — engine tick only    │
  │                                                          │
  │  2. Relay Prolog → CLIPS                                 │
  │     • drain Prolog's Coire mailbox, re-emit each event   │
@@ -59,7 +61,8 @@ POST /deduce
  └──────────────────────────────────────────────────────────┘
      │
      ▼
- DeductionResult { status, cycles, prolog_session_id, clips_session_id }
+ DeductionResult { status, cycles, prolog_session_id, clips_session_id,
+                   prolog_solutions? }
 ```
 
 ### Engine isolation
@@ -102,9 +105,10 @@ and consume events at equilibrium without making forward progress.
 
 ### Prolog goal failure is non-fatal
 
-If `query_once` returns an error (e.g. the goal fails, throws, or causes a
-stack overflow), the cycle logs a `WARN` and continues. Only Coire or session
-creation errors propagate as a fatal `CycleError`.
+If the cycle-0 goal fails or throws an exception, `prolog_solutions` is set to
+`[]` and the cycle logs a `WARN` but continues. Only Coire or session creation
+errors propagate as a fatal `CycleError`.  Subsequent cycles run `true` as a
+no-op tick and do not contribute to `prolog_solutions`.
 
 ---
 
@@ -185,13 +189,25 @@ the count completed so far (starts at `0`).
     "status":            "Converged",
     "cycles":            3,
     "prolog_session_id": "a1b2c3d4-...",
-    "clips_session_id":  "e5f6a7b8-..."
+    "clips_session_id":  "e5f6a7b8-...",
+    "prolog_solutions":  [{"Man": "stan"}]
   }
 }
 ```
 
 Note: `status` at the top level is a lowercase display string (`"converged"`).
 `result.status` is the serialised Rust enum variant name (`"Converged"`).
+
+`result.prolog_solutions` is a JSON array of all solutions produced by
+`initial_goal` on cycle 0, each element being an object mapping Prolog
+variable name to value (e.g. `[{"Man": "stan"}]`).  Special cases:
+
+| `prolog_solutions` value | Meaning |
+|---|---|
+| `[{"X": val, …}, …]` | Goal succeeded — one object per solution |
+| `[true]` | Goal succeeded with no unbound variables (ground query) |
+| `[]` | Goal failed — no solutions |
+| absent | No `initial_goal` was provided, or the run ended in error |
 
 **Response when interrupted** `200 OK`
 
@@ -204,14 +220,16 @@ Note: `status` at the top level is a lowercase display string (`"converged"`).
     "status":            "Interrupted",
     "cycles":            7,
     "prolog_session_id": "a1b2c3d4-...",
-    "clips_session_id":  "e5f6a7b8-..."
+    "clips_session_id":  "e5f6a7b8-...",
+    "prolog_solutions":  [{"Man": "stan"}]
   }
 }
 ```
 
-`result` may be temporarily absent immediately after `DELETE /deduce/{id}` is
-called — the interrupt flag is set optimistically and `result` is populated once
-the background task actually exits.
+`prolog_solutions` is included if cycle 0 had already run before the interrupt
+was processed.  `result` may be temporarily absent immediately after
+`DELETE /deduce/{id}` is called — the interrupt flag is set optimistically and
+`result` is populated once the background task actually exits.
 
 **Response when error** `200 OK`
 
@@ -338,7 +356,15 @@ curl -s -X POST http://localhost:8080/deduce \
 
 # 2. Poll until done (fast — no CLIPS rules, converges in 1 cycle)
 curl -s http://localhost:8080/deduce/abc-... | jq .
-# → { "status": "converged", "cycles": 1, "result": { ... } }
+# → {
+#     "status": "converged",
+#     "cycles": 1,
+#     "result": {
+#       "status": "Converged", "cycles": 1,
+#       "prolog_session_id": "...", "clips_session_id": "...",
+#       "prolog_solutions": [{"Man": "stan"}]
+#     }
+#   }
 ```
 
 ---
@@ -395,10 +421,12 @@ curl -s http://localhost:8080/deduce/$ID | jq .status
 # → "interrupted"
 ```
 
-> **Note on `initial_goal`:** The initial goal only executes on cycle 0. Goals
-> that would recurse infinitely (e.g. `loop :- loop.`) cause the Prolog engine
-> to fail or overflow on that one call; the error is logged as a `WARN` and the
-> cycle continues normally. To produce a genuinely long-running deduction for
+> **Note on `initial_goal`:** The initial goal only executes on cycle 0.  All
+> solutions are collected via backtracking before the cycle proceeds, so goals
+> that produce many solutions (e.g. `member(X, [a,b,c])`) will enumerate them
+> all and return them in `prolog_solutions`.  Goals that recurse infinitely or
+> overflow the stack produce `prolog_solutions: []` and log a `WARN`; the cycle
+> continues normally.  To produce a genuinely long-running deduction for
 > cancellation testing, use CLIPS rules that keep generating facts (as above)
 > rather than a recursive Prolog goal.
 
@@ -495,11 +523,12 @@ function or type definition start.
 
 | Step | Topic | File : line | Function / symbol |
 |---|---|---|---|
-| **1** | Prolog pass (dispatcher) | `clara-cycle/src/controller.rs:116` | `CycleController::prolog_pass()` |
+| **1** | Prolog pass (dispatcher) | `clara-cycle/src/controller.rs:125` | `CycleController::prolog_pass()` |
 | 1a | Consume Coire events — Rust side | `clara-prolog/src/backend/ffi/environment.rs:209` | `PrologEnvironment::consume_coire_events()` |
 | 1a | Dispatch events — Prolog side | `clara-prolog/prolog-lib/the_coire.pl:32` | `coire_consume/0` |
 | 1a | Publish events from Prolog rules | `clara-prolog/prolog-lib/the_coire.pl:21` | `coire_publish/2` (+ `_assert/1`, `_retract/1`, `_goal/1`) |
-| 1b | Execute goal (`initial_goal` or `"true"`) | `clara-prolog/src/backend/ffi/environment.rs:236` | `PrologEnvironment::query_once()` |
+| 1b | Execute goal — cycle 0, all solutions + bindings | `clara-prolog/src/backend/ffi/environment.rs:249` | `PrologEnvironment::query_with_bindings()` |
+| 1b | Execute goal — cycle 1+, engine tick | `clara-prolog/src/backend/ffi/environment.rs:236` | `PrologEnvironment::query_once("true")` |
 | **2** | Relay Prolog → CLIPS | `clara-cycle/src/relay.rs:13` | `relay_prolog_to_clips()` |
 | **3** | Evaluator pass (stub) | `clara-cycle/src/controller.rs:136` | `CycleController::evaluator_pass()` |
 | **4** | CLIPS pass (dispatcher) | `clara-cycle/src/controller.rs:142` | `CycleController::clips_pass()` |
@@ -521,8 +550,9 @@ function or type definition start.
 | Symbol | File : line | Notes |
 |---|---|---|
 | `CycleStatus` | `clara-cycle/src/result.rs:6` | `Running \| Converged \| Interrupted \| Error(String)` |
-| `DeductionResult` | `clara-cycle/src/result.rs:26` | Returned by `run()`; stored in `DeductionEntry.result` |
-| `CoireSnapshot` | `clara-cycle/src/result.rs:34` | `prolog_pending` + `clips_pending` counts |
+| `DeductionResult` | `clara-cycle/src/result.rs:25` | Returned by `run()`; stored in `DeductionEntry.result` |
+| `DeductionResult.prolog_solutions` | `clara-cycle/src/result.rs:37` | `Option<serde_json::Value>` — all cycle-0 solutions with variable bindings |
+| `CoireSnapshot` | `clara-cycle/src/result.rs:43` | `prolog_pending` + `clips_pending` counts |
 | `CycleError` | `clara-cycle/src/error.rs:4` | All fatal error variants with `thiserror` Display strings |
 | `DeductionSession` | `clara-cycle/src/session.rs:12` | Holds `PrologEnvironment` + `ClipsEnvironment` + their UUIDs |
 | `CycleController` | `clara-cycle/src/controller.rs:14` | Owns the session; drives the loop |
