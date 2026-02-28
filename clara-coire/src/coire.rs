@@ -33,6 +33,13 @@ impl Coire {
 
     pub fn write_event(&self, event: &ClaraEvent) -> CoireResult<()> {
         let payload_str = serde_json::to_string(&event.payload)?;
+        log::debug!(
+            "Coire: writing event {} (session {}, origin {}, status {})",
+            event.event_id,
+            event.session_id,
+            event.origin,
+            event.status.as_str()
+        );
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO coire_events (event_id, session_id, origin, created_at_ms, payload, status)
@@ -50,10 +57,12 @@ impl Coire {
     }
 
     pub fn read_pending(&self, session_id: Uuid) -> CoireResult<Vec<ClaraEvent>> {
+        log::debug!("Coire: reading pending events for session {}", session_id);
         self.query_events(session_id, Some(EventStatus::Pending))
     }
 
     pub fn read_all(&self, session_id: Uuid) -> CoireResult<Vec<ClaraEvent>> {
+        log::debug!("Coire: reading all events for session {}", session_id);
         self.query_events(session_id, None)
     }
 
@@ -116,6 +125,7 @@ impl Coire {
     }
 
     pub fn mark_processed(&self, event_id: Uuid) -> CoireResult<()> {
+        log::debug!("Coire: marking event {} as processed", event_id);
         let conn = self.conn.lock().unwrap();
         let updated = conn.execute(
             "UPDATE coire_events SET status = 'processed' WHERE event_id = ? AND status = 'pending'",
@@ -132,6 +142,8 @@ impl Coire {
     pub fn poll_pending(&self, session_id: Uuid) -> CoireResult<Vec<ClaraEvent>> {
         let conn = self.conn.lock().unwrap();
         let sid = session_id.to_string();
+
+        log::debug!("Coire: polling pending events for session {}", sid);
 
         // Read pending events
         let mut stmt = conn.prepare(
@@ -176,6 +188,7 @@ impl Coire {
 
     pub fn drain_session(&self, session_id: Uuid) -> CoireResult<usize> {
         let conn = self.conn.lock().unwrap();
+        log::debug!("Coire: draining session {}", session_id);
         let count = conn.execute(
             "UPDATE coire_events SET status = 'drained' WHERE session_id = ? AND status = 'pending'",
             duckdb::params![session_id.to_string()],
@@ -185,6 +198,7 @@ impl Coire {
 
     pub fn clear_session(&self, session_id: Uuid) -> CoireResult<usize> {
         let conn = self.conn.lock().unwrap();
+        log::debug!("Coire: clearing session {}", session_id);
         let count = conn.execute(
             "DELETE FROM coire_events WHERE session_id = ?",
             duckdb::params![session_id.to_string()],
@@ -194,6 +208,7 @@ impl Coire {
 
     pub fn count_pending(&self, session_id: Uuid) -> CoireResult<usize> {
         let conn = self.conn.lock().unwrap();
+        log::debug!("Coire: counting pending events for session {}", session_id);
         let mut stmt = conn.prepare(
             "SELECT COUNT(*) FROM coire_events WHERE session_id = ? AND status = 'pending'",
         )?;

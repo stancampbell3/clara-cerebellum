@@ -175,6 +175,14 @@ pub fn register_coire_predicates() -> bool {
                 ("coire_count", 2, pl_coire_count as *const std::ffi::c_void),
             ];
 
+            let c_module = match CString::new("the_coire") {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to create module name: {}", e);
+                    return false;
+                }
+            };
+
             for (name, arity, func) in predicates {
                 let c_name = match CString::new(*name) {
                     Ok(s) => s,
@@ -184,7 +192,8 @@ pub fn register_coire_predicates() -> bool {
                     }
                 };
 
-                let result = PL_register_foreign(
+                let result = PL_register_foreign_in_module(
+                    c_module.as_ptr(),
                     c_name.as_ptr(),
                     *arity,
                     *func as pl_function_t,

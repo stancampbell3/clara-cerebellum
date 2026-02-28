@@ -75,6 +75,7 @@ impl ClipsEnvironment {
         // Seed the session global so (coire-publish ...) knows which mailbox to use
         ce.eval(&format!("(bind ?*coire-session-id* \"{}\")", session_id))?;
 
+        log::debug!("Created new ClipsEnvironment with session_id {}", session_id);
         Ok(ce)
     }
 
@@ -85,6 +86,7 @@ impl ClipsEnvironment {
 
     /// Evaluate a CLIPS expression and return the result as a string
     pub fn eval(&mut self, code: &str) -> Result<String, String> {
+        log::debug!("Evaluating CLIPS code in session {}: {}", self.session_id, code);
         unsafe {
             let c_code = CString::new(code)
                 .map_err(|e| format!("Invalid code string: {}", e))?;

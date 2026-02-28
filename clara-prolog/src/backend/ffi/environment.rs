@@ -104,6 +104,7 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
         Ok(())
     });
 
+    log::debug!("Prolog initialization result: {:?}", result);
     result.clone().map_err(PrologError::InitializationFailed)
 }
 
