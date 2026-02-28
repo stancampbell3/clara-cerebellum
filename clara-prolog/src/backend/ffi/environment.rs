@@ -303,7 +303,17 @@ impl PrologEnvironment {
              open_string(Code, S), \
              call_cleanup(\
                  (repeat, read_term(S, T, []), \
-                  (T == end_of_file -> ! ; assertz(T), fail)), \
+                  (T == end_of_file -> ! ; \
+                   (  T = (:-G)  -> ignore(call(G)) \
+                   ;  T = (?-G)  -> ignore(call(G)) \
+                   ;  functor(T, F, A), \
+                      memberchk(F/A, [consult/1, \
+                                      use_module/1, use_module/2, \
+                                      ensure_loaded/1, \
+                                      load_files/1, load_files/2]) \
+                      -> ignore(call(T)) \
+                   ;  assertz(T) \
+                   ), fail)), \
                  close(S))",
             escaped_code
         );
