@@ -20,7 +20,8 @@ POST /deduce
      ▼
  DeductionSession::new()          ← fresh isolated Prolog + CLIPS pair
  session.seed_prolog(clauses)     ← assert facts/rules into Prolog
- session.seed_clips(constructs)   ← build defrules/deftemplates into CLIPS
+ session.seed_clips_file(path)?   ← load .clp file (if clips_file provided)
+ session.seed_clips(constructs)   ← build inline defrules/deftemplates into CLIPS
      │
      ▼
  ┌──────────────────────────────────────────────────────────┐
@@ -128,6 +129,7 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 {
   "prolog_clauses":   ["man(stan).", "mortal(X) :- man(X)."],
   "clips_constructs": ["(defrule fire-if-mortal ...)"],
+  "clips_file":       "/srv/rules/base.clp",
   "initial_goal":     "mortal(X)",
   "max_cycles":       100
 }
@@ -137,6 +139,7 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 |-------|------|---------|-------------|
 | `prolog_clauses` | `string[]` | `[]` | Standard Prolog clause syntax (periods included). Loaded via `consult_string`. |
 | `clips_constructs` | `string[]` | `[]` | CLIPS `deftemplate`, `defrule`, `defglobal`, etc. Each string is passed to `Build`. |
+| `clips_file` | `string \| null` | `null` | Server-side path to a `.clp` file. Loaded **before** `clips_constructs`, so the file can define base templates that inline constructs depend on. |
 | `initial_goal` | `string \| null` | `null` | Prolog goal executed on cycle 0 only. Omit or set to `null` to run a no-op (`true`). |
 | `max_cycles` | `uint \| null` | `100` | Cycle budget. Exhausting it without convergence results in `error` status. |
 
@@ -248,7 +251,7 @@ underlying `CycleError` variant:
 |---|---|
 | `error: Max cycles (N) exceeded without convergence` | Cycle budget exhausted |
 | `error: Prolog error: …` | Exception from the Prolog engine |
-| `error: CLIPS error: …` | Exception from the CLIPS engine |
+| `error: CLIPS error: …` | Exception from the CLIPS engine, including `.clp` file load failures |
 | `error: Coire error: …` | Coire mailbox failure |
 | `error: Session creation failed: …` | Engine initialisation failure |
 
@@ -514,7 +517,9 @@ function or type definition start.
 | Create engine pair | `clara-cycle/src/session.rs:21` | `DeductionSession::new()` |
 | Seed Prolog clauses | `clara-cycle/src/session.rs:33` | `DeductionSession::seed_prolog()` |
 | — load via `consult_string` | `clara-prolog/src/backend/ffi/environment.rs:296` | `PrologEnvironment::consult_string()` |
-| Seed CLIPS constructs | `clara-cycle/src/session.rs:45` | `DeductionSession::seed_clips()` |
+| Seed CLIPS file (optional) | `clara-cycle/src/session.rs:45` | `DeductionSession::seed_clips_file()` |
+| — load via CLIPS `Load()` | `clara-clips/src/backend/ffi/environment.rs` | `ClipsEnvironment::load()` |
+| Seed CLIPS constructs | `clara-cycle/src/session.rs:52` | `DeductionSession::seed_clips()` |
 | — compile via `build` | `clara-clips/src/backend/ffi/environment.rs:146` | `ClipsEnvironment::build()` |
 | Construct the controller | `clara-cycle/src/controller.rs:24` | `CycleController::new()` |
 | Start the cycle loop | `clara-cycle/src/controller.rs:38` | `CycleController::run()` |

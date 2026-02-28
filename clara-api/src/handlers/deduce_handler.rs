@@ -20,6 +20,7 @@ pub async fn start_deduce(
 ) -> HttpResponse {
     let clauses      = req.prolog_clauses.clone();
     let constructs   = req.clips_constructs.clone();
+    let clips_file   = req.clips_file.clone();
     let initial_goal = req.initial_goal.clone();
     let max_cycles   = req.max_cycles.unwrap_or(100);
 
@@ -48,6 +49,9 @@ pub async fn start_deduce(
         let bg_result = tokio::task::spawn_blocking(move || {
             let mut session = DeductionSession::new()?;
             session.seed_prolog(&clauses)?;
+            if let Some(ref path) = clips_file {
+                session.seed_clips_file(path)?;
+            }
             session.seed_clips(&constructs)?;
             let mut controller =
                 CycleController::new(session, max_cycles, initial_goal, interrupt_bg);

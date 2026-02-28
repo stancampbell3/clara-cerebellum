@@ -108,6 +108,9 @@ pub struct DeduceRequest {
     /// CLIPS constructs (`defrule`, `deftemplate`, etc.) to seed the CLIPS engine.
     #[serde(default)]
     pub clips_constructs: Vec<String>,
+    /// Optional server-side path to a `.clp` file loaded before `clips_constructs`.
+    #[serde(default)]
+    pub clips_file: Option<String>,
     /// Optional Prolog goal to execute on the first cycle.
     #[serde(default)]
     pub initial_goal: Option<String>,

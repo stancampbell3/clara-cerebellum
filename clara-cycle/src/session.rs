@@ -39,6 +39,11 @@ impl DeductionSession {
         Ok(())
     }
 
+    /// Load a `.clp` file into the CLIPS engine by server-side path.
+    pub fn seed_clips_file(&mut self, path: &str) -> Result<(), CycleError> {
+        self.clips.load(path).map_err(CycleError::Clips)
+    }
+
     /// Load CLIPS constructs (`defrule`, `deftemplate`, etc.) into the CLIPS engine.
     ///
     /// Each construct string is passed to `ClipsEnvironment::build`.
