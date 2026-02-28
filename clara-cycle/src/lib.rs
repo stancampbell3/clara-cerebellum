@@ -29,6 +29,7 @@ pub mod error;
 pub mod relay;
 pub mod result;
 pub mod session;
+pub mod transpile;
 
 pub use controller::CycleController;
 pub use error::CycleError;
