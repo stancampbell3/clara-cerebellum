@@ -1,8 +1,13 @@
 //! Prolog → CLIPS transduction: speculative forward-chaining rule generation.
 //!
-//! For each **positive** body goal in a Prolog rule, emits a CLIPS `defrule`
-//! that fires when that fact is asserted into CLIPS and publishes the
-//! corresponding head goal back to Prolog via `coire-publish-goal`.
+//! For each body goal in a Prolog rule, emits a CLIPS `defrule` that fires
+//! when the corresponding fact is asserted into CLIPS and publishes the head
+//! goal back to Prolog via `coire-publish-goal`.
+//!
+//! **Positive** goals `foo(X)` trigger on `(foo ?X)`.
+//! **Negative** goals `\+ foo(X)` / `not(foo(X))` trigger on `(not_foo ?X)` —
+//! a positive CLIPS fact representing a constructively-determined negation
+//! relayed from Prolog.
 //!
 //! # Example
 //!
@@ -32,7 +37,7 @@
 
 use std::collections::HashSet;
 
-use crate::transpile::{render_clips_fact, render_prolog_term, Term};
+use crate::transpile::{render_clips_fact, render_clips_field, render_prolog_term, Term};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -41,7 +46,9 @@ use crate::transpile::{render_clips_fact, render_prolog_term, Term};
 pub enum BodyGoal {
     /// A positive condition — can trigger a CLIPS defrule.
     Positive(Term),
-    /// A negation-as-failure condition (`\+`); skipped as trigger source.
+    /// A negation-as-failure condition (`\+` / `not/1`).
+    /// Generates a CLIPS defrule triggered by a `not_<functor>` fact —
+    /// a positive assertion of a constructively-determined negation.
     Negative(Term),
 }
 
@@ -73,13 +80,17 @@ pub fn parse_prolog_rules(source: &str) -> Vec<PrologRule> {
 
 /// Generate CLIPS `defrule`s from parsed Prolog rules.
 ///
-/// For each positive body goal in each rule, one defrule is emitted whose LHS
-/// pattern matches that fact and whose RHS calls `coire-publish-goal` with the
-/// Prolog head goal string. Variables bound by the LHS become CLIPS variable
-/// references in the `str-cat`; unbound variables are emitted as literal
-/// strings (causing Prolog to treat them as free variables when queried).
+/// For each body goal in each rule, one defrule is emitted:
 ///
-/// Negative conditions (`\+`) emit a comment and are otherwise skipped.
+/// - **Positive** goal `foo(X, bar)` → LHS `(foo ?X bar)`
+/// - **Negative** goal `\+ foo(X, bar)` / `not(foo(X, bar))` → LHS `(not_foo ?X bar)`
+///
+/// The `not_<functor>` pattern expects the relay to assert a positive CLIPS
+/// fact whenever Prolog constructively proves the negation. This lets CLIPS
+/// forward-chain on definite negative evidence rather than discarding it.
+///
+/// Variables bound by the LHS become CLIPS variable references in the `str-cat`
+/// RHS; unbound head variables are emitted as literal strings.
 /// Facts (rules with empty bodies) are silently skipped.
 pub fn transduce(rules: &[PrologRule]) -> String {
     let mut out = String::new();
@@ -94,10 +105,23 @@ pub fn transduce(rules: &[PrologRule]) -> String {
 
         for goal in &rule.body {
             match goal {
-                BodyGoal::Negative(t) => {
+                BodyGoal::Negative(trigger) => {
+                    let rule_name = format!(
+                        "transduced-{}-on-not_{}-{}",
+                        head_functor,
+                        term_functor_name(trigger),
+                        counter,
+                    );
+                    counter += 1;
+
+                    let bound_vars = collect_vars(trigger);
+                    let lhs = render_not_clips_pattern(trigger);
+                    let rhs_expr = render_head_goal_expr(&rule.head, &bound_vars);
+                    let comment = format_rule_comment(rule);
+
                     out.push_str(&format!(
-                        "; NOTE: \\+ {} is a negative condition — skipped as trigger source.\n",
-                        render_prolog_term(t)
+                        "; Transduced from: {}\n(defrule {}\n    {}\n    =>\n    (coire-publish-goal {}))\n\n",
+                        comment, rule_name, lhs, rhs_expr
                     ));
                 }
                 BodyGoal::Positive(trigger) => {
@@ -236,6 +260,21 @@ fn render_head_goal_expr(head: &Term, bound_vars: &HashSet<String>) -> String {
             }
         }
         _ => format!("\"{}\"", render_prolog_term(head)),
+    }
+}
+
+/// Render a negative body goal as a `not_<functor>` CLIPS ordered-fact pattern.
+///
+/// `\+ has(X, backbone)` → `(not_has ?X backbone)`
+/// `\+ alive` → `(not_alive)`
+fn render_not_clips_pattern(t: &Term) -> String {
+    match t {
+        Term::Atom(s) => format!("(not_{})", s),
+        Term::Compound { functor, args } => {
+            let fields: Vec<_> = args.iter().map(render_clips_field).collect();
+            format!("(not_{} {})", functor, fields.join(" "))
+        }
+        _ => format!("(not_{})", render_prolog_term(t)),
     }
 }
 
@@ -386,7 +425,7 @@ impl RuleParser {
         Ok(goals)
     }
 
-    /// Parse a single goal, handling `\+` negation.
+    /// Parse a single goal, handling `\+` and `not/1` negation.
     fn parse_goal(&mut self) -> Result<BodyGoal, String> {
         self.skip_ws();
         if self.peek_two() == Some([b'\\', b'+']) {
@@ -394,7 +433,14 @@ impl RuleParser {
             self.skip_ws();
             Ok(BodyGoal::Negative(self.parse_goal_atom()?))
         } else {
-            Ok(BodyGoal::Positive(self.parse_goal_atom()?))
+            let t = self.parse_goal_atom()?;
+            // Treat not/1 as negation-as-failure, same as \+.
+            match t {
+                Term::Compound { ref functor, ref args } if functor == "not" && args.len() == 1 => {
+                    Ok(BodyGoal::Negative(args[0].clone()))
+                }
+                _ => Ok(BodyGoal::Positive(t)),
+            }
         }
     }
 
@@ -610,6 +656,47 @@ mod tests {
     }
 
     #[test]
+    fn parse_not1_treated_as_negative() {
+        // not/1 is negation-as-failure, same as \+
+        let rules = parse_prolog_rules("nonanimal(X) :- not(animal(X)).");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].body.len(), 1);
+        assert!(matches!(&rules[0].body[0], BodyGoal::Negative(_)));
+    }
+
+    #[test]
+    fn transduce_not1_generates_not_pattern() {
+        let clp = transduce_source("nonanimal(X) :- not(animal(X)).");
+        assert!(clp.contains("transduced-nonanimal-on-not_animal-0"));
+        assert!(clp.contains("(not_animal ?X)"));
+        assert_eq!(clp.matches("(defrule").count(), 1);
+    }
+
+    #[test]
+    fn transduce_mixed_not1_and_positive() {
+        // mammal(X) :- vertebrata(X), has(X,warm_blooded), not(has(X,feather)).
+        // Should generate 3 defrules: vertebrata, has(warm_blooded), not_has(feather).
+        let clp = transduce_source(
+            "mammal(X) :- vertebrata(X), has(X,warm_blooded), not(has(X,feather))."
+        );
+        assert!(clp.contains("transduced-mammal-on-vertebrata-0"));
+        assert!(clp.contains("transduced-mammal-on-has-1"));
+        assert!(clp.contains("transduced-mammal-on-not_has-2"));
+        assert!(clp.contains("(not_has ?X feather)"));
+        assert_eq!(clp.matches("(defrule").count(), 3);
+    }
+
+    #[test]
+    fn transduce_not_with_multi_arg() {
+        // not(has(X, backbone)) binds X from the trigger
+        let clp = transduce_source("nonvertebrata(X) :- animal(X), not(has(X,backbone)).");
+        assert!(clp.contains("transduced-nonvertebrata-on-not_has-1"));
+        assert!(clp.contains("(not_has ?X backbone)"));
+        // X is bound by not_has trigger → str-cat for nonvertebrata head
+        assert!(clp.contains("(str-cat \"nonvertebrata(\" ?X \")\""));
+    }
+
+    #[test]
     fn parse_fact_yields_empty_body() {
         let rules = parse_prolog_rules("mortal(stan).");
         assert_eq!(rules.len(), 1);
@@ -662,13 +749,13 @@ mod tests {
     }
 
     #[test]
-    fn transduce_negative_condition_emits_comment() {
+    fn transduce_negative_condition_generates_not_pattern() {
         let clp = transduce_source("ok(X) :- good(X), \\+ bad(X).");
         assert!(clp.contains("transduced-ok-on-good-0"));
-        assert!(clp.contains("; NOTE:"));
-        assert!(clp.contains("negative condition"));
-        // Only one defrule — the negative goal has no defrule
-        assert_eq!(clp.matches("(defrule").count(), 1);
+        assert!(clp.contains("transduced-ok-on-not_bad-1"));
+        assert!(clp.contains("(good ?X)"));
+        assert!(clp.contains("(not_bad ?X)"));
+        assert_eq!(clp.matches("(defrule").count(), 2);
     }
 
     #[test]
