@@ -131,6 +131,42 @@ pub fn transduce_source(prolog_source: &str) -> String {
     transduce(&parse_prolog_rules(prolog_source))
 }
 
+/// Render Prolog rules with `coire_publish_assert(Head)` appended to each rule body.
+///
+/// Every rule `head :- g1, g2, ...` becomes `head :- g1, g2, ..., coire_publish_assert(head)`.
+/// Facts (rules with an empty body) are rendered verbatim — they need no decoration
+/// because they are asserted directly and do not go through the relay cycle.
+///
+/// Use `parse_prolog_rules` first, then pass the result to both `transduce` and
+/// `decorate_rules` to share a single parse pass.
+pub fn decorate_rules(rules: &[PrologRule]) -> String {
+    let mut out = String::new();
+    for rule in rules {
+        if rule.body.is_empty() {
+            out.push_str(&format!("{}.\n", render_prolog_term(&rule.head)));
+        } else {
+            let head_str = render_prolog_term(&rule.head);
+            let body_parts: Vec<_> = rule.body.iter().map(|g| match g {
+                BodyGoal::Positive(t) => render_prolog_term(t),
+                BodyGoal::Negative(t) => format!("\\+ {}", render_prolog_term(t)),
+            }).collect();
+            let publish = format!("coire_publish_assert({})", head_str);
+            out.push_str(&format!(
+                "{} :- {}, {}.\n",
+                head_str,
+                body_parts.join(", "),
+                publish
+            ));
+        }
+    }
+    out
+}
+
+/// Full pipeline: Prolog source text → decorated Prolog source text.
+pub fn decorate_source(prolog_source: &str) -> String {
+    decorate_rules(&parse_prolog_rules(prolog_source))
+}
+
 // ── Code-generation helpers ───────────────────────────────────────────────────
 
 fn term_functor_name(t: &Term) -> &str {
@@ -647,5 +683,46 @@ mod tests {
         // Head with no args — emitted as plain string literal
         let clp = transduce_source("alert :- smoke(X).");
         assert!(clp.contains("\"alert\""));
+    }
+
+    // ── decorate_rules ────────────────────────────────────────────────────────
+
+    #[test]
+    fn decorate_fact_unchanged() {
+        let pl = decorate_source("man(stan).");
+        assert_eq!(pl.trim(), "man(stan).");
+    }
+
+    #[test]
+    fn decorate_rule_appends_publish() {
+        let pl = decorate_source("fire(Where) :- smoke(Where).");
+        assert_eq!(
+            pl.trim(),
+            "fire(Where) :- smoke(Where), coire_publish_assert(fire(Where))."
+        );
+    }
+
+    #[test]
+    fn decorate_conjunction_rule() {
+        let pl = decorate_source("lemonade(Drink) :- sour(Drink), sweet(Drink).");
+        assert_eq!(
+            pl.trim(),
+            "lemonade(Drink) :- sour(Drink), sweet(Drink), coire_publish_assert(lemonade(Drink))."
+        );
+    }
+
+    #[test]
+    fn decorate_rule_with_negation() {
+        let pl = decorate_source("ok(X) :- good(X), \\+ bad(X).");
+        assert_eq!(
+            pl.trim(),
+            "ok(X) :- good(X), \\+ bad(X), coire_publish_assert(ok(X))."
+        );
+    }
+
+    #[test]
+    fn decorate_multi_arg_head() {
+        let pl = decorate_source("parent(tom, bob) :- father(tom, bob).");
+        assert!(pl.contains("coire_publish_assert(parent(tom,bob))"));
     }
 }
