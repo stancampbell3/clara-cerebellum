@@ -17,7 +17,8 @@ members = ["caw",
   "prolog-mcp-adapter",
   "clara-frontdesk-poc",
   "clara-coire",
-  "clara-cycle"]
+  "clara-cycle",
+  "clara-transduction"]
 resolver = "2"
 
 [workspace.package]

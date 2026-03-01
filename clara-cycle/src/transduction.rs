@@ -1,0 +1,651 @@
+//! Prolog → CLIPS transduction: speculative forward-chaining rule generation.
+//!
+//! For each **positive** body goal in a Prolog rule, emits a CLIPS `defrule`
+//! that fires when that fact is asserted into CLIPS and publishes the
+//! corresponding head goal back to Prolog via `coire-publish-goal`.
+//!
+//! # Example
+//!
+//! Prolog source:
+//! ```prolog
+//! fire(Where) :- smoke(Where).
+//! lemonade(Drink) :- sour(Drink), sweet(Drink).
+//! ```
+//!
+//! Generated CLIPS:
+//! ```clips
+//! (defrule transduced-fire-on-smoke-0
+//!     (smoke ?Where)
+//!     =>
+//!     (coire-publish-goal (str-cat "fire(" ?Where ")")))
+//!
+//! (defrule transduced-lemonade-on-sour-1
+//!     (sour ?Drink)
+//!     =>
+//!     (coire-publish-goal (str-cat "lemonade(" ?Drink ")")))
+//!
+//! (defrule transduced-lemonade-on-sweet-2
+//!     (sweet ?Drink)
+//!     =>
+//!     (coire-publish-goal (str-cat "lemonade(" ?Drink ")")))
+//! ```
+
+use std::collections::HashSet;
+
+use crate::transpile::{render_clips_fact, render_prolog_term, Term};
+
+// ── Public types ──────────────────────────────────────────────────────────────
+
+/// A single goal in a Prolog rule body.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BodyGoal {
+    /// A positive condition — can trigger a CLIPS defrule.
+    Positive(Term),
+    /// A negation-as-failure condition (`\+`); skipped as trigger source.
+    Negative(Term),
+}
+
+/// A parsed Prolog rule: `head :- body.` or a bare fact `head.`
+#[derive(Debug, Clone)]
+pub struct PrologRule {
+    pub head: Term,
+    pub body: Vec<BodyGoal>,
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Parse Prolog rules from source text.
+///
+/// `%` line-comments and blank lines are skipped. Clauses that fail to parse
+/// are silently skipped (the parser advances to the next `.`).
+pub fn parse_prolog_rules(source: &str) -> Vec<PrologRule> {
+    let mut parser = RuleParser::new(source);
+    let mut rules = Vec::new();
+    loop {
+        match parser.parse_clause() {
+            Ok(Some(rule)) => rules.push(rule),
+            Ok(None) => break,
+            Err(_) => parser.skip_to_period(),
+        }
+    }
+    rules
+}
+
+/// Generate CLIPS `defrule`s from parsed Prolog rules.
+///
+/// For each positive body goal in each rule, one defrule is emitted whose LHS
+/// pattern matches that fact and whose RHS calls `coire-publish-goal` with the
+/// Prolog head goal string. Variables bound by the LHS become CLIPS variable
+/// references in the `str-cat`; unbound variables are emitted as literal
+/// strings (causing Prolog to treat them as free variables when queried).
+///
+/// Negative conditions (`\+`) emit a comment and are otherwise skipped.
+/// Facts (rules with empty bodies) are silently skipped.
+pub fn transduce(rules: &[PrologRule]) -> String {
+    let mut out = String::new();
+    let mut counter = 0usize;
+
+    for rule in rules {
+        if rule.body.is_empty() {
+            continue;
+        }
+
+        let head_functor = term_functor_name(&rule.head);
+
+        for goal in &rule.body {
+            match goal {
+                BodyGoal::Negative(t) => {
+                    out.push_str(&format!(
+                        "; NOTE: \\+ {} is a negative condition — skipped as trigger source.\n",
+                        render_prolog_term(t)
+                    ));
+                }
+                BodyGoal::Positive(trigger) => {
+                    let rule_name = format!(
+                        "transduced-{}-on-{}-{}",
+                        head_functor,
+                        term_functor_name(trigger),
+                        counter,
+                    );
+                    counter += 1;
+
+                    let bound_vars = collect_vars(trigger);
+                    let lhs = render_clips_fact(trigger);
+                    let rhs_expr = render_head_goal_expr(&rule.head, &bound_vars);
+                    let comment = format_rule_comment(rule);
+
+                    out.push_str(&format!(
+                        "; Transduced from: {}\n(defrule {}\n    {}\n    =>\n    (coire-publish-goal {}))\n\n",
+                        comment, rule_name, lhs, rhs_expr
+                    ));
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Full pipeline: Prolog source text → CLIPS defrule source text.
+pub fn transduce_source(prolog_source: &str) -> String {
+    transduce(&parse_prolog_rules(prolog_source))
+}
+
+// ── Code-generation helpers ───────────────────────────────────────────────────
+
+fn term_functor_name(t: &Term) -> &str {
+    match t {
+        Term::Atom(s) => s.as_str(),
+        Term::Compound { functor, .. } => functor.as_str(),
+        _ => "term",
+    }
+}
+
+/// Collect all variable names appearing in a term.
+fn collect_vars(t: &Term) -> HashSet<String> {
+    let mut vars = HashSet::new();
+    collect_vars_rec(t, &mut vars);
+    vars
+}
+
+fn collect_vars_rec(t: &Term, vars: &mut HashSet<String>) {
+    match t {
+        Term::Variable(s) => {
+            vars.insert(s.clone());
+        }
+        Term::Compound { args, .. } => args.iter().for_each(|a| collect_vars_rec(a, vars)),
+        _ => {}
+    }
+}
+
+/// Build a CLIPS expression producing the head goal string at runtime.
+///
+/// Variables present in `bound_vars` (bound by the LHS condition) become CLIPS
+/// `?Var` references inside a `str-cat`. Unbound variables are emitted as
+/// their name as a literal string — Prolog will treat them as free variables.
+/// Consecutive literal segments are merged into a single quoted string.
+fn render_head_goal_expr(head: &Term, bound_vars: &HashSet<String>) -> String {
+    match head {
+        Term::Atom(s) => format!("\"{}\"", s),
+        Term::Compound { functor, args } => {
+            let any_bound = args.iter().any(|a| is_bound_var(a, bound_vars));
+            if !any_bound {
+                // Pure string — all args are ground or unbound.
+                let args_s: Vec<_> =
+                    args.iter().map(|a| render_arg_as_literal(a)).collect();
+                format!("\"{}({})\"", functor, args_s.join(","))
+            } else {
+                // Build str-cat, merging consecutive literal segments.
+                let mut parts: Vec<String> = Vec::new();
+                let mut cur = format!("{}(", functor);
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        cur.push(',');
+                    }
+                    if is_bound_var(arg, bound_vars) {
+                        if !cur.is_empty() {
+                            parts.push(format!("\"{}\"", cur));
+                            cur = String::new();
+                        }
+                        if let Term::Variable(s) = arg {
+                            parts.push(format!("?{}", s));
+                        }
+                    } else {
+                        cur.push_str(&render_arg_as_literal(arg));
+                    }
+                }
+                cur.push(')');
+                parts.push(format!("\"{}\"", cur));
+                format!("(str-cat {})", parts.join(" "))
+            }
+        }
+        _ => format!("\"{}\"", render_prolog_term(head)),
+    }
+}
+
+fn is_bound_var(t: &Term, bound_vars: &HashSet<String>) -> bool {
+    matches!(t, Term::Variable(s) if bound_vars.contains(s))
+}
+
+/// Render a term argument as a plain string literal value (no CLIPS vars).
+fn render_arg_as_literal(t: &Term) -> String {
+    match t {
+        Term::Variable(s) => s.clone(), // unbound → emit variable name
+        Term::Atom(s) => s.clone(),
+        Term::Integer(n) => n.to_string(),
+        Term::Float(f) => format!("{}", f),
+        Term::Str(s) => format!("\"{}\"", s),
+        Term::Compound { functor, args } => {
+            let inner: Vec<_> = args.iter().map(render_arg_as_literal).collect();
+            format!("{}({})", functor, inner.join(","))
+        }
+    }
+}
+
+fn format_rule_comment(rule: &PrologRule) -> String {
+    let head = render_prolog_term(&rule.head);
+    if rule.body.is_empty() {
+        format!("{}.", head)
+    } else {
+        let body: Vec<_> = rule.body.iter().map(|g| match g {
+            BodyGoal::Positive(t) => render_prolog_term(t),
+            BodyGoal::Negative(t) => format!("\\+ {}", render_prolog_term(t)),
+        }).collect();
+        format!("{} :- {}.", head, body.join(", "))
+    }
+}
+
+// ── Rule parser ───────────────────────────────────────────────────────────────
+
+/// Stateful parser for Prolog source files containing multiple clauses.
+struct RuleParser {
+    input: Vec<u8>,
+    pos: usize,
+}
+
+impl RuleParser {
+    fn new(s: &str) -> Self {
+        Self { input: s.as_bytes().to_vec(), pos: 0 }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        let b = self.input.get(self.pos).copied();
+        if b.is_some() {
+            self.pos += 1;
+        }
+        b
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.input.len() && self.input[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn skip_line_comment(&mut self) {
+        while self.pos < self.input.len() && self.input[self.pos] != b'\n' {
+            self.pos += 1;
+        }
+    }
+
+    fn skip_ws_and_comments(&mut self) {
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(b'%') {
+                self.skip_line_comment();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek_two(&self) -> Option<[u8; 2]> {
+        if self.pos + 1 < self.input.len() {
+            Some([self.input[self.pos], self.input[self.pos + 1]])
+        } else {
+            None
+        }
+    }
+
+    fn skip_n(&mut self, n: usize) {
+        self.pos = (self.pos + n).min(self.input.len());
+    }
+
+    /// Advance past the next `.` (end-of-clause marker), or to EOF.
+    fn skip_to_period(&mut self) {
+        while let Some(b) = self.next() {
+            if b == b'.' {
+                break;
+            }
+        }
+    }
+
+    // ── Clause parsing ────────────────────────────────────────────────────────
+
+    /// Parse one clause. Returns `Ok(None)` at EOF.
+    fn parse_clause(&mut self) -> Result<Option<PrologRule>, String> {
+        self.skip_ws_and_comments();
+        if self.pos >= self.input.len() {
+            return Ok(None);
+        }
+
+        let head = self.parse_term()?;
+        self.skip_ws();
+
+        if self.peek_two() == Some([b':', b'-']) {
+            self.skip_n(2);
+            self.skip_ws();
+            let body = self.parse_body()?;
+            self.skip_ws();
+            if self.peek() == Some(b'.') {
+                self.next();
+            }
+            Ok(Some(PrologRule { head, body }))
+        } else if self.peek() == Some(b'.') {
+            self.next();
+            Ok(Some(PrologRule { head, body: vec![] }))
+        } else {
+            Err(format!("expected :- or . after head at pos {}", self.pos))
+        }
+    }
+
+    /// Parse a comma/semicolon-separated list of goals (rule body).
+    fn parse_body(&mut self) -> Result<Vec<BodyGoal>, String> {
+        let mut goals = Vec::new();
+        loop {
+            self.skip_ws_and_comments();
+            goals.push(self.parse_goal()?);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') | Some(b';') => {
+                    self.next();
+                }
+                _ => break,
+            }
+        }
+        Ok(goals)
+    }
+
+    /// Parse a single goal, handling `\+` negation.
+    fn parse_goal(&mut self) -> Result<BodyGoal, String> {
+        self.skip_ws();
+        if self.peek_two() == Some([b'\\', b'+']) {
+            self.skip_n(2);
+            self.skip_ws();
+            Ok(BodyGoal::Negative(self.parse_goal_atom()?))
+        } else {
+            Ok(BodyGoal::Positive(self.parse_goal_atom()?))
+        }
+    }
+
+    /// Parse a goal atom (atom or compound), handling parenthesized groups.
+    fn parse_goal_atom(&mut self) -> Result<Term, String> {
+        self.skip_ws();
+        if self.peek() == Some(b'(') {
+            self.next();
+            let t = self.parse_term()?;
+            self.skip_ws();
+            if self.peek() == Some(b')') {
+                self.next();
+            }
+            Ok(t)
+        } else {
+            self.parse_term()
+        }
+    }
+
+    // ── Term parsing ──────────────────────────────────────────────────────────
+
+    fn parse_term(&mut self) -> Result<Term, String> {
+        self.skip_ws();
+        match self.peek() {
+            Some(b'\'') => self.parse_quoted_atom(),
+            Some(b'"') => self.parse_double_quoted(),
+            Some(b'[') => self.parse_list(),
+            Some(b) if b == b'-' || b.is_ascii_digit() => self.parse_number(),
+            Some(b) if b.is_ascii_uppercase() || b == b'_' => self.parse_variable(),
+            Some(b) if b.is_ascii_lowercase() => self.parse_atom_or_compound(),
+            Some(b) => Err(format!("unexpected char '{}' at pos {}", b as char, self.pos)),
+            None => Err("unexpected end of input".into()),
+        }
+    }
+
+    fn parse_quoted_atom(&mut self) -> Result<Term, String> {
+        self.next(); // consume '
+        let mut s = String::new();
+        loop {
+            match self.next() {
+                None => return Err("unterminated quoted atom".into()),
+                Some(b'\'') => {
+                    if self.peek() == Some(b'\'') {
+                        self.next();
+                        s.push('\'');
+                    } else {
+                        break;
+                    }
+                }
+                Some(b'\\') => match self.next() {
+                    Some(b'n') => s.push('\n'),
+                    Some(b't') => s.push('\t'),
+                    Some(b'\\') => s.push('\\'),
+                    Some(b'\'') => s.push('\''),
+                    Some(c) => {
+                        s.push('\\');
+                        s.push(c as char);
+                    }
+                    None => return Err("unterminated escape in quoted atom".into()),
+                },
+                Some(c) => s.push(c as char),
+            }
+        }
+        self.maybe_compound(s)
+    }
+
+    fn parse_double_quoted(&mut self) -> Result<Term, String> {
+        self.next(); // consume "
+        let mut s = String::new();
+        loop {
+            match self.next() {
+                None => return Err("unterminated string".into()),
+                Some(b'"') => break,
+                Some(b'\\') => match self.next() {
+                    Some(b'n') => s.push('\n'),
+                    Some(b't') => s.push('\t'),
+                    Some(b'"') => s.push('"'),
+                    Some(b'\\') => s.push('\\'),
+                    Some(c) => s.push(c as char),
+                    None => return Err("unterminated escape in string".into()),
+                },
+                Some(c) => s.push(c as char),
+            }
+        }
+        Ok(Term::Str(s))
+    }
+
+    fn parse_list(&mut self) -> Result<Term, String> {
+        self.next(); // consume [
+        self.skip_ws();
+        if self.peek() == Some(b']') {
+            self.next();
+            return Ok(Term::Atom("[]".into()));
+        }
+        Err("non-empty list terms are not supported in the rule parser".into())
+    }
+
+    fn parse_number(&mut self) -> Result<Term, String> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.next();
+        }
+        while self.peek().map_or(false, |b| b.is_ascii_digit()) {
+            self.next();
+        }
+        let is_float = self.peek() == Some(b'.');
+        if is_float {
+            self.next();
+            while self.peek().map_or(false, |b| b.is_ascii_digit()) {
+                self.next();
+            }
+        }
+        let s = std::str::from_utf8(&self.input[start..self.pos]).map_err(|e| e.to_string())?;
+        if is_float {
+            s.parse::<f64>().map(Term::Float).map_err(|e| e.to_string())
+        } else {
+            s.parse::<i64>().map(Term::Integer).map_err(|e| e.to_string())
+        }
+    }
+
+    fn parse_variable(&mut self) -> Result<Term, String> {
+        let start = self.pos;
+        while self.peek().map_or(false, |b| b.is_ascii_alphanumeric() || b == b'_') {
+            self.next();
+        }
+        let name = std::str::from_utf8(&self.input[start..self.pos])
+            .map_err(|e| e.to_string())?
+            .to_string();
+        Ok(Term::Variable(name))
+    }
+
+    fn parse_atom_or_compound(&mut self) -> Result<Term, String> {
+        let start = self.pos;
+        while self.peek().map_or(false, |b| b.is_ascii_alphanumeric() || b == b'_') {
+            self.next();
+        }
+        let name = std::str::from_utf8(&self.input[start..self.pos])
+            .map_err(|e| e.to_string())?
+            .to_string();
+        self.maybe_compound(name)
+    }
+
+    fn maybe_compound(&mut self, functor: String) -> Result<Term, String> {
+        self.skip_ws();
+        if self.peek() == Some(b'(') {
+            self.next();
+            let args = self.parse_args()?;
+            Ok(Term::Compound { functor, args })
+        } else {
+            Ok(Term::Atom(functor))
+        }
+    }
+
+    fn parse_args(&mut self) -> Result<Vec<Term>, String> {
+        let mut args = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b')') {
+            self.next();
+            return Ok(args);
+        }
+        loop {
+            args.push(self.parse_term()?);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => {
+                    self.next();
+                }
+                Some(b')') => {
+                    self.next();
+                    break;
+                }
+                Some(b) => {
+                    return Err(format!(
+                        "expected ',' or ')' in args, got '{}'",
+                        b as char
+                    ))
+                }
+                None => return Err("unexpected end of args".into()),
+            }
+        }
+        Ok(args)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_simple_rule() {
+        let rules = parse_prolog_rules("fire(Where) :- smoke(Where).");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].body.len(), 1);
+        assert!(matches!(&rules[0].body[0], BodyGoal::Positive(_)));
+    }
+
+    #[test]
+    fn parse_conjunction_rule() {
+        let rules = parse_prolog_rules("lemonade(Drink) :- sour(Drink), sweet(Drink).");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].body.len(), 2);
+    }
+
+    #[test]
+    fn parse_negation_in_body() {
+        let rules = parse_prolog_rules("ok(X) :- good(X), \\+ bad(X).");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].body.len(), 2);
+        assert!(matches!(&rules[0].body[0], BodyGoal::Positive(_)));
+        assert!(matches!(&rules[0].body[1], BodyGoal::Negative(_)));
+    }
+
+    #[test]
+    fn parse_fact_yields_empty_body() {
+        let rules = parse_prolog_rules("mortal(stan).");
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].body.is_empty());
+    }
+
+    #[test]
+    fn parse_skips_comments_and_blank_lines() {
+        let src = "% This is a comment\n\nfire(W) :- smoke(W).";
+        let rules = parse_prolog_rules(src);
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_multiple_rules() {
+        let src = "fire(W) :- smoke(W).\nalarm(W) :- smoke(W).";
+        let rules = parse_prolog_rules(src);
+        assert_eq!(rules.len(), 2);
+    }
+
+    #[test]
+    fn transduce_fact_produces_no_output() {
+        let clp = transduce_source("mortal(stan).");
+        assert!(clp.is_empty());
+    }
+
+    #[test]
+    fn transduce_fire_smoke() {
+        let clp = transduce_source("fire(Where) :- smoke(Where).");
+        assert!(clp.contains("transduced-fire-on-smoke-0"));
+        assert!(clp.contains("(smoke ?Where)"));
+        assert!(clp.contains("(str-cat \"fire(\" ?Where \")\")"));
+    }
+
+    #[test]
+    fn transduce_lemonade_two_triggers() {
+        let clp = transduce_source("lemonade(Drink) :- sour(Drink), sweet(Drink).");
+        assert!(clp.contains("transduced-lemonade-on-sour-0"));
+        assert!(clp.contains("transduced-lemonade-on-sweet-1"));
+        assert!(clp.contains("(sour ?Drink)"));
+        assert!(clp.contains("(sweet ?Drink)"));
+    }
+
+    #[test]
+    fn transduce_unbound_variable_as_literal() {
+        let clp = transduce_source("head(A, B) :- cond(A).");
+        assert!(clp.contains("?A"));
+        // B is unbound — appears as literal string in the closing segment
+        assert!(clp.contains(",B)\""));
+    }
+
+    #[test]
+    fn transduce_negative_condition_emits_comment() {
+        let clp = transduce_source("ok(X) :- good(X), \\+ bad(X).");
+        assert!(clp.contains("transduced-ok-on-good-0"));
+        assert!(clp.contains("; NOTE:"));
+        assert!(clp.contains("negative condition"));
+        // Only one defrule — the negative goal has no defrule
+        assert_eq!(clp.matches("(defrule").count(), 1);
+    }
+
+    #[test]
+    fn transduce_multiple_rules_counter_increments() {
+        let clp = transduce_source("fire(W) :- smoke(W).\nalarm(W) :- smoke(W).");
+        assert!(clp.contains("transduced-fire-on-smoke-0"));
+        assert!(clp.contains("transduced-alarm-on-smoke-1"));
+    }
+
+    #[test]
+    fn transduce_nullary_head() {
+        // Head with no args — emitted as plain string literal
+        let clp = transduce_source("alert :- smoke(X).");
+        assert!(clp.contains("\"alert\""));
+    }
+}

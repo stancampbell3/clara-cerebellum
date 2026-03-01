@@ -30,6 +30,7 @@ pub mod relay;
 pub mod result;
 pub mod session;
 pub mod transpile;
+pub mod transduction;
 
 pub use controller::CycleController;
 pub use error::CycleError;

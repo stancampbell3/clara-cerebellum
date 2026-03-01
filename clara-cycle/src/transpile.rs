@@ -426,7 +426,7 @@ impl ClipsParser {
 // ── Renderers ─────────────────────────────────────────────────────────────────
 
 /// Render a term as a CLIPS ordered-fact string, e.g. `(man_with_plan stan)`.
-fn render_clips_fact(term: &Term) -> String {
+pub(crate) fn render_clips_fact(term: &Term) -> String {
     match term {
         Term::Atom(s) => format!("({})", clips_symbol_for_functor(s)),
         Term::Compound { functor, args } => {
@@ -441,7 +441,7 @@ fn render_clips_fact(term: &Term) -> String {
 }
 
 /// Render a single CLIPS fact field value (argument position).
-fn render_clips_field(term: &Term) -> String {
+pub(crate) fn render_clips_field(term: &Term) -> String {
     match term {
         Term::Atom(s) => {
             if is_simple_clips_symbol(s) {
@@ -488,7 +488,7 @@ fn render_clips_retract(term: &Term) -> String {
 }
 
 /// Render a term as a Prolog term string, e.g. `man_with_plan(stan)`.
-fn render_prolog_term(term: &Term) -> String {
+pub(crate) fn render_prolog_term(term: &Term) -> String {
     match term {
         Term::Atom(s) => prolog_atom_render(s),
         Term::Variable(s) => ensure_prolog_var(s),
