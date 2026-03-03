@@ -1,0 +1,15 @@
+[package]
+name = "clara-dagda"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "In-memory DuckDB predicate cache with 4-valued logic for Clara reasoning sessions"
+publish.workspace = true
+
+[dependencies]
+duckdb    = { version = "1.2.2", features = ["bundled"] }
+serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid      = { version = "1", features = ["v4", "serde"] }
+thiserror = "2.0.17"
+log       = "0.4"

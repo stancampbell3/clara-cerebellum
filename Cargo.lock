@@ -1077,6 +1077,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "clara-dagda"
+version = "0.1.0"
+dependencies = [
+ "duckdb",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "uuid",
+]
+
+[[package]]
 name = "clara-frontdesk-poc"
 version = "0.1.0"
 dependencies = [
