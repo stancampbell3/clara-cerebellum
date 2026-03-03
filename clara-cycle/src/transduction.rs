@@ -125,16 +125,21 @@ pub fn transduce(rules: &[PrologRule]) -> String {
                     ));
                 }
                 BodyGoal::Positive(trigger) => {
+                    let effective = match effective_trigger(trigger) {
+                        Some(t) => t,
+                        None => continue, // skip meta-predicate, no counter increment
+                    };
+
                     let rule_name = format!(
                         "transduced-{}-on-{}-{}",
                         head_functor,
-                        term_functor_name(trigger),
+                        term_functor_name(effective),
                         counter,
                     );
                     counter += 1;
 
-                    let bound_vars = collect_vars(trigger);
-                    let lhs = render_clips_fact(trigger);
+                    let bound_vars = collect_vars(effective);
+                    let lhs = render_clips_fact(effective);
                     let rhs_expr = render_head_goal_expr(&rule.head, &bound_vars);
                     let comment = format_rule_comment(rule);
 
@@ -295,6 +300,60 @@ fn render_arg_as_literal(t: &Term) -> String {
             format!("{}({})", functor, inner.join(","))
         }
     }
+}
+
+/// Resolve the effective CLIPS trigger for a positive body goal.
+///
+/// - `assertz(T)` / `assert(T)` / `asserta(T)` → unwrap to `T`
+///   (trigger on the asserted fact, not the meta-call)
+/// - Other known meta-predicates (I/O, control, arithmetic, etc.) → `None`
+///   (no meaningful CLIPS trigger; skip the rule)
+/// - All other goals → `Some(t)` (use as-is)
+fn effective_trigger(t: &Term) -> Option<&Term> {
+    match t {
+        Term::Compound { functor, args }
+            if args.len() == 1
+                && matches!(functor.as_str(), "assertz" | "assert" | "asserta") =>
+        {
+            Some(&args[0])
+        }
+        Term::Compound { functor, .. } if is_meta_predicate(functor) => None,
+        Term::Atom(s) if is_meta_predicate(s) => None,
+        _ => Some(t),
+    }
+}
+
+fn is_meta_predicate(name: &str) -> bool {
+    matches!(
+        name,
+        "retract"
+            | "retractall"
+            | "abolish"
+            | "format"
+            | "write"
+            | "writeln"
+            | "nl"
+            | "print"
+            | "read"
+            | "copy_term"
+            | "functor"
+            | "arg"
+            | "call"
+            | "bagof"
+            | "setof"
+            | "findall"
+            | "aggregate_all"
+            | "is"
+            | "succ"
+            | "plus"
+            | "true"
+            | "fail"
+            | "otherwise"
+            | "coire_publish_assert"
+            | "coire_publish"
+            | "coire_emit"
+            | "coire_poll"
+    )
 }
 
 fn format_rule_comment(rule: &PrologRule) -> String {
@@ -811,5 +870,40 @@ mod tests {
     fn decorate_multi_arg_head() {
         let pl = decorate_source("parent(tom, bob) :- father(tom, bob).");
         assert!(pl.contains("coire_publish_assert(parent(tom,bob))"));
+    }
+
+    // ── effective_trigger / meta-predicate handling ───────────────────────────
+
+    #[test]
+    fn transduce_assertz_unwraps_to_inner_fact() {
+        let clp = transduce_source(
+            "prejudiced(Who,Whom,Group) :- member_of(Who,Group), assertz(dislikes(Who,Whom)).",
+        );
+        // Must trigger on the asserted fact, NOT the assertz wrapper
+        assert!(clp.contains("(dislikes ?Who ?Whom)"));
+        // No defrule should be triggered by assertz itself
+        assert!(!clp.contains("on-assertz-"));
+        assert!(!clp.contains("(assertz"));
+        // Both vars bound from LHS
+        assert!(clp.contains("(str-cat \"prejudiced(\" ?Who \",\" ?Whom \",Group)\")"));
+    }
+
+    #[test]
+    fn transduce_skips_retract() {
+        let clp = transduce_source("clean(X) :- dirty(X), retract(dirty(X)).");
+        assert!(clp.contains("transduced-clean-on-dirty-0"));
+        // retract generates no defrule (check CLIPS pattern, not the comment)
+        assert!(!clp.contains("on-retract-"));
+        assert!(!clp.contains("(retract"));
+        assert_eq!(clp.matches("(defrule").count(), 1);
+    }
+
+    #[test]
+    fn transduce_skips_io_predicates() {
+        // writeln/1 is a meta-predicate — no defrule should be generated for it
+        let clp = transduce_source("logged(X) :- event(X), writeln(X).");
+        assert_eq!(clp.matches("(defrule").count(), 1);
+        assert!(!clp.contains("on-writeln-"));
+        assert!(!clp.contains("(writeln"));
     }
 }
