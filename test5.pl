@@ -27,6 +27,7 @@ dislikes(lady_pantsuit, mittens).
 
 % testing 
 % outmembers are disliked
+prejudiced(Who, Whom, Group) :- dislikes(Who, Whom), group(Group), member_of(Whom, Group).
 prejudiced(Who, Whom, Group) :- group(Group), suspect(Who), murder(Whom), member_of(Who, Group), \+ member_of(Whom, Group), assertz(dislikes(Who, Whom)).
 
 :- assert(group(hubology)).
