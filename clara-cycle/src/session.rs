@@ -35,6 +35,7 @@ impl DeductionSession {
             return Ok(());
         }
         let code = clauses.join("\n");
+        log::debug!("Seeding Prolog with clauses:\n{}", code);
         self.prolog.consult_string(&code)?;
         Ok(())
     }

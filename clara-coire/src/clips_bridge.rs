@@ -60,6 +60,7 @@ pub extern "C" fn rust_coire_emit(
             .map_err(|e| format!("invalid payload JSON: {}", e))?;
 
         let event = ClaraEvent::new(session_id, origin_str, payload_value);
+        log::info!("Emitting event from CLIPS: {:?}", event);
         global_coire()
             .write_event(&event)
             .map_err(|e| format!("write_event failed: {}", e))?;
