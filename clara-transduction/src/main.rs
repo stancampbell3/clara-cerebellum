@@ -9,7 +9,10 @@
 //! With `--decorate`:
 //!   Parses `<input.pl>` once, then writes two output files derived from the
 //!   input stem (e.g. `rules.pl` → `rules_clara.pl` + `rules_clara.clp`):
-//!     - `<stem>_clara.pl`  — Prolog rules decorated with `coire_publish_assert(Head)`
+//!     - `<stem>_clara.pl`  — Original Prolog source prepended with:
+//!         - `:- prolog_listen(...)` directives for every `dynamic` predicate
+//!         - The `updated/3` relay rule (publishes asserted facts to CLIPS)
+//!         - Comment delimiters marking the generated block
 //!     - `<stem>_clara.clp` — CLIPS defrules for speculative forward chaining
 //!   Stdout is not used when `--decorate` is active.
 //!
@@ -18,7 +21,7 @@
 use std::path::Path;
 use std::process;
 
-use clara_cycle::transduction::{decorate_rules, parse_prolog_rules, transduce};
+use clara_cycle::transduction::{decorate_source, parse_prolog_rules, transduce};
 
 fn main() {
     let raw: Vec<String> = std::env::args().collect();
@@ -58,7 +61,7 @@ fn main() {
 
         // Single parse pass shared by both outputs.
         let rules = parse_prolog_rules(&source);
-        let decorated_pl = decorate_rules(&rules);
+        let decorated_pl = decorate_source(&source);
         let clp = transduce(&rules);
 
         write_file(&pl_out.to_string_lossy(), &decorated_pl);

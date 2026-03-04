@@ -160,40 +160,64 @@ pub fn transduce_source(prolog_source: &str) -> String {
     transduce(&parse_prolog_rules(prolog_source))
 }
 
-/// Render Prolog rules with `coire_publish_assert(Head)` appended to each rule body.
+/// Full pipeline: prepend Clara integration preamble to Prolog source.
 ///
-/// Every rule `head :- g1, g2, ...` becomes `head :- g1, g2, ..., coire_publish_assert(head)`.
-/// Facts (rules with an empty body) are rendered verbatim — they need no decoration
-/// because they are asserted directly and do not go through the relay cycle.
+/// Scans the source for `:- dynamic(Functor/Arity).` directives, then prepends:
 ///
-/// Use `parse_prolog_rules` first, then pass the result to both `transduce` and
-/// `decorate_rules` to share a single parse pass.
-pub fn decorate_rules(rules: &[PrologRule]) -> String {
-    let mut out = String::new();
-    for rule in rules {
-        if rule.body.is_empty() {
-            out.push_str(&format!("{}.\n", render_prolog_term(&rule.head)));
-        } else {
-            let head_str = render_prolog_term(&rule.head);
-            let body_parts: Vec<_> = rule.body.iter().map(|g| match g {
-                BodyGoal::Positive(t) => render_prolog_term(t),
-                BodyGoal::Negative(t) => format!("\\+ {}", render_prolog_term(t)),
-            }).collect();
-            let publish = format!("coire_publish_assert({})", head_str);
-            out.push_str(&format!(
-                "{} :- {}, {}.\n",
-                head_str,
-                body_parts.join(", "),
-                publish
-            ));
-        }
-    }
-    out
+/// 1. A `:- prolog_listen(Functor/Arity, updated(Functor/Arity)).` directive for
+///    each dynamic predicate found.
+/// 2. The `updated/3` rule that relays asserted facts to CLIPS via
+///    `coire_publish_assert`.
+/// 3. Comment delimiters marking the generated block.
+///
+/// The original source is appended unchanged after the preamble.
+pub fn decorate_source(prolog_source: &str) -> String {
+    let indicators = extract_dynamic_indicators(prolog_source);
+    let preamble = generate_listen_preamble(&indicators);
+    format!("{}\n{}", preamble, prolog_source)
 }
 
-/// Full pipeline: Prolog source text → decorated Prolog source text.
-pub fn decorate_source(prolog_source: &str) -> String {
-    decorate_rules(&parse_prolog_rules(prolog_source))
+/// Extract `Functor/Arity` indicator strings from `:- dynamic(...)` directives.
+///
+/// Handles single-indicator and comma-separated multi-indicator forms on one line,
+/// e.g. `:- dynamic(foo/1).` or `:- dynamic(foo/1, bar/2).`
+fn extract_dynamic_indicators(source: &str) -> Vec<String> {
+    let mut indicators = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let inner = trimmed
+            .strip_prefix(":-")
+            .map(str::trim)
+            .and_then(|s| s.strip_prefix("dynamic("))
+            .and_then(|s| s.strip_suffix(")."));
+        if let Some(inner) = inner {
+            for part in inner.split(',') {
+                let ind = part.trim().to_string();
+                if !ind.is_empty() {
+                    indicators.push(ind);
+                }
+            }
+        }
+    }
+    indicators
+}
+
+/// Build the Clara integration preamble for a set of dynamic predicate indicators.
+fn generate_listen_preamble(indicators: &[String]) -> String {
+    let mut out = String::new();
+    out.push_str("% ── Clara integration (auto-generated) ──────────────────────────────────────\n");
+    for ind in indicators {
+        out.push_str(&format!(":- prolog_listen({}, updated({})).\n", ind, ind));
+    }
+    if !indicators.is_empty() {
+        out.push('\n');
+    }
+    out.push_str("updated(Pred, Action, Context) :-\n");
+    out.push_str("    clause(Head, _Body, Context),\n");
+    out.push_str("    coire_publish_assert(Head),\n");
+    out.push_str("    format('Updated ~w with action ~w in context ~p~n', [Pred, Action, Head]).\n");
+    out.push_str("% ── End Clara integration ───────────────────────────────────────────────────\n");
+    out
 }
 
 // ── Code-generation helpers ───────────────────────────────────────────────────
@@ -831,45 +855,50 @@ mod tests {
         assert!(clp.contains("\"alert\""));
     }
 
-    // ── decorate_rules ────────────────────────────────────────────────────────
+    // ── decorate_source ───────────────────────────────────────────────────────
 
     #[test]
-    fn decorate_fact_unchanged() {
-        let pl = decorate_source("man(stan).");
-        assert_eq!(pl.trim(), "man(stan).");
+    fn decorate_adds_listen_and_updated_rule() {
+        let src = ":- dynamic(murder/1).\nmurder(mittens).\n";
+        let pl = decorate_source(src);
+        assert!(pl.contains(":- prolog_listen(murder/1, updated(murder/1))."));
+        assert!(pl.contains("updated(Pred, Action, Context) :-"));
+        assert!(pl.contains("coire_publish_assert(Head)"));
     }
 
     #[test]
-    fn decorate_rule_appends_publish() {
-        let pl = decorate_source("fire(Where) :- smoke(Where).");
-        assert_eq!(
-            pl.trim(),
-            "fire(Where) :- smoke(Where), coire_publish_assert(fire(Where))."
-        );
+    fn decorate_original_source_preserved_verbatim() {
+        let src = ":- dynamic(murder/1).\nmurder(mittens).\naccuse(X) :- murder(V), suspect(X).\n";
+        let pl = decorate_source(src);
+        assert!(pl.contains(":- dynamic(murder/1)."));
+        assert!(pl.contains("murder(mittens)."));
+        assert!(pl.contains("accuse(X) :- murder(V), suspect(X)."));
+        // Rules must NOT be rewritten (no coire_publish_assert in rule bodies)
+        assert!(!pl.contains("accuse(X) :- murder(V), suspect(X), coire_publish_assert"));
     }
 
     #[test]
-    fn decorate_conjunction_rule() {
-        let pl = decorate_source("lemonade(Drink) :- sour(Drink), sweet(Drink).");
-        assert_eq!(
-            pl.trim(),
-            "lemonade(Drink) :- sour(Drink), sweet(Drink), coire_publish_assert(lemonade(Drink))."
-        );
+    fn decorate_multiple_dynamic_predicates() {
+        let src = ":- dynamic(murder/1).\n:- dynamic(suspect/1).\n:- dynamic(dislikes/2).\n";
+        let pl = decorate_source(src);
+        assert!(pl.contains(":- prolog_listen(murder/1, updated(murder/1))."));
+        assert!(pl.contains(":- prolog_listen(suspect/1, updated(suspect/1))."));
+        assert!(pl.contains(":- prolog_listen(dislikes/2, updated(dislikes/2))."));
     }
 
     #[test]
-    fn decorate_rule_with_negation() {
-        let pl = decorate_source("ok(X) :- good(X), \\+ bad(X).");
-        assert_eq!(
-            pl.trim(),
-            "ok(X) :- good(X), \\+ bad(X), coire_publish_assert(ok(X))."
-        );
+    fn decorate_no_dynamic_still_adds_updated_rule() {
+        let src = "fire(Where) :- smoke(Where).\n";
+        let pl = decorate_source(src);
+        assert!(pl.contains("updated(Pred, Action, Context) :-"));
+        assert!(!pl.contains("prolog_listen"));
     }
 
     #[test]
-    fn decorate_multi_arg_head() {
-        let pl = decorate_source("parent(tom, bob) :- father(tom, bob).");
-        assert!(pl.contains("coire_publish_assert(parent(tom,bob))"));
+    fn decorate_comment_delimiters_present() {
+        let pl = decorate_source(":- dynamic(foo/1).\n");
+        assert!(pl.contains("% ── Clara integration"));
+        assert!(pl.contains("% ── End Clara integration"));
     }
 
     // ── effective_trigger / meta-predicate handling ───────────────────────────

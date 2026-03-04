@@ -1,0 +1,7 @@
+{
+    "prolog_clauses": ["consult('test5.pl')."],
+    "clips_constructs": [],
+    "clips_file": "test5_clara.clp",
+    "initial_goal": "suspect(S).",
+    "max_cycles": 100
+}
