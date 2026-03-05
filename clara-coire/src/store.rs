@@ -41,12 +41,14 @@ impl CoireStore {
         })
     }
 
-    /// Save all events for `session_id` from a live `Coire` into this store.
+    /// Save pending events for `session_id` from a live `Coire` into this store.
     ///
-    /// Events are upserted by `event_id`, so calling this multiple times is safe.
+    /// Only `Pending` events are persisted — processed events have already been
+    /// acted upon and carry no value for session resumption. Events are upserted
+    /// by `event_id`, so calling this multiple times is safe.
     /// Returns the number of events saved.
     pub fn save_session(&self, session_id: Uuid, coire: &Coire) -> CoireResult<usize> {
-        let events = coire.read_all(session_id)?;
+        let events = coire.read_pending(session_id)?;
         let count = events.len();
         {
             let conn = self.conn.lock().unwrap();
@@ -284,7 +286,7 @@ mod tests {
         let (store, _f) = tmp_store();
         let sid = Uuid::new_v4();
         let src = make_coire_with_events(sid);
-        // Mark one processed so we confirm status is preserved
+        // Mark one processed — only the remaining pending event should be saved.
         let all = src.read_all(sid).unwrap();
         src.mark_processed(all[0].event_id).unwrap();
 
@@ -292,13 +294,11 @@ mod tests {
 
         let dst = Coire::new().unwrap();
         let restored = store.restore_session(sid, &dst).unwrap();
-        assert_eq!(restored, 2);
+        assert_eq!(restored, 1); // only the pending event was saved
 
         let events = dst.read_all(sid).unwrap();
-        assert_eq!(events.len(), 2);
-        // Statuses are preserved
-        assert_eq!(events[0].status, EventStatus::Processed);
-        assert_eq!(events[1].status, EventStatus::Pending);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, EventStatus::Pending);
     }
 
     #[test]

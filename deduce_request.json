@@ -1,7 +1,7 @@
 {
-    "prolog_clauses": ["consult('test6_clara.pl')."],
+    "prolog_clauses": ["consult('animal_id_clara.pl')."],
     "clips_constructs": [],
-    "clips_file": "test6_clara.clp",
-    "initial_goal": "test1(A).",
+    "clips_file": "animal_id_clara.clp",
+    "initial_goal": "animal(A), has(A,cold_blooded).",
     "max_cycles": 100
 }
