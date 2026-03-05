@@ -36,3 +36,4 @@ pub use controller::CycleController;
 pub use error::CycleError;
 pub use result::{CoireSnapshot, CycleStatus, DeductionResult};
 pub use session::DeductionSession;
+pub use clara_coire::CoireStore;

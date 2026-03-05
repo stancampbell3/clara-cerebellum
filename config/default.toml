@@ -33,6 +33,8 @@ storage_backend = "filesystem"
 storage_path = "./data/sessions"
 compression = "gzip"
 encryption = true
+# Coire persistent store — uncomment and set a path to enable.
+coire_store_path = "./data/coire.duckdb"
 
 [observability]
 log_level = "info"

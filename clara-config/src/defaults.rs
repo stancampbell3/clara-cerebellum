@@ -57,6 +57,7 @@ pub fn default_persistence_config() -> PersistenceConfig {
         storage_path: "./data/sessions".to_string(),
         compression: "gzip".to_string(),
         encryption: true,
+        coire_store_path: None,
     }
 }
 

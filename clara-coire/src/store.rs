@@ -138,6 +138,32 @@ impl CoireStore {
         Ok(events)
     }
 
+    /// Restore stored events for `from_id` into a live `Coire`, rewriting each
+    /// event's `session_id` to `into_id`.
+    ///
+    /// Use this when resuming a previous run under a new `DeductionSession` whose
+    /// UUIDs differ from the original. Returns the number of events restored.
+    pub fn restore_session_as(
+        &self,
+        from_id: Uuid,
+        into_id: Uuid,
+        coire: &Coire,
+    ) -> CoireResult<usize> {
+        let events = self.read_session(from_id)?;
+        let count = events.len();
+        for mut event in events {
+            event.session_id = into_id;
+            coire.write_event(&event)?;
+        }
+        log::info!(
+            "CoireStore: restored {} events from session {} as session {}",
+            count,
+            from_id,
+            into_id
+        );
+        Ok(count)
+    }
+
     fn upsert_event_with_conn(
         &self,
         conn: &Connection,
@@ -291,6 +317,29 @@ mod tests {
 
         assert_eq!(store.read_session(s1).unwrap().len(), 0);
         assert_eq!(store.read_session(s2).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn restore_session_as_remaps_id() {
+        let (store, _f) = tmp_store();
+        let old_sid = Uuid::new_v4();
+        let new_sid = Uuid::new_v4();
+
+        let src = make_coire_with_events(old_sid);
+        store.save_session(old_sid, &src).unwrap();
+
+        let dst = Coire::new().unwrap();
+        let restored = store.restore_session_as(old_sid, new_sid, &dst).unwrap();
+        assert_eq!(restored, 2);
+
+        // Events appear under the new session id, not the old one
+        assert_eq!(dst.read_all(new_sid).unwrap().len(), 2);
+        assert_eq!(dst.read_all(old_sid).unwrap().len(), 0);
+
+        // Each event's session_id field is rewritten
+        for event in dst.read_all(new_sid).unwrap() {
+            assert_eq!(event.session_id, new_sid);
+        }
     }
 
     #[test]

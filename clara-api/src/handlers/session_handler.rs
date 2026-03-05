@@ -28,6 +28,9 @@ pub struct AppState {
     pub subprocess_pool: SubprocessPool,
     /// Map of deduction_id → entry for all active / completed deductions.
     pub deductions: Arc<RwLock<HashMap<Uuid, DeductionEntry>>>,
+    /// Optional persistent Coire store. When `Some`, every `CycleController`
+    /// will save both engine mailboxes at the end of its run.
+    pub coire_store: Option<clara_cycle::CoireStore>,
 }
 
 /// Convert a clara-session::Session to API SessionResponse

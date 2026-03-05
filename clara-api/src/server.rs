@@ -1,4 +1,5 @@
 use actix_web::{web, App, HttpServer};
+use clara_cycle::CoireStore;
 use clara_session::{SessionManager, ManagerConfig};
 use clara_config::ConfigLoader;
 use log::info;
@@ -39,11 +40,31 @@ pub async fn start_server(
     // Subprocesses are created lazily on first session request, not during startup
     info!("Subprocess pool initialized (lazy creation enabled).");
 
+    // Optionally open the Coire persistent store.
+    let coire_store = if let Some(ref path) = config.persistence.coire_store_path {
+        match CoireStore::open(path) {
+            Ok(store) => {
+                info!("Coire persistent store opened at: {}", path);
+                Some(store)
+            }
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to open Coire store at '{}': {}", path, e),
+                ));
+            }
+        }
+    } else {
+        info!("Coire persistent store not configured — mailboxes will not be persisted.");
+        None
+    };
+
     // Create app state
     let app_state = web::Data::new(AppState {
         session_manager,
         subprocess_pool,
         deductions: Arc::new(RwLock::new(HashMap::new())),
+        coire_store,
     });
 
     // Create and start server
@@ -74,6 +95,7 @@ mod tests {
             session_manager: manager,
             subprocess_pool: pool,
             deductions: Arc::new(RwLock::new(HashMap::new())),
+            coire_store: None,
         };
         // Just verify it can be created
         let _cloned = state.clone();

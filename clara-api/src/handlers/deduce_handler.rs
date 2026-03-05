@@ -44,6 +44,7 @@ pub async fn start_deduce(
     }
 
     let state_bg = state.clone();
+    let coire_store = state.coire_store.clone();
 
     tokio::spawn(async move {
         let bg_result = tokio::task::spawn_blocking(move || {
@@ -53,8 +54,10 @@ pub async fn start_deduce(
                 session.seed_clips_file(path)?;
             }
             session.seed_clips(&constructs)?;
-            let mut controller =
-                CycleController::new(session, max_cycles, initial_goal, interrupt_bg);
+            let mut controller = {
+                let c = CycleController::new(session, max_cycles, initial_goal, interrupt_bg);
+                if let Some(store) = coire_store { c.with_store(store) } else { c }
+            };
             controller.run()
         })
         .await;

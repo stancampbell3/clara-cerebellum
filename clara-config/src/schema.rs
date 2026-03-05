@@ -65,6 +65,11 @@ pub struct PersistenceConfig {
     pub storage_path: String,
     pub compression: String,
     pub encryption: bool,
+    /// Path to the Coire persistent store DuckDB file.
+    /// When set, `CycleController` will automatically save both engine
+    /// mailboxes to this file at the end of every deduction run.
+    /// Omit or set to `null` to disable Coire persistence.
+    pub coire_store_path: Option<String>,
 }
 
 /// Observability configuration

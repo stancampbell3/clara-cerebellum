@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use uuid::Uuid;
+
 use crate::error::CycleError;
 use crate::relay::{relay_clips_to_prolog, relay_prolog_to_clips};
 use crate::result::{CoireSnapshot, CycleStatus, DeductionResult};
@@ -18,6 +20,9 @@ pub struct CycleController {
     initial_goal:  Option<String>,
     /// Set to `true` from outside to request early termination.
     interrupt:     Arc<AtomicBool>,
+    /// Optional persistent store. When set, both mailboxes are saved on every
+    /// exit from `run()` (converged, interrupted, or max-cycles exceeded).
+    store:         Option<clara_coire::CoireStore>,
 }
 
 impl CycleController {
@@ -27,7 +32,31 @@ impl CycleController {
         initial_goal: Option<String>,
         interrupt:    Arc<AtomicBool>,
     ) -> Self {
-        Self { session, max_cycles, initial_goal, interrupt }
+        Self { session, max_cycles, initial_goal, interrupt, store: None }
+    }
+
+    /// Attach a persistent [`CoireStore`]. Both mailboxes will be saved
+    /// automatically on every exit from [`run()`].
+    pub fn with_store(mut self, store: clara_coire::CoireStore) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Reload a previous run's Coire state into the current session's mailboxes.
+    ///
+    /// Events stored under `prev_prolog_id` / `prev_clips_id` are written into
+    /// the current session's IDs with their `session_id` fields rewritten.
+    /// Call this before [`run()`] when resuming a previous deduction.
+    pub fn restore_from(
+        &mut self,
+        store: &clara_coire::CoireStore,
+        prev_prolog_id: Uuid,
+        prev_clips_id: Uuid,
+    ) -> Result<(), CycleError> {
+        let coire = clara_coire::global();
+        store.restore_session_as(prev_prolog_id, self.session.prolog_id, coire)?;
+        store.restore_session_as(prev_clips_id, self.session.clips_id, coire)?;
+        Ok(())
     }
 
     /// Run the deduction loop until convergence, interrupt, or max cycles.
@@ -81,6 +110,7 @@ impl CycleController {
             let curr_snapshot = self.snapshot();
             if self.has_converged(&prev_snapshot, &curr_snapshot) {
                 log::info!("CycleController: converged after {} cycle(s)", cycle + 1);
+                self.save_to_store();
                 return Ok(DeductionResult {
                     status:            CycleStatus::Converged,
                     cycles:            cycle + 1,
@@ -97,6 +127,7 @@ impl CycleController {
             log::debug!("Interrupt check");
             if self.interrupt.load(Ordering::SeqCst) {
                 log::info!("CycleController: interrupted after {} cycle(s)", cycle + 1);
+                self.save_to_store();
                 return Ok(DeductionResult {
                     status:            CycleStatus::Interrupted,
                     cycles:            cycle + 1,
@@ -112,12 +143,26 @@ impl CycleController {
             "CycleController: max cycles exceeded ({} cycles) without convergence",
             self.max_cycles
         );
+        self.save_to_store();
         Err(CycleError::MaxCyclesExceeded(self.max_cycles))
     }
 
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /// Save both mailboxes to the store if one is configured.
+    /// Failures are logged as warnings and do not affect the cycle result.
+    fn save_to_store(&self) {
+        let Some(store) = &self.store else { return };
+        let coire = clara_coire::global();
+        if let Err(e) = store.save_session(self.session.prolog_id, coire) {
+            log::warn!("CycleController: failed to save prolog session to store: {}", e);
+        }
+        if let Err(e) = store.save_session(self.session.clips_id, coire) {
+            log::warn!("CycleController: failed to save clips session to store: {}", e);
+        }
+    }
 
     /// Run one Prolog pass.
     ///

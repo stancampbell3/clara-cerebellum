@@ -2,818 +2,377 @@
 
 ## Overview
 
-Clara Cerebellum supports multiple concurrent CLIPS sessions, each maintaining independent rule sets, facts, and execution state. This document describes the complete session lifecycle from creation to termination.
+A Clara deduction session is a paired Prolog + CLIPS reasoning environment that
+runs one reasoning cycle under `CycleController`. Sessions are short-lived and
+purpose-bound: one session per deduction request. This document describes the
+full lifecycle — creation, seeding, execution, termination — and how to use
+`CoireStore` to persist and restore a session's Coire mailbox state across runs.
+
+---
 
 ## Session Architecture
 
+Each deduction session owns two independent engine instances and two Coire
+event mailboxes identified by UUIDs.
+
 ```
-┌──────────────────────────────────────┐
-│      SessionManager                  │
-│  ┌────────────────────────────────┐  │
-│  │  sessions: HashMap<ID, Session>│  │
-│  └────────────────────────────────┘  │
-│           │                          │
-│           ├─▶ Session A (id: abc123) │
-│           │    ├─ ClipsEnvironment   │
-│           │    ├─ Facts              │
-│           │    └─ Rules              │
-│           │                          │
-│           ├─▶ Session B (id: def456) │
-│           │    ├─ ClipsEnvironment   │
-│           │    ├─ Facts              │
-│           │    └─ Rules              │
-│           │                          │
-│           └─▶ Session C (id: ghi789) │
-│                ├─ ClipsEnvironment   │
-│                ├─ Facts              │
-│                └─ Rules              │
-└──────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│  CycleController                                        │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  DeductionSession                               │   │
+│  │                                                 │   │
+│  │  prolog: PrologEnvironment  prolog_id: Uuid ────┼───┼──▶ Coire mailbox (in-memory)
+│  │  clips:  ClipsEnvironment   clips_id:  Uuid ────┼───┼──▶ Coire mailbox (in-memory)
+│  └─────────────────────────────────────────────────┘   │
+│                                                         │
+│  max_cycles:   u32                                      │
+│  initial_goal: Option<String>                           │
+│  interrupt:    Arc<AtomicBool>                          │
+│  store:        Option<CoireStore>   ◀── optional        │
+└─────────────────────────────────────────────────────────┘
 ```
+
+The global `Coire` singleton (one per process) stores all session mailboxes in
+a single in-memory DuckDB table, keyed by session UUID. `CoireStore` is a
+separate file-backed DuckDB that can snapshot and restore those mailboxes.
 
 ---
 
 ## Lifecycle States
 
 ```
-               ┌──────────────┐
-               │ Initializing │
-               └──────┬───────┘
-                      │
-                      ▼
-               ┌─────────────┐
-          ┌───▶│   Active    │◀───┐
-          │    └──────┬──────┘    │
-          │           │           │
-          │           ▼           │
-          │    ┌─────────────┐   │
-          │    │  Evaluating │───┘
-          │    └──────┬──────┘
-          │           │
-          │           ▼
-          │    ┌─────────────┐
-          └────│    Idle     │
-               └──────┬──────┘
-                      │
-                      ▼
-               ┌─────────────┐
-               │   Paused*   │
-               └──────┬──────┘
-                      │
-                      ▼
-               ┌─────────────┐
-               │ Terminated  │
-               └─────────────┘
-
-* Paused state reserved for future pause/resume functionality
+  DeductionSession::new()
+          │
+          ▼
+    ┌───────────┐
+    │  Created  │  UUIDs assigned, engines initialized
+    └─────┬─────┘
+          │  seed_prolog() / seed_clips() / seed_clips_file()
+          ▼
+    ┌───────────┐
+    │   Seeded  │  Knowledge loaded into engines
+    └─────┬─────┘
+          │  (optional) controller.restore_from()
+          ▼
+    ┌───────────┐
+    │  Restored │  Previous Coire state reloaded
+    └─────┬─────┘
+          │  controller.run()
+          ▼
+    ┌───────────┐
+    │  Running  │  Prolog ↔ CLIPS cycles executing
+    └─────┬─────┘
+          │
+    ┌─────┴──────────────────────────┐
+    │                                │
+    ▼                                ▼
+┌───────────┐               ┌─────────────────┐
+│ Converged │               │   Interrupted   │
+│           │               │  (or MaxCycles) │
+└─────┬─────┘               └────────┬────────┘
+      │                              │
+      │  (if store configured)       │  (if store configured)
+      └──────────┬───────────────────┘
+                 │  save_to_store() called automatically
+                 ▼
+         ┌─────────────┐
+         │   Persisted │  Both mailboxes written to CoireStore
+         └─────────────┘
 ```
-
-### State Descriptions
-
-**Initializing**: CLIPS environment being created
-**Active**: Ready to accept commands, rules, and queries
-**Evaluating**: Currently executing CLIPS code (eval or run)
-**Idle**: Session exists but not actively used (future: timeout cleanup)
-**Paused**: Reserved for future pause/resume functionality
-**Terminated**: All resources freed, session no longer accessible
 
 ---
 
-## Session Creation
-
-### API Endpoint
-
-```http
-POST /sessions
-Content-Type: application/json
-
-{
-  "user_id": "required_user_id",
-  "name": "optional_session_name",
-  "config": {
-    "max_facts": 1000,
-    "max_rules": 500,
-    "max_memory_mb": 128
-  },
-  "preload": ["file1.clp"],
-  "metadata": {"key": "value"}
-}
-```
-
-**Note**: Our implementation requires `user_id` for multi-user session management. The `name` field is optional for human-readable session identification.
-
-### Response
-
-```http
-HTTP/1.1 201 Created
-Content-Type: application/json
-
-{
-  "session_id": "sess-abc123def456",
-  "user_id": "user-123",
-  "started": "2025-12-21T10:30:00Z",
-  "touched": "2025-12-21T10:30:00Z",
-  "status": "active",
-  "resources": {
-    "facts": 0,
-    "rules": 0,
-    "objects": 0
-  },
-  "limits": {
-    "facts": 1000,
-    "rules": 500,
-    "objects": 0,
-    "memory_mb": 128
-  }
-}
-```
-
-### Implementation Flow
+## Creating a Session
 
 ```rust
-// clara-session/src/manager.rs
-impl SessionManager {
-    pub fn create_session(&mut self, config: SessionConfig) -> Result<SessionId> {
-        // 1. Generate unique session ID
-        let session_id = SessionId::new();
+use clara_cycle::{DeductionSession, CycleController, CycleStatus};
+use std::sync::{Arc, atomic::AtomicBool};
 
-        // 2. Create CLIPS environment
-        let env = ClipsEnvironment::new()?;
+// 1. Create the paired engine environment
+let mut session = DeductionSession::new()?;
 
-        // 3. Initialize session state
-        let session = Session {
-            id: session_id.clone(),
-            env,
-            created_at: Utc::now(),
-            status: SessionStatus::Initialized,
-            config,
-        };
+// 2. Seed Prolog knowledge
+session.seed_prolog(&[
+    "man(socrates).".into(),
+    "mortal(X) :- man(X).".into(),
+])?;
 
-        // 4. Store in manager
-        self.sessions.insert(session_id.clone(), session);
+// 3. (Optional) Seed CLIPS knowledge from a file or inline constructs
+session.seed_clips_file("/path/to/rules.clp")?;
+// or:
+session.seed_clips(&[
+    "(defrule mortal-clips (man ?x) => (assert (mortal ?x)))".into(),
+])?;
 
-        // 5. Return ID
-        Ok(session_id)
-    }
-}
+// 4. Create the controller
+let interrupt = Arc::new(AtomicBool::new(false));
+let mut controller = CycleController::new(
+    session,
+    100,                              // max cycles
+    Some("mortal(X)".into()),         // initial Prolog goal (cycle 0 only)
+    interrupt,
+);
 ```
+
+`DeductionSession::new()` immediately assigns two fresh UUIDs —
+`prolog_id` and `clips_id` — and registers both as Coire mailboxes with the
+global `Coire` singleton.
 
 ---
 
-## Session Initialization
-
-### Loading Rules
-
-```http
-POST /sessions/{session_id}/rules
-Content-Type: application/json
-
-{
-  "rules": [
-    "(defrule example (fact ?x) => (printout t ?x crlf))",
-    "(defrule another (data ?y) => (assert (processed ?y)))"
-  ]
-}
-```
-
-### Loading Facts
-
-```http
-POST /sessions/{session_id}/facts
-Content-Type: application/json
-
-{
-  "facts": [
-    "(fact value1)",
-    "(data value2)"
-  ]
-}
-```
-
-### Implementation
+## Running the Cycle
 
 ```rust
-impl Session {
-    pub fn load_rules(&mut self, rules: Vec<String>) -> Result<()> {
-        for rule in rules {
-            self.env.eval(&rule)?;
+match controller.run() {
+    Ok(result) => {
+        println!("Status:  {}", result.status);   // Converged | Interrupted
+        println!("Cycles:  {}", result.cycles);
+        println!("Prolog session: {}", result.prolog_session_id);
+        println!("CLIPS  session: {}", result.clips_session_id);
+        if let Some(solutions) = result.prolog_solutions {
+            println!("Solutions: {}", solutions);  // JSON array from cycle 0
         }
-        Ok(())
     }
-
-    pub fn load_facts(&mut self, facts: Vec<String>) -> Result<()> {
-        for fact in facts {
-            self.env.eval(&format!("(assert {})", fact))?;
-        }
-        Ok(())
+    Err(CycleError::MaxCyclesExceeded(n)) => {
+        eprintln!("Did not converge within {} cycles", n);
     }
+    Err(e) => eprintln!("Cycle error: {}", e),
 }
 ```
 
----
+### What each cycle does
 
-## Active Session Operations
-
-### Evaluate Expression
-
-```http
-POST /sessions/{session_id}/evaluate
-Content-Type: application/json
-
-{
-  "script": "(printout t \"Hello\" crlf)",
-  "timeout_ms": 2000
-}
-```
-
-**Response**:
-```json
-{
-  "stdout": "Hello\n",
-  "stderr": "",
-  "exit_code": 0,
-  "metrics": {
-    "elapsed_ms": 125,
-    "facts_added": null,
-    "rules_fired": null
-  },
-  "session": null
-}
-```
-
-### Run Rules
-
-```http
-POST /sessions/{session_id}/run
-Content-Type: application/json
-
-{
-  "max_iterations": 100
-}
-```
-
-**Response**:
-```json
-{
-  "rules_fired": 42,
-  "status": "completed",
-  "runtime_ms": 125
-}
-```
-
-### Query Facts
-
-```http
-GET /sessions/{session_id}/facts?pattern=(data%20?x)
-```
-
-**Response**:
-```json
-{
-  "matches": [
-    "(data value1)",
-    "(data value2)"
-  ],
-  "count": 2
-}
-```
-
-**Note**: Pattern matching is simplified in current implementation. Use `(find-all-facts ...)` in evaluate endpoint for advanced queries.
-
----
-
-## Session State Management
-
-### Get Session Info
-
-```http
-GET /sessions/{session_id}
-```
-
-**Response**:
-```json
-{
-  "session_id": "sess-abc123",
-  "user_id": "user-123",
-  "started": "2025-12-21T10:30:00Z",
-  "touched": "2025-12-21T10:35:22Z",
-  "status": "active",
-  "resources": {
-    "facts": 127,
-    "rules": 15,
-    "objects": 0
-  },
-  "limits": {
-    "facts": 1000,
-    "rules": 500,
-    "objects": 0,
-    "memory_mb": 128
-  }
-}
-```
-
-**Implementation Note**: Session statistics (rules_fired_total, evaluations_total, last_activity) are tracked in the session metadata but not yet exposed in this endpoint response. Will be added in a future update.
-
-### List All Sessions
-
-```http
-GET /sessions
-```
-
-**Response**:
-```json
-{
-  "sessions": [
-    {
-      "session_id": "sess-abc123",
-      "user_id": "user-123",
-      "started": "2025-12-21T10:30:00Z",
-      "touched": "2025-12-21T10:35:00Z",
-      "status": "active",
-      "resources": {
-        "facts": 127,
-        "rules": 15,
-        "objects": 0
-      },
-      "limits": {
-        "facts": 1000,
-        "rules": 500,
-        "objects": 0,
-        "memory_mb": 128
-      }
-    },
-    {
-      "session_id": "sess-def456",
-      "user_id": "user-456",
-      "started": "2025-12-21T09:15:00Z",
-      "touched": "2025-12-21T09:20:00Z",
-      "status": "idle",
-      "resources": {
-        "facts": 45,
-        "rules": 8,
-        "objects": 0
-      },
-      "limits": {
-        "facts": 1000,
-        "rules": 500,
-        "objects": 0,
-        "memory_mb": 128
-      }
-    }
-  ],
-  "total": 2
-}
-```
-
-### List User Sessions
-
-```http
-GET /sessions/user/{user_id}
-```
-
-Returns sessions for a specific user only. Same response format as listing all sessions.
-
----
-
-## Session Persistence
-
-### Save Session State
-
-```http
-POST /sessions/{session_id}/save
-Content-Type: application/json
-
-{
-  "user_id": "user-123",
-  "session_id": "sess-abc123",
-  "metadata": {"note": "checkpoint_before_changes"}
-}
-```
-
-**Response**:
-```json
-{
-  "status": "saved"
-}
-```
-
-**Current Implementation**: Session save updates the session metadata but does not yet create versioned snapshots. Persistence is in-memory only.
-
-### Restore Session (Planned)
-
-```http
-POST /sessions/restore
-Content-Type: application/json
-
-{
-  "snapshot_id": "snap_xyz789"
-}
-```
-
-**Status**: Not yet implemented. Planned for future release.
-
-### Persistence Backends
-
-**Memory** (current):
-- Session state kept in RAM via `SessionStore`
-- Lost on server restart
-- Fast access
-- No disk persistence
-
-**Disk** (planned):
-- CLIPS save/load to `.clp` files
-- Survives server restart
-- Slower than memory
-
-**Database** (future):
-- PostgreSQL or SQLite
-- Full query capabilities
-- Versioned snapshots
+| Step | Action |
+|------|--------|
+| 1 | **Prolog pass** — dispatch Coire events from Prolog mailbox; on cycle 0 execute `initial_goal` and collect all solutions |
+| 2 | **Relay Prolog → CLIPS** — drain Prolog mailbox, transpile, forward to CLIPS |
+| 3 | **Evaluator pass** — stub; future LLM/FieryPit hook |
+| 4 | **CLIPS pass** — dispatch Coire events from CLIPS mailbox; run `(run)` to saturation |
+| 5 | **Relay CLIPS → Prolog** — drain CLIPS mailbox, transpile, forward to Prolog |
+| 6 | **Convergence check** — both mailboxes empty + CLIPS agenda empty + snapshot stable |
+| 7 | **Interrupt check** — poll `Arc<AtomicBool>` for early termination |
 
 ---
 
 ## Session Isolation
 
-### Resource Separation
+Each `DeductionSession` is fully isolated:
 
-Each session has independent:
-- **CLIPS environment** - Separate C environment pointer
-- **Fact base** - No fact sharing between sessions
-- **Rule base** - No rule sharing between sessions
-- **Execution state** - Independent agenda and activations
-
-### Memory Isolation
-
-```rust
-impl SessionManager {
-    pub fn get_session(&self, id: &SessionId) -> Option<&Session> {
-        self.sessions.get(id)
-    }
-
-    pub fn get_session_mut(&mut self, id: &SessionId) -> Option<&mut Session> {
-        self.sessions.get_mut(id)
-    }
-}
-```
-
-Sessions are accessed via HashMap, ensuring:
-- No cross-session interference
-- Thread-safe access via manager lock
-- Independent cleanup on termination
+- **Prolog**: separate SWI-Prolog engine instance with its own heap and database
+- **CLIPS**: separate CLIPS environment pointer; no fact/rule sharing
+- **Coire**: events are scoped to UUIDs — `prolog_id` and `clips_id` — so
+  mailboxes from different sessions never interfere
+- **Thread safety**: `CycleController::run()` is blocking; call from
+  `tokio::task::spawn_blocking` in async contexts
 
 ---
 
-## Session Termination
+## Coire Event Mailbox
 
-### Explicit Termination
+The `Coire` in-memory store is a global DuckDB instance holding all pending
+events across all sessions. Key operations used internally by the cycle:
 
-```http
-DELETE /sessions/{session_id}
-```
+| Operation | Purpose |
+|-----------|---------|
+| `write_event(&event)` | Enqueue an event to a session's mailbox |
+| `poll_pending(session_id)` | Atomically read + mark all pending events processed |
+| `count_pending(session_id)` | Count events waiting in a mailbox |
+| `drain_session(session_id)` | Mark all pending events drained (soft discard) |
+| `clear_session(session_id)` | Hard delete all events for a session |
 
-**Response**:
-```http
-HTTP/1.1 204 No Content
-```
+Events carry a typed JSON `payload`, an `origin` string (`"prolog"`,
+`"clips"`, or custom), a timestamp, and an `EventStatus`
+(`Pending | Processed | Drained`).
 
-**Implementation**:
+The global Coire is initialized once at process startup:
+
 ```rust
-impl SessionManager {
-    pub fn terminate_session(&mut self, id: &SessionId) -> Result<()> {
-        // 1. Get session
-        let mut session = self.sessions.remove(id)
-            .ok_or(ManagerError::SessionNotFound)?;
-
-        // 2. Change status
-        session.status = SessionStatus::Terminating;
-
-        // 3. Clear CLIPS environment
-        session.env.clear()?;
-
-        // 4. Drop session (RAII cleanup)
-        drop(session);
-
-        Ok(())
-    }
-}
+clara_coire::init_global()?;
 ```
-
-### Automatic Cleanup (Planned)
-
-**Timeout-based cleanup**: Not yet implemented. Future enhancement will add:
-- Configurable idle timeout
-- Background cleanup task
-- Automatic termination of stale sessions
-
-**Resource-based cleanup**: Planned features:
-- Sessions exceeding memory limits
-- Sessions with too many facts/rules
-- Sessions in error state
-
-**Current Status**: Resource limits are tracked but not enforced. Sessions must be explicitly terminated via `DELETE /sessions/{session_id}`.
 
 ---
 
-## Concurrency and Thread Safety
+## Persistent Coire Store
 
-### Manager-Level Locking
+`CoireStore` is a file-backed DuckDB that can snapshot and restore session
+mailboxes across process restarts or between deduction runs.
+
+### Enabling persistence via configuration
+
+In `clara-api`, set `coire_store_path` in the `[persistence]` section of your
+config file. The server opens the store at startup and attaches it to every
+`CycleController` automatically:
+
+```toml
+# config/default.toml  (or your environment overlay)
+[persistence]
+coire_store_path = "./data/coire.duckdb"
+```
+
+The path is created if it does not exist. If the path is configured but cannot
+be opened the server will refuse to start with a clear error message. Omit the
+key (or leave it commented out) to disable persistence.
+
+### Enabling persistence programmatically
+
+When using `clara-cycle` directly, open and attach a store manually:
 
 ```rust
-lazy_static! {
-    static ref SESSION_MANAGER: Mutex<SessionManager> =
-        Mutex::new(SessionManager::new());
-}
+use clara_cycle::CoireStore;                  // re-exported from clara-coire
 
-pub fn with_session<F, R>(id: &SessionId, f: F) -> Result<R>
-where
-    F: FnOnce(&mut Session) -> Result<R>,
-{
-    let mut manager = SESSION_MANAGER.lock().unwrap();
-    let session = manager.get_session_mut(id)
-        .ok_or(ManagerError::SessionNotFound)?;
-    f(session)
-}
+let store = CoireStore::open("/var/lib/clara/coire.duckdb")?;
+
+let mut controller = CycleController::new(session, 100, goal, interrupt)
+    .with_store(store.clone());               // attach the store
 ```
 
-### Concurrent Session Access
+With a store attached either way, **both mailboxes are saved automatically** at
+every `run()` exit point — converged, interrupted, and max-cycles exceeded.
+Save failures are logged as warnings and do not alter the cycle result.
 
-**Safe**: Multiple sessions can execute simultaneously
-```
-Session A (thread 1) ─▶ CLIPS env A
-Session B (thread 2) ─▶ CLIPS env B
+### CoireStore API
+
+| Method | Description |
+|--------|-------------|
+| `CoireStore::open(path)` | Open or create a persistent store file |
+| `save_session(session_id, coire)` | Upsert all events for a session; safe to call repeatedly |
+| `restore_session(session_id, coire)` | Reload stored events back into a live Coire (same UUIDs) |
+| `restore_session_as(from_id, into_id, coire)` | Reload stored events, rewriting session UUID (for new sessions) |
+| `read_session(session_id)` | Read stored events without modifying state |
+| `delete_session(session_id)` | Remove all stored events for a session |
+| `list_sessions()` | Return all session UUIDs with stored events |
+
+`CoireStore` is `Clone` — clones share the same underlying connection.
+
+### Resuming a previous deduction
+
+When creating a new `DeductionSession`, fresh UUIDs are assigned. To resume
+where a prior run left off, use `restore_from()` to remap stored events to
+the new session's IDs before calling `run()`:
+
+```rust
+// Previous run returned these IDs in DeductionResult:
+let prev_prolog_id: Uuid = result.prolog_session_id;
+let prev_clips_id:  Uuid = result.clips_session_id;
+
+// New session gets fresh UUIDs
+let mut session = DeductionSession::new()?;
+session.seed_prolog(&clauses)?;
+
+let mut controller = CycleController::new(session, 100, None, interrupt)
+    .with_store(store.clone());
+
+// Remap stored events from prev UUIDs → new session UUIDs
+controller.restore_from(&store, prev_prolog_id, prev_clips_id)?;
+
+controller.run()?;
 ```
 
-**Unsafe**: Single session accessed by multiple threads
-```
-Session A (thread 1) ─┐
-                      ├─▶ CLIPS env A  ❌ RACE CONDITION
-Session A (thread 2) ─┘
-```
+`restore_from` calls `restore_session_as` for each mailbox, rewriting each
+event's `session_id` in transit so they arrive in the correct new mailbox.
 
-**Solution**: Manager-level mutex ensures sequential access per session
+### Manual save / selective persistence
+
+You can also save or restore without attaching a store to the controller:
+
+```rust
+let coire = clara_coire::global();
+
+// Save after a run:
+store.save_session(result.prolog_session_id, coire)?;
+store.save_session(result.clips_session_id,  coire)?;
+
+// Inspect without restoring:
+let events = store.read_session(result.prolog_session_id)?;
+
+// Clean up stored state:
+store.delete_session(result.prolog_session_id)?;
+store.delete_session(result.clips_session_id)?;
+```
 
 ---
 
-## Session Lifecycle Hooks (Planned)
+## HTTP API
 
-### Pre-Creation Hook (Not Implemented)
+The `clara-api` crate exposes deduction and Coire management endpoints.
 
-Planned feature to add validation and logging hooks before session creation.
+### Deduction
 
-**Planned use cases**:
-- Validate session configuration
-- Check resource limits
-- Log session creation
-- Enforce quotas
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/deduce` | Submit a deduction request; returns a deduction ID |
+| `GET` | `/deduce/{id}` | Poll the status and result of a deduction |
+| `DELETE` | `/deduce/{id}` | Cancel a running deduction (sets the interrupt flag) |
 
-### Post-Termination Hook (Not Implemented)
+### Coire inspection
 
-Planned feature to add cleanup and notification hooks after session termination.
-
-**Planned use cases**:
-- Persist final state
-- Collect metrics
-- Notify external systems
-- Archive session data
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/cycle/coire/snapshot` | Pending event counts per active session |
+| `POST` | `/cycle/coire/push` | Inject a synthetic event into any session's mailbox |
 
 ---
 
 ## Error Handling
 
-### Session Creation Errors
+| Error | Cause |
+|-------|-------|
+| `CycleError::Prolog(e)` | SWI-Prolog engine error |
+| `CycleError::Clips(msg)` | CLIPS engine error |
+| `CycleError::Coire(e)` | DuckDB error in Coire or CoireStore |
+| `CycleError::MaxCyclesExceeded(n)` | No convergence within cycle budget |
+| `CycleError::SessionCreationFailed(msg)` | Engine initialization failure |
 
-```json
-{
-  "error": "ResourceLimitExceeded",
-  "message": "Maximum concurrent sessions (100) reached",
-  "details": {
-    "current_sessions": 100,
-    "limit": 100
-  }
-}
-```
-
-### Session Not Found
-
-```http
-HTTP/1.1 404 Not Found
-
-{
-  "error": "SessionNotFound",
-  "message": "Session abc123 does not exist",
-  "hint": "Session may have been terminated or expired"
-}
-```
-
-### Session In Use
-
-```http
-HTTP/1.1 409 Conflict
-
-{
-  "error": "SessionInUse",
-  "message": "Session abc123 is currently evaluating",
-  "hint": "Wait for evaluation to complete or use async API"
-}
-```
+Store errors (`CoireError`) surface as `CycleError::Coire` when returned from
+`restore_from`. Save errors inside `run()` are logged as warnings only.
 
 ---
 
-## Monitoring and Metrics
+## Concurrency
 
-### Session Metrics
-
-**Per-session**:
-- Creation timestamp
-- Last activity timestamp
-- Total evaluations
-- Total rules fired
-- Current fact count
-- Current rule count
-- Memory usage
-
-**Manager-level**:
-- Total sessions created (lifetime)
-- Active session count
-- Total memory usage
-- Average session duration
-- Session creation/termination rate
-
-### Health Check Endpoint
-
-```http
-GET /health/sessions
-```
-
-**Response**:
-```json
-{
-  "status": "healthy",
-  "active_sessions": 42,
-  "total_memory_mb": 1234,
-  "oldest_session_age_seconds": 86400,
-  "sessions_created_last_hour": 15
-}
-```
-
----
-
-## Best Practices
-
-### For API Users
-
-1. **Always delete sessions when done**:
-```javascript
-const session_id = await createSession();
-try {
-  await loadRules(session_id, rules);
-  await runRules(session_id);
-} finally {
-  await deleteSession(session_id);  // Ensure cleanup
-}
-```
-
-2. **Use session names for debugging**:
-```json
-{
-  "name": "user_12345_weather_query",
-  "config": {...}
-}
-```
-
-3. **Check session status before operations**:
-```javascript
-const session = await getSession(session_id);
-if (session.status !== "active") {
-  throw new Error("Session not ready");
-}
-```
-
-### For Server Operators
-
-1. **Configure session timeout**:
-```toml
-[sessions]
-idle_timeout_seconds = 3600
-max_concurrent = 100
-```
-
-2. **Monitor session churn**:
-- High creation rate might indicate leaks
-- Long-lived sessions might indicate unused resources
-
-3. **Regular cleanup**:
-```rust
-// Run every 5 minutes
-setInterval(() => {
-    manager.cleanup_idle_sessions(Duration::from_secs(3600));
-}, Duration::from_secs(300));
-```
+- `CycleController::run()` is **blocking** — never call it on an async thread
+- Use `tokio::task::spawn_blocking` in async handlers
+- Multiple `CycleController` instances run concurrently without interference
+  (each has its own `DeductionSession` with isolated Coire UUIDs)
+- `Coire` uses `Arc<Mutex<Connection>>` — all mailbox operations are serialized
+  but non-blocking for callers using `spawn_blocking`
+- `CoireStore` is likewise `Arc<Mutex<Connection>>` and safe to share across
+  threads via `Clone`
 
 ---
 
 ## Implementation Status
 
-### Implemented (Priority 1 & 2)
+### Implemented
 
-✅ Session creation with user_id and optional name
-✅ Session configuration with resource limits (tracked, not yet enforced)
-✅ Session termination
-✅ Rule loading via `POST /sessions/{session_id}/rules`
-✅ Fact loading via `POST /sessions/{session_id}/facts`
-✅ Expression evaluation via `POST /sessions/{session_id}/evaluate`
-✅ Run rules via `POST /sessions/{session_id}/run`
-✅ Query facts via `GET /sessions/{session_id}/facts`
-✅ List all sessions via `GET /sessions`
-✅ List user sessions via `GET /sessions/user/{user_id}`
-✅ Session status tracking (Initializing, Active, Evaluating, Idle, Paused, Terminated)
-✅ Session statistics (rules_fired_total, evaluations_total, last_activity)
-✅ Basic session isolation with separate CLIPS environments
-✅ In-memory state management via SessionStore
+- `DeductionSession` — paired Prolog + CLIPS engines with Coire UUIDs
+- `CycleController` — full Prolog ↔ CLIPS cycle with convergence detection
+- `Coire` — in-memory event mailbox with atomic `poll_pending`
+- `CoireStore` — file-backed persistent snapshot store
+  - `save_session`, `restore_session`, `restore_session_as`
+  - `delete_session`, `list_sessions`, `read_session`
+  - Upsert semantics (safe to save repeatedly)
+  - `CycleController::with_store` — auto-save on all exit paths
+  - `CycleController::restore_from` — resume from a previous run
+  - `persistence.coire_store_path` config key wired into `clara-api`
+- Prolog ↔ CLIPS relay with bidirectional term/fact transpilation
+- Prolog → CLIPS transduction (speculative forward chaining)
+- HTTP API: `/deduce` (POST/GET/DELETE), `/cycle/coire/snapshot`, `/cycle/coire/push`
 
-### Planned (Priority 3)
+### Planned
 
-📋 Snapshot versioning system
-📋 Restore from snapshot
-📋 Disk persistence (CLIPS save/load)
-📋 Database persistence backend
-
-### Planned (Priority 4)
-
-📋 Resource limits enforcement
-📋 Automatic idle timeout cleanup
-📋 Resource-based eviction policies
-
-### Planned (Priority 5)
-
-📋 Lifecycle hooks (pre-creation, post-termination)
-📋 Session templates
-📋 Session migration between servers
-📋 Distributed session management
+- Auto-expiry of stale Coire entries for long-running processes
+- `CoireStore` pruning by age or session count
+- Session resume exposed as a dedicated HTTP endpoint (`POST /deduce/resume`)
 
 ---
 
-## Troubleshooting
+## Related Documentation
 
-### Session Creation Fails
-
-**Symptom**: 500 error on `POST /sessions`
-
-**Causes**:
-- CLIPS environment initialization failure
-- Memory allocation failure
-- Resource limits exceeded
-
-**Debug**:
-```bash
-RUST_LOG=debug cargo run
-# Check logs for CLIPS initialization errors
-```
-
-### Session State Inconsistent
-
-**Symptom**: Facts disappear or rules don't fire
-
-**Causes**:
-- Concurrent access without proper locking
-- Unhandled errors during evaluation
-- CLIPS environment corruption
-
-**Debug**:
-1. Check session status
-2. Verify single-threaded access
-3. Enable CLIPS debug output
-
-### Memory Leak
-
-**Symptom**: Memory usage grows continuously
-
-**Causes**:
-- Sessions not terminated
-- CLIPS environments not freed
-- String allocations not freed (FFI callbacks)
-
-**Debug**:
-```bash
-# Monitor session count
-curl http://localhost:8080/health/sessions
-
-# Check for orphaned sessions
-# All sessions should eventually be terminated
-```
-
----
-
-## Reference
-
-### Related Documentation
-
-- `ARCHITECTURE.md` - Overall system design
-- `CLIPS_CALLBACKS.md` - Callback system details
-- `fiery_pit_endpoints.md` - Complete API reference
-
-### Source Code
-
-- Session manager: `clara-session/src/manager.rs`
-- Session struct: `clara-session/src/session.rs`
-- API handlers: `clara-api/src/handlers/`
-- Tests: `clara-session/tests/`
+- `ARCHITECTURE.md` — Overall system design
+- `docs/coire_cycle_next_steps.md` — Integration design notes for CoireStore
+- `clara-coire/src/coire.rs` — In-memory Coire implementation
+- `clara-coire/src/store.rs` — CoireStore persistent store implementation
+- `clara-cycle/src/controller.rs` — CycleController implementation
+- `clara-cycle/src/session.rs` — DeductionSession creation and seeding
