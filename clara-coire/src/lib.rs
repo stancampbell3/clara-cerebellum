@@ -1,6 +1,7 @@
 pub mod error;
 pub mod event;
 pub mod coire;
+pub mod store;
 
 #[cfg(feature = "ffi")]
 pub mod clips_bridge;
@@ -8,6 +9,7 @@ pub mod clips_bridge;
 pub use coire::Coire;
 pub use error::{CoireError, CoireResult};
 pub use event::{ClaraEvent, EventStatus};
+pub use store::CoireStore;
 
 use std::sync::OnceLock;
 

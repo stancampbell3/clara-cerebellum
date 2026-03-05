@@ -217,16 +217,16 @@ impl Coire {
     }
 }
 
-struct RawRow {
-    event_id: String,
-    session_id: String,
-    origin: String,
-    created_at_ms: i64,
-    payload: String,
-    status: String,
+pub(crate) struct RawRow {
+    pub(crate) event_id: String,
+    pub(crate) session_id: String,
+    pub(crate) origin: String,
+    pub(crate) created_at_ms: i64,
+    pub(crate) payload: String,
+    pub(crate) status: String,
 }
 
-fn raw_to_event(raw: RawRow) -> CoireResult<ClaraEvent> {
+pub(crate) fn raw_to_event(raw: RawRow) -> CoireResult<ClaraEvent> {
     Ok(ClaraEvent {
         event_id: Uuid::parse_str(&raw.event_id).unwrap(),
         session_id: Uuid::parse_str(&raw.session_id).unwrap(),

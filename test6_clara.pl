@@ -1,0 +1,40 @@
+% ── Clara integration (auto-generated) ──────────────────────────────────────
+:- prolog_listen(student/1, updated(student/1)).
+:- prolog_listen(like/2, updated(like/2)).
+
+updated(Pred, Action, Context) :-
+    clause(Head, _Body, Context),
+    coire_publish_assert(Head),
+    format('Updated ~w with action ~w in context ~p~n', [Pred, Action, Head]).
+% ── End Clara integration ───────────────────────────────────────────────────
+
+:- dynamic(student/1).
+:- dynamic(like/2).
+
+student(jemina).
+student(davey).
+student(rich).
+student(donna).
+student(becky).
+
+like(davey, jemina).
+like(davey, rich).
+like(davey, donna).
+like(davey, becky).
+
+like(jemina, davey).
+like(jemina, rich).
+like(jemina, donna).
+like(jemina, becky).
+
+like(rich, davey).
+like(rich, jemina).
+like(rich, donna).
+like(rich, becky).
+
+like(donna, davey).
+
+% donna likes daveys friends
+test1(A) :- like(donna, davey), like(davey, A), assert(like(donna, A)).
+
+
