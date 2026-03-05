@@ -72,16 +72,57 @@ extract_path(Dict, [Key|Rest], Value) :-
     extract_field(Dict, Key, Sub),
     extract_path(Sub, Rest, Value).
 
+%% --- Helpers for response normalization and shortcut detection ---
+
+% shortcut_label/2 - map shortcut atom to the classifier label string
+shortcut_label(true,       "__label____resolved_true__").
+shortcut_label(false,      "__label____resolved_false__").
+shortcut_label(unresolved, "__label____unresolved__").
+
+% trim_leading_codes/2 - remove leading whitespace codes from a code list
+trim_leading_codes([], []).
+trim_leading_codes([C|Cs], Rest) :-
+    ( C =:= 32 ; C =:= 9 ; C =:= 10 ; C =:= 13 ), !,
+    trim_leading_codes(Cs, Rest).
+trim_leading_codes(List, List).
+
+% trim_leading/2 - remove leading whitespace from a string
+trim_leading(Str, Trimmed) :-
+    string_codes(Str, Codes),
+    trim_leading_codes(Codes, Codes2),
+    string_codes(Trimmed, Codes2).
+
+% response_shortcut/2 - detect if the response begins with a recognizable token
+%   and map it to one of the atoms: true, false, unresolved
+response_shortcut(Response, Shortcut) :-
+    % Accept atoms or strings
+    ( atom(Response) -> atom_string(Response, RespStr) ; RespStr = Response ),
+    string_lower(RespStr, Lower),
+    trim_leading(Lower, Trim),
+    ( sub_string(Trim, 0, _, _, "yes") -> Shortcut = true
+    ; sub_string(Trim, 0, _, _, "true") -> Shortcut = true
+    ; sub_string(Trim, 0, _, _, "no") -> Shortcut = false
+    ; sub_string(Trim, 0, _, _, "false") -> Shortcut = false
+    ; sub_string(Trim, 0, _, _, "unresolved") -> Shortcut = unresolved
+    ).
+
 %% descriminate - Extract the response from the LLM and classify it
 descriminate(Text, TruthValue) :-
     ponder_text(Text, LLMSez), % Get the JSON response from the LLM
     extract_nested(LLMSez, [hohi, response, response], Response),
     !,
-    atom_string(Text, TextStr),
-    atom_string(Response, RespStr),
-    string_concat(TextStr, " ", Tmp),
-    string_concat(Tmp, RespStr, Pair),
-    classify_text(Pair, TruthValue).
+    % If the LLM response begins with an explicit token, shortcut and return
+    % a single high-confidence result instead of calling the classifier.
+    ( response_shortcut(Response, Shortcut) ->
+        shortcut_label(Shortcut, LabelStr),
+        atom_json_dict(TruthValue, _{predictions: [_{label: LabelStr, probability: 0.99}]}, [])
+    ;
+        atom_string(Text, TextStr),
+        atom_string(Response, RespStr),
+        string_concat(TextStr, " ", Tmp),
+        string_concat(Tmp, RespStr, Pair),
+        classify_text(Pair, TruthValue)
+    ).
 descriminate(_, _) :-
     format(user_error, "Error: Could not extract response from LLM output.~n", []),
     fail.
@@ -91,11 +132,16 @@ descriminate_k(Text, K, Results) :-
     ponder_text(Text, LLMSez), % Get the JSON response from the LLM
     extract_nested(LLMSez, [hohi, response, response], Response),
     !,
-    atom_string(Text, TextStr),
-    atom_string(Response, RespStr),
-    string_concat(TextStr, " ", Tmp),
-    string_concat(Tmp, RespStr, Pair), % Combine the text and LLM's response
-    classify_text_k(Pair, K, Results). % Classify with top K results
+    ( response_shortcut(Response, Shortcut) ->
+        shortcut_label(Shortcut, LabelStr),
+        atom_json_dict(Results, _{predictions: [_{label: LabelStr, probability: 0.99}]}, [])
+    ;
+        atom_string(Text, TextStr),
+        atom_string(Response, RespStr),
+        string_concat(TextStr, " ", Tmp),
+        string_concat(Tmp, RespStr, Pair), % Combine the text and LLM's response
+        classify_text_k(Pair, K, Results) % Classify with top K results
+    ).
 descriminate_k(_, _, _) :-
     format(user_error, "Error: Could not extract response from LLM output.~n", []),
     fail.
