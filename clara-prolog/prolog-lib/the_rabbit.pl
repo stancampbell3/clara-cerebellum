@@ -104,6 +104,9 @@ response_shortcut(Response, Shortcut) :-
     ; sub_string(Trim, 0, _, _, "no") -> Shortcut = false
     ; sub_string(Trim, 0, _, _, "false") -> Shortcut = false
     ; sub_string(Trim, 0, _, _, "unresolved") -> Shortcut = unresolved
+    ; sub_string(Trim, 0, _, _, "that's correct") -> Shortcut = true
+    ; sub_string(Trim, 0, _, _, "correct") -> Shortcut = true
+    ; sub_string(Trim, 0, _, _, "that's incorrect") -> Shortcut = false
     ).
 
 %% descriminate - Extract the response from the LLM and classify it
