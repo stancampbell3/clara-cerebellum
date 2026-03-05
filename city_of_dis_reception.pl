@@ -1,5 +1,11 @@
 % For dev testing, clara_fy local
-clara_fy(Q, R) :- Q == "A Visitor claims to have been summoned by an Official of the City", R = true.
+
+% we will use context to power the inference backed conditions
+:- dynamic(context/1).
+
+%% We will now try the RAT
+%% clara_fy(Q, R) :- Q == "A Visitor claims to have been summoned by an Official of the City", R = true.
+:- use_module(library(the_rat)).
 
 %% City of Dis Reception
 %% ---------------------
