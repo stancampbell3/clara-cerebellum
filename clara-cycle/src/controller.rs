@@ -111,6 +111,7 @@ impl CycleController {
             if self.has_converged(&prev_snapshot, &curr_snapshot) {
                 log::info!("CycleController: converged after {} cycle(s)", cycle + 1);
                 self.save_to_store();
+                self.evict_coire_sessions();
                 return Ok(DeductionResult {
                     status:            CycleStatus::Converged,
                     cycles:            cycle + 1,
@@ -128,6 +129,7 @@ impl CycleController {
             if self.interrupt.load(Ordering::SeqCst) {
                 log::info!("CycleController: interrupted after {} cycle(s)", cycle + 1);
                 self.save_to_store();
+                self.evict_coire_sessions();
                 return Ok(DeductionResult {
                     status:            CycleStatus::Interrupted,
                     cycles:            cycle + 1,
@@ -144,12 +146,32 @@ impl CycleController {
             self.max_cycles
         );
         self.save_to_store();
+        self.evict_coire_sessions();
         Err(CycleError::MaxCyclesExceeded(self.max_cycles))
     }
 
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /// Remove all events for both engine mailboxes from the global in-memory
+    /// Coire. Called at every `run()` exit so processed events do not linger
+    /// after the session's engines are dropped. Always runs after
+    /// `save_to_store()` so the persistent snapshot is written first.
+    fn evict_coire_sessions(&self) {
+        let coire = clara_coire::global();
+        if let Err(e) = coire.clear_session(self.session.prolog_id) {
+            log::warn!("CycleController: failed to evict prolog Coire mailbox: {}", e);
+        }
+        if let Err(e) = coire.clear_session(self.session.clips_id) {
+            log::warn!("CycleController: failed to evict CLIPS Coire mailbox: {}", e);
+        }
+        log::debug!(
+            "CycleController: evicted Coire mailboxes for prolog={} clips={}",
+            self.session.prolog_id,
+            self.session.clips_id
+        );
+    }
 
     /// Save both mailboxes to the store if one is configured.
     /// Failures are logged as warnings and do not affect the cycle result.
