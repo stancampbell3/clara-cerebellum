@@ -1,8 +1,11 @@
 %% animal_id.pl
 %% ------------
 
-use_module(library(the_rabbit)).
-use_module(library(the_coire)).
+:- use_module(library(the_rabbit)).
+:- use_module(library(the_coire)).
+
+:- dynamic(animal/1).
+:- dynamic(has/2).
 
 nonanimal(X):-not(animal(X)).
 vertebrata(X):-has(X,backbone),animal(X).
