@@ -70,6 +70,13 @@ pub struct PersistenceConfig {
     /// mailboxes to this file at the end of every deduction run.
     /// Omit or set to `null` to disable Coire persistence.
     pub coire_store_path: Option<String>,
+    /// Time-to-live for CoireStore entries in seconds. Sessions whose newest
+    /// event is older than this are deleted by the carrion-picker background
+    /// task. Default: 86400 (24 hours). Set to 0 to disable the picker.
+    pub coire_store_ttl_seconds: u64,
+    /// How often the carrion-picker sweeps the CoireStore, in seconds.
+    /// Default: 3600 (1 hour). Ignored when `coire_store_ttl_seconds` is 0.
+    pub coire_store_sweep_interval_seconds: u64,
 }
 
 /// Observability configuration

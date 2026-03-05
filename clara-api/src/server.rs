@@ -1,10 +1,12 @@
 use actix_web::{web, App, HttpServer};
+use clara_coire::CarrionPicker;
 use clara_cycle::CoireStore;
 use clara_session::{SessionManager, ManagerConfig};
 use clara_config::ConfigLoader;
 use log::info;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use crate::handlers::AppState;
 use crate::routes;
@@ -59,12 +61,39 @@ pub async fn start_server(
         None
     };
 
+    // Shared set of session UUIDs currently held by running deductions.
+    // Read by the carrion-picker to avoid deleting live mailboxes.
+    let active_coire_sessions: Arc<RwLock<HashSet<uuid::Uuid>>> =
+        Arc::new(RwLock::new(HashSet::new()));
+
+    // Spawn the carrion-picker if a store is open and TTL > 0.
+    if let Some(ref store) = coire_store {
+        let ttl = config.persistence.coire_store_ttl_seconds;
+        if ttl > 0 {
+            let interval = config.persistence.coire_store_sweep_interval_seconds;
+            let picker = CarrionPicker::new(
+                store.clone(),
+                Duration::from_secs(ttl),
+                Duration::from_secs(interval.max(1)),
+                active_coire_sessions.clone(),
+            );
+            picker.spawn();
+            info!(
+                "CarrionPicker spawned (ttl={}s, interval={}s)",
+                ttl, interval
+            );
+        } else {
+            info!("CarrionPicker disabled (coire_store_ttl_seconds = 0)");
+        }
+    }
+
     // Create app state
     let app_state = web::Data::new(AppState {
         session_manager,
         subprocess_pool,
         deductions: Arc::new(RwLock::new(HashMap::new())),
         coire_store,
+        active_coire_sessions,
     });
 
     // Create and start server
@@ -96,6 +125,7 @@ mod tests {
             subprocess_pool: pool,
             deductions: Arc::new(RwLock::new(HashMap::new())),
             coire_store: None,
+            active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
         };
         // Just verify it can be created
         let _cloned = state.clone();

@@ -360,11 +360,16 @@ Store errors (`CoireError`) surface as `CycleError::Coire` when returned from
 - Prolog → CLIPS transduction (speculative forward chaining)
 - HTTP API: `/deduce` (POST/GET/DELETE), `/cycle/coire/snapshot`, `/cycle/coire/push`
 
+- In-memory Coire eviction at `run()` exit — `CycleController::evict_coire_sessions()` calls `clear_session()` for both mailboxes after every run, freeing in-memory DuckDB rows immediately
+- `CarrionPicker` background task — sweeps `CoireStore` on a configurable interval and deletes sessions whose newest event is older than the TTL; skips any session UUID currently in `AppState::active_coire_sessions`
+  - Active session tracking: `DeductionEntry` stores `prolog_session_id` / `clips_session_id`; a oneshot channel communicates them from `spawn_blocking` to the async wrapper before `run()` begins
+  - Config keys: `persistence.coire_store_ttl_seconds` (default 86400), `persistence.coire_store_sweep_interval_seconds` (default 3600); set TTL to 0 to disable
+
 ### Planned
 
-- Auto-expiry of stale Coire entries for long-running processes
-- `CoireStore` pruning by age or session count
 - Session resume exposed as a dedicated HTTP endpoint (`POST /deduce/resume`)
+- Carrion-picker cancellation token for clean shutdown grace period
+- Per-sweep metrics (sessions deleted, sweep duration)
 
 ---
 

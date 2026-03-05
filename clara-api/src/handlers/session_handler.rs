@@ -1,7 +1,7 @@
 use actix_web::{web, HttpResponse};
 use clara_session::SessionManager;
 use crate::subprocess::SubprocessPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
 use uuid::Uuid;
@@ -19,6 +19,10 @@ pub struct DeductionEntry {
     pub cycles:            u32,
     pub interrupt:         Arc<AtomicBool>,
     pub created_at:        std::time::Instant,
+    /// Set as soon as the `DeductionSession` is created inside `spawn_blocking`,
+    /// before `run()` starts. Used to track live sessions in `active_coire_sessions`.
+    pub prolog_session_id: Option<Uuid>,
+    pub clips_session_id:  Option<Uuid>,
 }
 
 /// Application state
@@ -31,6 +35,9 @@ pub struct AppState {
     /// Optional persistent Coire store. When `Some`, every `CycleController`
     /// will save both engine mailboxes at the end of its run.
     pub coire_store: Option<clara_cycle::CoireStore>,
+    /// Session UUIDs (prolog + CLIPS) for deductions that are currently
+    /// running. Read by the carrion-picker to avoid deleting live mailboxes.
+    pub active_coire_sessions: Arc<RwLock<HashSet<Uuid>>>,
 }
 
 /// Convert a clara-session::Session to API SessionResponse

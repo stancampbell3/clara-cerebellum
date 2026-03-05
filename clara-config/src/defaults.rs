@@ -58,6 +58,8 @@ pub fn default_persistence_config() -> PersistenceConfig {
         compression: "gzip".to_string(),
         encryption: true,
         coire_store_path: None,
+        coire_store_ttl_seconds: 86400,
+        coire_store_sweep_interval_seconds: 3600,
     }
 }
 

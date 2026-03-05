@@ -1,11 +1,13 @@
+pub mod carrion_picker;
+pub mod coire;
 pub mod error;
 pub mod event;
-pub mod coire;
 pub mod store;
 
 #[cfg(feature = "ffi")]
 pub mod clips_bridge;
 
+pub use carrion_picker::CarrionPicker;
 pub use coire::Coire;
 pub use error::{CoireError, CoireResult};
 pub use event::{ClaraEvent, EventStatus};

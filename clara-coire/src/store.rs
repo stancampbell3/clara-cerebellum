@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -162,6 +163,37 @@ impl CoireStore {
             into_id
         );
         Ok(count)
+    }
+
+    /// Return session IDs whose newest event (`MAX(created_at_ms)`) is older
+    /// than `older_than_ms` (Unix milliseconds), excluding any IDs in `exclude`.
+    /// Used by the carrion-picker to find stale sessions eligible for deletion.
+    pub fn sessions_older_than(
+        &self,
+        older_than_ms: i64,
+        exclude: &HashSet<Uuid>,
+    ) -> CoireResult<Vec<Uuid>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT session_id
+             FROM coire_events
+             GROUP BY session_id
+             HAVING MAX(created_at_ms) < ?
+             ORDER BY MAX(created_at_ms) ASC",
+        )?;
+        let rows = stmt.query_map(duckdb::params![older_than_ms], |row| {
+            let s: String = row.get(0)?;
+            Ok(s)
+        })?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            if let Ok(id) = Uuid::parse_str(&row?) {
+                if !exclude.contains(&id) {
+                    sessions.push(id);
+                }
+            }
+        }
+        Ok(sessions)
     }
 
     fn upsert_event_with_conn(

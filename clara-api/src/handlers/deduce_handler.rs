@@ -34,34 +34,70 @@ pub async fn start_deduce(
         deductions.insert(
             deduction_id,
             DeductionEntry {
-                status:    CycleStatus::Running,
-                result:    None,
-                cycles:    0,
-                interrupt: interrupt.clone(),
-                created_at: std::time::Instant::now(),
+                status:            CycleStatus::Running,
+                result:            None,
+                cycles:            0,
+                interrupt:         interrupt.clone(),
+                created_at:        std::time::Instant::now(),
+                prolog_session_id: None,
+                clips_session_id:  None,
             },
         );
     }
 
-    let state_bg = state.clone();
-    let coire_store = state.coire_store.clone();
+    let state_bg        = state.clone();
+    let coire_store     = state.coire_store.clone();
+    let active_sessions = state.active_coire_sessions.clone();
 
     tokio::spawn(async move {
-        let bg_result = tokio::task::spawn_blocking(move || {
+        // Channel: blocking thread sends session UUIDs as soon as they exist,
+        // before run() starts, so we can register them as active immediately.
+        let (ids_tx, ids_rx) = tokio::sync::oneshot::channel::<(Uuid, Uuid)>();
+
+        let bg_handle = tokio::task::spawn_blocking(move || {
             let mut session = DeductionSession::new()?;
             session.seed_prolog(&clauses)?;
             if let Some(ref path) = clips_file {
                 session.seed_clips_file(path)?;
             }
             session.seed_clips(&constructs)?;
+            // Notify the async context of the session IDs before blocking in run().
+            let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = {
                 let c = CycleController::new(session, max_cycles, initial_goal, interrupt_bg);
                 if let Some(store) = coire_store { c.with_store(store) } else { c }
             };
             controller.run()
-        })
-        .await;
+        });
 
+        // Track session IDs so the carrion-picker won't delete live mailboxes.
+        let mut tracked_ids: Option<(Uuid, Uuid)> = None;
+        if let Ok((prolog_id, clips_id)) = ids_rx.await {
+            tracked_ids = Some((prolog_id, clips_id));
+            {
+                let mut active = active_sessions.write().unwrap();
+                active.insert(prolog_id);
+                active.insert(clips_id);
+            }
+            {
+                let mut deductions = state_bg.deductions.write().unwrap();
+                if let Some(entry) = deductions.get_mut(&deduction_id) {
+                    entry.prolog_session_id = Some(prolog_id);
+                    entry.clips_session_id  = Some(clips_id);
+                }
+            }
+        }
+
+        let bg_result = bg_handle.await;
+
+        // Remove session IDs from the active set — run() has finished.
+        if let Some((prolog_id, clips_id)) = tracked_ids {
+            let mut active = active_sessions.write().unwrap();
+            active.remove(&prolog_id);
+            active.remove(&clips_id);
+        }
+
+        // Update the deduction entry with the final result.
         let mut deductions = state_bg.deductions.write().unwrap();
         if let Some(entry) = deductions.get_mut(&deduction_id) {
             match bg_result {
