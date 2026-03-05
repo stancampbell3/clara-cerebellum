@@ -37,10 +37,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/devils/sessions/{session_id}", web::delete().to(devils::terminate_prolog_session))
             .route("/devils/sessions/{session_id}/query", web::post().to(devils::query_prolog))
             .route("/devils/sessions/{session_id}/consult", web::post().to(devils::consult_prolog))
-            // Deduction cycle routes
-            .route("/deduce",          web::post().to(deduce::start_deduce))
-            .route("/deduce/{id}",     web::get().to(deduce::poll_deduce))
-            .route("/deduce/{id}",     web::delete().to(deduce::interrupt_deduce))
+            // Deduction cycle routes — literal paths before parameterised ones
+            .route("/deduce",                      web::post().to(deduce::start_deduce))
+            .route("/deduce/resume",               web::post().to(deduce::resume_deduce))
+            .route("/deduce/{id}",                 web::get().to(deduce::poll_deduce))
+            .route("/deduce/{id}",                 web::delete().to(deduce::interrupt_deduce))
+            .route("/deduce/{id}/snapshot",        web::delete().to(deduce::delete_snapshot))
             // Coire observability / push hooks
             .route("/cycle/coire/snapshot", web::get().to(coire::snapshot))
             .route("/cycle/coire/push",     web::post().to(coire::push))

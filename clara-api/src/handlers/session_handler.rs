@@ -38,6 +38,9 @@ pub struct AppState {
     /// Session UUIDs (prolog + CLIPS) for deductions that are currently
     /// running. Read by the carrion-picker to avoid deleting live mailboxes.
     pub active_coire_sessions: Arc<RwLock<HashSet<Uuid>>>,
+    /// TTL in milliseconds for [`DeductionSnapshot`] entries. Used when
+    /// saving a snapshot after a `persist: true` deduction request.
+    pub snapshot_ttl_ms: i64,
 }
 
 /// Convert a clara-session::Session to API SessionResponse

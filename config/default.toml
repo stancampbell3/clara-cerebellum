@@ -35,8 +35,9 @@ compression = "gzip"
 encryption = true
 # Coire persistent store — uncomment and set a path to enable.
 coire_store_path = "./data/coire.duckdb"
-coire_store_ttl_seconds = 86400          # 24 hours; set to 0 to disable carrion-picker
+coire_store_ttl_seconds = 86400          # 24 hours; set to 0 to disable orphan sweep
 coire_store_sweep_interval_seconds = 3600 # sweep every hour
+deduction_snapshot_ttl_seconds = 604800  # 7 days; set to 0 to keep snapshots indefinitely
 
 [observability]
 log_level = "info"

@@ -147,6 +147,13 @@ pub struct DeduceInterruptResponse {
     pub status: String,
 }
 
+/// Response for DELETE /deduce/{id}/snapshot — confirms snapshot was deleted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeduceDeleteSnapshotResponse {
+    pub deduction_id: Uuid,
+    pub status: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,12 +12,18 @@ use serde_json::json;
 
 /// Create test app state
 fn create_test_state() -> web::Data<AppState> {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, RwLock};
     web::Data::new(AppState {
         session_manager: SessionManager::new(ManagerConfig::default()),
         subprocess_pool: SubprocessPool::new(
             "./clips".to_string(),
             "__END__".to_string(),
         ),
+        deductions: Arc::new(RwLock::new(HashMap::new())),
+        coire_store: None,
+        active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
+        snapshot_ttl_ms: 604_800_000,
     })
 }
 

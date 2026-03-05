@@ -60,6 +60,7 @@ pub fn default_persistence_config() -> PersistenceConfig {
         coire_store_path: None,
         coire_store_ttl_seconds: 86400,
         coire_store_sweep_interval_seconds: 3600,
+        deduction_snapshot_ttl_seconds: 604800,
     }
 }
 

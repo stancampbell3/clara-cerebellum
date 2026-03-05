@@ -11,7 +11,7 @@ pub use carrion_picker::CarrionPicker;
 pub use coire::Coire;
 pub use error::{CoireError, CoireResult};
 pub use event::{ClaraEvent, EventStatus};
-pub use store::CoireStore;
+pub use store::{CoireStore, DeductionSnapshot};
 
 use std::sync::OnceLock;
 

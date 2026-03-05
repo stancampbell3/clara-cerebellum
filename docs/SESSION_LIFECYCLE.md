@@ -236,12 +236,16 @@ Save failures are logged as warnings and do not alter the cycle result.
 | Method | Description |
 |--------|-------------|
 | `CoireStore::open(path)` | Open or create a persistent store file |
-| `save_session(session_id, coire)` | Upsert all events for a session; safe to call repeatedly |
+| `save_session(session_id, coire)` | Upsert **pending** events for a session; safe to call repeatedly |
 | `restore_session(session_id, coire)` | Reload stored events back into a live Coire (same UUIDs) |
 | `restore_session_as(from_id, into_id, coire)` | Reload stored events, rewriting session UUID (for new sessions) |
 | `read_session(session_id)` | Read stored events without modifying state |
 | `delete_session(session_id)` | Remove all stored events for a session |
 | `list_sessions()` | Return all session UUIDs with stored events |
+| `save_snapshot(snap)` | Upsert a `DeductionSnapshot`; safe to call repeatedly |
+| `load_snapshot(deduction_id)` | Load a snapshot by `deduction_id`; `None` if not found |
+| `delete_snapshot(deduction_id)` | Delete snapshot and its Coire events atomically |
+| `snapshots_expired(now_ms, exclude)` | Find expired snapshots not linked to active sessions |
 
 `CoireStore` is `Clone` — clones share the same underlying connection.
 
@@ -301,9 +305,11 @@ The `clara-api` crate exposes deduction and Coire management endpoints.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/deduce` | Submit a deduction request; returns a deduction ID |
+| `POST` | `/deduce` | Submit a deduction request; `persist: true` saves a snapshot |
 | `GET` | `/deduce/{id}` | Poll the status and result of a deduction |
 | `DELETE` | `/deduce/{id}` | Cancel a running deduction (sets the interrupt flag) |
+| `POST` | `/deduce/resume` | Resume a persisted session by `deduction_id` |
+| `DELETE` | `/deduce/{id}/snapshot` | Explicitly delete a persisted snapshot and its Coire events |
 
 ### Coire inspection
 
@@ -352,22 +358,28 @@ Store errors (`CoireError`) surface as `CycleError::Coire` when returned from
 - `CoireStore` — file-backed persistent snapshot store
   - `save_session`, `restore_session`, `restore_session_as`
   - `delete_session`, `list_sessions`, `read_session`
-  - Upsert semantics (safe to save repeatedly)
+  - Upsert semantics (safe to save repeatedly); only `Pending` events are persisted
   - `CycleController::with_store` — auto-save on all exit paths
   - `CycleController::restore_from` — resume from a previous run
   - `persistence.coire_store_path` config key wired into `clara-api`
 - Prolog ↔ CLIPS relay with bidirectional term/fact transpilation
 - Prolog → CLIPS transduction (speculative forward chaining)
 - HTTP API: `/deduce` (POST/GET/DELETE), `/cycle/coire/snapshot`, `/cycle/coire/push`
-
 - In-memory Coire eviction at `run()` exit — `CycleController::evict_coire_sessions()` calls `clear_session()` for both mailboxes after every run, freeing in-memory DuckDB rows immediately
-- `CarrionPicker` background task — sweeps `CoireStore` on a configurable interval and deletes sessions whose newest event is older than the TTL; skips any session UUID currently in `AppState::active_coire_sessions`
+- `CarrionPicker` background task — two-pass sweep on a configurable interval:
+  - **Pass 1**: expires `DeductionSnapshot` rows (and their Coire events) whose `expires_at_ms` is in the past
+  - **Pass 2**: deletes orphaned Coire sessions (no snapshot, newest event older than `coire_store_ttl_seconds`)
+  - Skips any session UUID currently in `AppState::active_coire_sessions`
   - Active session tracking: `DeductionEntry` stores `prolog_session_id` / `clips_session_id`; a oneshot channel communicates them from `spawn_blocking` to the async wrapper before `run()` begins
-  - Config keys: `persistence.coire_store_ttl_seconds` (default 86400), `persistence.coire_store_sweep_interval_seconds` (default 3600); set TTL to 0 to disable
+  - Config keys: `coire_store_ttl_seconds` (default 86400), `coire_store_sweep_interval_seconds` (default 3600), `deduction_snapshot_ttl_seconds` (default 604800 = 7 days)
+- **Persistent deduction sessions** — opt-in full session snapshots:
+  - `POST /deduce` with `persist: true` saves a `DeductionSnapshot` at cycle completion (seed knowledge + result metadata + TTL); Coire pending events are saved automatically by `save_to_store()`
+  - `POST /deduce/resume` — resumes a persisted session; looks up the snapshot by `deduction_id`, re-seeds fresh engines, restores Coire events, runs the cycle; returns a new `deduction_id`; optional `persist: true` to save another snapshot on completion
+  - `DELETE /deduce/{id}/snapshot` — explicit snapshot deletion (removes snapshot row and both Coire mailboxes); returns `409` if session is still active
+  - Known limitation: dynamically-asserted Prolog facts and CLIPS working-memory facts accumulated during a run are not captured — only seed knowledge and pending Coire events survive
 
 ### Planned
 
-- Session resume exposed as a dedicated HTTP endpoint (`POST /deduce/resume`)
 - Carrion-picker cancellation token for clean shutdown grace period
 - Per-sweep metrics (sessions deleted, sweep duration)
 

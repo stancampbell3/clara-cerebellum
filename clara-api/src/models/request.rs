@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Session configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +118,31 @@ pub struct DeduceRequest {
     /// Maximum number of Prolog↔CLIPS cycles before aborting (default: 100).
     #[serde(default)]
     pub max_cycles: Option<u32>,
+    /// When `true` and persistence is configured, save a full
+    /// [`DeductionSnapshot`] (seed knowledge + pending Coire events) to the
+    /// store at cycle completion. The snapshot can later be resumed via
+    /// `POST /deduce/resume`. Silently ignored if no store is configured.
+    #[serde(default)]
+    pub persist: bool,
+}
+
+/// Request to resume a previously persisted deduction.
+///
+/// Looks up the [`DeductionSnapshot`] saved for `deduction_id`, re-seeds
+/// fresh engine instances from the stored knowledge, restores any pending
+/// Coire events, and runs the cycle again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeduceResumeRequest {
+    /// The `deduction_id` returned by the original `POST /deduce` response.
+    pub deduction_id: Uuid,
+    /// Override the cycle budget for this run. Defaults to the value stored
+    /// in the snapshot.
+    #[serde(default)]
+    pub max_cycles: Option<u32>,
+    /// When `true`, save a new snapshot of this resumed run at completion,
+    /// enabling further chained resumes.
+    #[serde(default)]
+    pub persist: bool,
 }
 
 /// Request body for the Coire push endpoint.

@@ -77,6 +77,12 @@ pub struct PersistenceConfig {
     /// How often the carrion-picker sweeps the CoireStore, in seconds.
     /// Default: 3600 (1 hour). Ignored when `coire_store_ttl_seconds` is 0.
     pub coire_store_sweep_interval_seconds: u64,
+    /// Time-to-live for [`DeductionSnapshot`] entries in seconds.
+    /// Snapshots (and their associated Coire events) are deleted by the
+    /// carrion-picker after this many seconds have elapsed since creation.
+    /// Default: 604800 (7 days). Set to 0 to never expire snapshots via TTL
+    /// (they can still be deleted explicitly via `DELETE /deduce/{id}/snapshot`).
+    pub deduction_snapshot_ttl_seconds: u64,
 }
 
 /// Observability configuration

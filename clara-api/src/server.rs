@@ -66,26 +66,27 @@ pub async fn start_server(
     let active_coire_sessions: Arc<RwLock<HashSet<uuid::Uuid>>> =
         Arc::new(RwLock::new(HashSet::new()));
 
-    // Spawn the carrion-picker if a store is open and TTL > 0.
+    // Spawn the carrion-picker if a store is open.
     if let Some(ref store) = coire_store {
-        let ttl = config.persistence.coire_store_ttl_seconds;
-        if ttl > 0 {
-            let interval = config.persistence.coire_store_sweep_interval_seconds;
-            let picker = CarrionPicker::new(
-                store.clone(),
-                Duration::from_secs(ttl),
-                Duration::from_secs(interval.max(1)),
-                active_coire_sessions.clone(),
-            );
-            picker.spawn();
-            info!(
-                "CarrionPicker spawned (ttl={}s, interval={}s)",
-                ttl, interval
-            );
-        } else {
-            info!("CarrionPicker disabled (coire_store_ttl_seconds = 0)");
-        }
+        let coire_ttl    = config.persistence.coire_store_ttl_seconds;
+        let snapshot_ttl = config.persistence.deduction_snapshot_ttl_seconds;
+        let interval     = config.persistence.coire_store_sweep_interval_seconds;
+        let picker = CarrionPicker::new(
+            store.clone(),
+            Duration::from_secs(coire_ttl),
+            Duration::from_secs(snapshot_ttl),
+            Duration::from_secs(interval.max(1)),
+            active_coire_sessions.clone(),
+        );
+        picker.spawn();
+        info!(
+            "CarrionPicker spawned (coire_ttl={}s, snapshot_ttl={}s, interval={}s)",
+            coire_ttl, snapshot_ttl, interval
+        );
     }
+
+    let snapshot_ttl_ms =
+        (config.persistence.deduction_snapshot_ttl_seconds as i64).saturating_mul(1000);
 
     // Create app state
     let app_state = web::Data::new(AppState {
@@ -94,6 +95,7 @@ pub async fn start_server(
         deductions: Arc::new(RwLock::new(HashMap::new())),
         coire_store,
         active_coire_sessions,
+        snapshot_ttl_ms,
     });
 
     // Create and start server
@@ -126,6 +128,7 @@ mod tests {
             deductions: Arc::new(RwLock::new(HashMap::new())),
             coire_store: None,
             active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
+            snapshot_ttl_ms: 604_800_000,
         };
         // Just verify it can be created
         let _cloned = state.clone();
