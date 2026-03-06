@@ -343,6 +343,9 @@ fn effective_trigger(t: &Term) -> Option<&Term> {
         }
         Term::Compound { functor, .. } if is_meta_predicate(functor) => None,
         Term::Atom(s) if is_meta_predicate(s) => None,
+        // Bare variables (e.g. from `Reason = "..."` parsed as `Reason`) have no
+        // meaningful CLIPS fact-pattern equivalent — skip them.
+        Term::Variable(_) => None,
         _ => Some(t),
     }
 }

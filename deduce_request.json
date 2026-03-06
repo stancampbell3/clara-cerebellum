@@ -1,7 +1,7 @@
 {
-    "prolog_clauses": ["consult('animal_id_clara.pl')."],
+    "prolog_clauses": ["consult('city_of_dis_reception_clara.pl').", "visitor(perstefanie)."],
     "clips_constructs": [],
-    "clips_file": "animal_id_clara.clp",
-    "initial_goal": "animal(A), has(A,cold_blooded).",
+    "clips_file": "./city_of_dis_reception_clara.clp",
+    "initial_goal": "visitor_admitted(perstefanie, Reason).",
     "max_cycles": 100
 }

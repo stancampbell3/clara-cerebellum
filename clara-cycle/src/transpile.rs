@@ -450,6 +450,8 @@ pub(crate) fn render_clips_field(term: &Term) -> String {
                 format!("\"{}\"", escape_clips_string(s))
             }
         }
+        // Prolog anonymous variables (_  or _Name) → CLIPS single-field wildcard ?
+        Term::Variable(s) if s.starts_with('_') => "?".to_string(),
         Term::Variable(s) => format!("?{s}"),
         Term::Integer(n) => n.to_string(),
         Term::Float(f) => format!("{f}"),

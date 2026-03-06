@@ -16,8 +16,8 @@
 :- use_module(library(the_rabbit)).
 :- use_module(library(http/json)).
 
-% We will be dealing with the Ember Devil
-:- enable_evaluator('ember', _).
+% We will be dealing with the base OllamaEvaluator
+:- enable_evaluator('ollama', _).
 
 % Main entry point: Get Top K simplified labels
 extract_top_k_labels(Text, K, SimpleLabels) :-
