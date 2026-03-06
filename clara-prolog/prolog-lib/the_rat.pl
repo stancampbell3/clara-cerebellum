@@ -6,8 +6,11 @@
 
 :- module(the_rat, [
     clara_fy/2,
+    clara_fy/3,
     extract_top_k_labels/3,
-    top_status/2
+    extract_top_k_labels_with_context/4,
+    top_status/2,
+    top_status_with_context/3
 ]).
 
 :- use_module(library(the_rabbit)).
@@ -48,9 +51,31 @@ top_status(Text, Status) :-
     extract_top_k_labels(Text, 1, [Status]).
 
 %% -----------------------------------------------------------------------------------
-%% clara_fy : the main predicate to classify a text query into a truth value using the
-%% top prediction from the Ember Devil model.
+%% clara_fy/2 : classify a text query into a truth value using the top prediction
+%% from the Ember Devil model.
 %% -----------------------------------------------------------------------------------
 clara_fy(Text, TruthValue) :- top_status(Text, B1),
     format('B1: ~w~n', [B1]),
     TruthValue = B1.
+
+%% -----------------------------------------------------------------------------------
+%% clara_fy/3 : like clara_fy/2 but grounds the LLM call with a conversation context.
+%%   Context is a list of message dicts, e.g. [_{role:user, content:"hello"}, ...].
+%%   Typical use:
+%%     current_context(Ctx), clara_fy('the visitor seems confused', Ctx, R).
+%% -----------------------------------------------------------------------------------
+clara_fy(Text, Context, TruthValue) :-
+    top_status_with_context(Text, Context, B1),
+    format('B1: ~w~n', [B1]),
+    TruthValue = B1.
+
+top_status_with_context(Text, Context, Status) :-
+    extract_top_k_labels_with_context(Text, 1, Context, [Status]).
+
+extract_top_k_labels_with_context(Text, K, Context, SimpleLabels) :-
+    descriminate_k_with_context(Text, K, Context, RawJson),
+    atom_json_dict(RawJson, Dict, []),
+    predsort(compare_probs, Dict.predictions, Sorted),
+    length(TopK, K),
+    append(TopK, _, Sorted),
+    maplist(get_simple_label, TopK, SimpleLabels).

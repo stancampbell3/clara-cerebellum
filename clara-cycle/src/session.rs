@@ -56,4 +56,25 @@ impl DeductionSession {
         }
         Ok(())
     }
+
+    /// Inject conversational context (external message history) into the Prolog engine.
+    ///
+    /// The context is serialised to a JSON atom and asserted as the fact
+    /// `deduce_context_json('<json>')` so that Prolog rules can retrieve it via
+    /// `current_context/1` (defined in `library(the_rabbit)`).
+    ///
+    /// A no-op when `context` is empty so sessions without context incur no overhead.
+    pub fn seed_context(&mut self, context: &[serde_json::Value]) -> Result<(), CycleError> {
+        if context.is_empty() {
+            return Ok(());
+        }
+        let json = serde_json::to_string(context)
+            .map_err(|e| CycleError::ContextSeedFailed(e.to_string()))?;
+        let escaped = json.replace('\'', "\\'");
+        self.prolog
+            .assertz(&format!("deduce_context_json('{escaped}')"))
+            .map_err(CycleError::Prolog)?;
+        log::debug!("DeductionSession: seeded {} context message(s)", context.len());
+        Ok(())
+    }
 }

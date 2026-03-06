@@ -22,6 +22,7 @@ POST /deduce
  session.seed_prolog(clauses)     ← assert facts/rules into Prolog
  session.seed_clips_file(path)?   ← load .clp file (if clips_file provided)
  session.seed_clips(constructs)   ← build inline defrules/deftemplates into CLIPS
+ session.seed_context(context)?   ← assert deduce_context_json/1 into Prolog (if context provided)
      │
      ▼
  ┌──────────────────────────────────────────────────────────┐
@@ -131,7 +132,11 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
   "clips_constructs": ["(defrule fire-if-mortal ...)"],
   "clips_file":       "/srv/rules/base.clp",
   "initial_goal":     "mortal(X)",
-  "max_cycles":       100
+  "max_cycles":       100,
+  "context": [
+    {"role": "user",      "content": "I need help finding the exit."},
+    {"role": "assistant", "content": "I can help with that."}
+  ]
 }
 ```
 
@@ -142,6 +147,8 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 | `clips_file` | `string \| null` | `null` | Server-side path to a `.clp` file. Loaded **before** `clips_constructs`, so the file can define base templates that inline constructs depend on. |
 | `initial_goal` | `string \| null` | `null` | Prolog goal executed on cycle 0 only. Omit or set to `null` to run a no-op (`true`). |
 | `max_cycles` | `uint \| null` | `100` | Cycle budget. Exhausting it without convergence results in `error` status. |
+| `context` | `object[]` | `[]` | Optional conversational context (external message history). Each element is a free-form JSON object — typically `{"role": "...", "content": "..."}`. Made available to Prolog rules via `current_context/1` and forwarded to LLM evaluate calls that accept a `context` field. |
+| `persist` | `bool` | `false` | When `true` and persistence is configured, save a full snapshot on completion for later resumption via `POST /deduce/resume`. |
 
 All fields are optional. An empty body `{}` is valid and will run a single
 no-op cycle that converges immediately.
@@ -254,6 +261,7 @@ underlying `CycleError` variant:
 | `error: CLIPS error: …` | Exception from the CLIPS engine, including `.clp` file load failures |
 | `error: Coire error: …` | Coire mailbox failure |
 | `error: Session creation failed: …` | Engine initialisation failure |
+| `error: Context seeding failed: …` | Could not serialise or assert the `context` payload |
 
 **Status values summary**
 
@@ -399,6 +407,65 @@ Cycle 0:
 
 ---
 
+## Walkthrough: context-grounded LLM reasoning
+
+Pass a conversation history into the deduction so that Prolog rules can ask the
+LLM to evaluate statements *in the light of what the user said*, rather than
+in a vacuum.
+
+```bash
+curl -s -X POST http://localhost:8080/deduce \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prolog_clauses": [
+      "consult('\''reception_rules.pl'\'')."
+    ],
+    "initial_goal": "triage_visitor(alice, Outcome)",
+    "context": [
+      {"role": "user",      "content": "Where is the exit?"},
+      {"role": "assistant", "content": "It is down the hall to the left."},
+      {"role": "user",      "content": "I am completely lost."}
+    ]
+  }' | jq .
+```
+
+Inside `reception_rules.pl` the context is retrieved with `current_context/1`
+and fed to `clara_fy/3`:
+
+```prolog
+:- use_module(library(the_rat)).
+
+triage_visitor(Visitor, help_kiosk) :-
+    current_context(Ctx),
+    clara_fy('the visitor seems confused or lost', Ctx, true).
+
+triage_visitor(Visitor, proceed) :-
+    current_context(Ctx),
+    clara_fy('the visitor knows where they are going', Ctx, true).
+```
+
+`clara_fy/3` calls the LLM via `ponder_text_with_context/3`, which forwards the
+`context` array in the `/evaluate` payload to FieryPit. The LLM verifies the
+statement against the conversation history and returns a judgement that
+`descriminate_k` maps to `true`, `false`, or `unresolved`.
+
+### Prolog predicates for context
+
+All context predicates live in `library(the_rabbit)` (imported automatically by
+`library(the_rat)`).
+
+| Predicate | Arity | Description |
+|-----------|-------|-------------|
+| `current_context/1` | 1 | Retrieve the injected context as a list of dicts. Returns `[]` when no context was provided. |
+| `ponder_text_with_context/3` | `(+Text, +Context, -Result)` | Call the LLM with `Text` grounded by `Context`. Returns raw JSON from FieryPit. |
+| `descriminate_k_with_context/4` | `(+Text, +K, +Context, -Results)` | As `descriminate_k/3` but context-grounded. Drives classify pipeline. |
+| `clara_fy/3` | `(+Text, +Context, -TruthValue)` | Context-aware truth classification. Returns `true`, `false`, or `unresolved`. |
+
+The context is stored as the Prolog fact `deduce_context_json(JsonAtom)` in the
+session's knowledge base (asserted by `seed_context` before the first cycle).
+
+---
+
 ## Walkthrough: cancel a long-running deduction
 
 To demonstrate cancellation, seed a CLIPS rule that continuously re-asserts
@@ -521,6 +588,8 @@ function or type definition start.
 | — load via CLIPS `Load()` | `clara-clips/src/backend/ffi/environment.rs` | `ClipsEnvironment::load()` |
 | Seed CLIPS constructs | `clara-cycle/src/session.rs:52` | `DeductionSession::seed_clips()` |
 | — compile via `build` | `clara-clips/src/backend/ffi/environment.rs:146` | `ClipsEnvironment::build()` |
+| Seed context into Prolog | `clara-cycle/src/session.rs:60` | `DeductionSession::seed_context()` |
+| — asserts `deduce_context_json/1` | `clara-prolog/src/backend/ffi/environment.rs:262` | `PrologEnvironment::assertz()` |
 | Construct the controller | `clara-cycle/src/controller.rs:24` | `CycleController::new()` |
 | Start the cycle loop | `clara-cycle/src/controller.rs:38` | `CycleController::run()` |
 
@@ -559,9 +628,22 @@ function or type definition start.
 | `DeductionResult.prolog_solutions` | `clara-cycle/src/result.rs:37` | `Option<serde_json::Value>` — all cycle-0 solutions with variable bindings |
 | `CoireSnapshot` | `clara-cycle/src/result.rs:43` | `prolog_pending` + `clips_pending` counts |
 | `CycleError` | `clara-cycle/src/error.rs:4` | All fatal error variants with `thiserror` Display strings |
+| `DeduceRequest.context` | `clara-api/src/models/request.rs` | `Vec<serde_json::Value>` — free-form message objects, defaults to `[]` |
+| `DeductionSnapshot.context` | `clara-coire/src/store.rs` | Persisted alongside seed knowledge for session resume |
 | `DeductionSession` | `clara-cycle/src/session.rs:12` | Holds `PrologEnvironment` + `ClipsEnvironment` + their UUIDs |
 | `CycleController` | `clara-cycle/src/controller.rs:14` | Owns the session; drives the loop |
 | `DeductionEntry` | `clara-api/src/handlers/session_handler.rs:16` | In-flight record stored in `AppState::deductions` |
+
+### Prolog library predicates (context-related)
+
+| Predicate | File | Notes |
+|---|---|---|
+| `current_context/1` | `clara-prolog/prolog-lib/the_rabbit.pl` | Parses `deduce_context_json/1` to a list of dicts; returns `[]` as fallback |
+| `ponder_text_with_context/3` | `clara-prolog/prolog-lib/the_rabbit.pl` | Adds `context` field to the FieryPit `/evaluate` JSON payload |
+| `descriminate_k_with_context/4` | `clara-prolog/prolog-lib/the_rabbit.pl` | Context-aware LLM + fastText classify pipeline |
+| `clara_fy/3` | `clara-prolog/prolog-lib/the_rat.pl` | `(+Text, +Context, -TruthValue)` — top-level context-aware classification |
+| `top_status_with_context/3` | `clara-prolog/prolog-lib/the_rat.pl` | Returns top-1 truth atom for Text given Context |
+| `extract_top_k_labels_with_context/4` | `clara-prolog/prolog-lib/the_rat.pl` | Returns top-K simplified labels for Text given Context |
 
 ### HTTP handler wiring
 

@@ -16,4 +16,7 @@ pub enum CycleError {
 
     #[error("Session creation failed: {0}")]
     SessionCreationFailed(String),
+
+    #[error("Context seeding failed: {0}")]
+    ContextSeedFailed(String),
 }

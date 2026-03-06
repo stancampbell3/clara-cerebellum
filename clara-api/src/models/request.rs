@@ -124,6 +124,13 @@ pub struct DeduceRequest {
     /// `POST /deduce/resume`. Silently ignored if no store is configured.
     #[serde(default)]
     pub persist: bool,
+    /// Optional conversational context (external message history) to inject
+    /// into the deduction session. Each element is a JSON object — typically
+    /// `{"role": "...", "content": "..."}` — and is made available to Prolog
+    /// rules via `deduce_context_json/1` / `current_context/1` and forwarded
+    /// to LLM evaluate calls that accept a `context` field.
+    #[serde(default)]
+    pub context: Vec<serde_json::Value>,
 }
 
 /// Request to resume a previously persisted deduction.
@@ -143,6 +150,10 @@ pub struct DeduceResumeRequest {
     /// enabling further chained resumes.
     #[serde(default)]
     pub persist: bool,
+    /// Conversational context to inject into the resumed session. If omitted,
+    /// the context stored in the original snapshot is used.
+    #[serde(default)]
+    pub context: Option<Vec<serde_json::Value>>,
 }
 
 /// Request body for the Coire push endpoint.

@@ -40,6 +40,7 @@ pub async fn start_deduce(
     let initial_goal = req.initial_goal.clone();
     let max_cycles   = req.max_cycles.unwrap_or(100);
     let persist      = req.persist;
+    let context      = req.context.clone();
 
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
@@ -72,10 +73,11 @@ pub async fn start_deduce(
         let (ids_tx, ids_rx) = tokio::sync::oneshot::channel::<(Uuid, Uuid)>();
 
         let store_bg = coire_store.clone();
-        let clauses_bg   = clauses.clone();
-        let constructs_bg = constructs.clone();
-        let clips_file_bg = clips_file.clone();
+        let clauses_bg      = clauses.clone();
+        let constructs_bg   = constructs.clone();
+        let clips_file_bg   = clips_file.clone();
         let initial_goal_bg = initial_goal.clone();
+        let context_bg      = context.clone();
 
         let bg_handle = tokio::task::spawn_blocking(move || {
             let mut session = DeductionSession::new()?;
@@ -84,6 +86,7 @@ pub async fn start_deduce(
                 session.seed_clips_file(path)?;
             }
             session.seed_clips(&constructs_bg)?;
+            session.seed_context(&context_bg)?;
             // Notify the async context of the session IDs before blocking in run().
             let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = {
@@ -166,6 +169,7 @@ pub async fn start_deduce(
                         clips_session_id:  clips_id,
                         created_at_ms:     created,
                         expires_at_ms:     created + snapshot_ttl_ms,
+                        context,
                     };
                     if let Err(e) = store.save_snapshot(&snap) {
                         log::warn!("deduce {}: failed to save snapshot: {}", deduction_id, e);
@@ -230,6 +234,8 @@ pub async fn resume_deduce(
 
     let max_cycles   = req.max_cycles.unwrap_or(snap.max_cycles);
     let persist      = req.persist;
+    // Caller may override the context; otherwise reuse the snapshot's stored context.
+    let context      = req.context.clone().unwrap_or_else(|| snap.context.clone());
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
     let interrupt_bg  = interrupt.clone();
@@ -268,6 +274,7 @@ pub async fn resume_deduce(
         let clauses_bg    = clauses.clone();
         let constructs_bg = constructs.clone();
         let clips_file_bg = clips_file.clone();
+        let context_bg    = context.clone();
 
         let bg_handle = tokio::task::spawn_blocking(move || {
             let mut session = DeductionSession::new()?;
@@ -276,6 +283,7 @@ pub async fn resume_deduce(
                 session.seed_clips_file(path)?;
             }
             session.seed_clips(&constructs_bg)?;
+            session.seed_context(&context_bg)?;
             let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = CycleController::new(session, max_cycles, None, interrupt_bg)
                 .with_store(store_bg.clone());
@@ -351,6 +359,7 @@ pub async fn resume_deduce(
                     clips_session_id:  clips_id,
                     created_at_ms:     created,
                     expires_at_ms:     created + snapshot_ttl_ms,
+                    context,
                 };
                 if let Err(e) = store.save_snapshot(&new_snap) {
                     log::warn!("resume {}: failed to save snapshot: {}", deduction_id, e);

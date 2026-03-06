@@ -41,6 +41,9 @@ pub struct DeductionSnapshot {
     pub created_at_ms:     i64,
     /// Unix timestamp (ms) after which the snapshot is eligible for deletion.
     pub expires_at_ms:     i64,
+    /// Conversational context injected into the deduction session.
+    #[serde(default)]
+    pub context:           Vec<serde_json::Value>,
 }
 
 /// Persistent DuckDB-backed store for Coire session snapshots.
@@ -82,11 +85,18 @@ impl CoireStore {
                 prolog_session_id VARCHAR NOT NULL,
                 clips_session_id  VARCHAR NOT NULL,
                 created_at_ms     BIGINT  NOT NULL,
-                expires_at_ms     BIGINT  NOT NULL
+                expires_at_ms     BIGINT  NOT NULL,
+                context           VARCHAR NOT NULL DEFAULT '[]'
             );
             CREATE INDEX IF NOT EXISTS idx_snapshots_expires
                 ON deduction_snapshots (expires_at_ms);",
         )?;
+        // Migration: add context column to stores created before this field existed.
+        let _ = conn.execute(
+            "ALTER TABLE deduction_snapshots \
+             ADD COLUMN IF NOT EXISTS context VARCHAR NOT NULL DEFAULT '[]'",
+            [],
+        );
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -256,13 +266,15 @@ impl CoireStore {
     pub fn save_snapshot(&self, snap: &DeductionSnapshot) -> CoireResult<()> {
         let clauses    = serde_json::to_string(&snap.prolog_clauses)?;
         let constructs = serde_json::to_string(&snap.clips_constructs)?;
+        let context    = serde_json::to_string(&snap.context)?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO deduction_snapshots
                 (deduction_id, prolog_clauses, clips_constructs, clips_file,
                  initial_goal, max_cycles, status, cycles_run,
-                 prolog_session_id, clips_session_id, created_at_ms, expires_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
+                 context)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (deduction_id) DO UPDATE SET
                 prolog_clauses    = excluded.prolog_clauses,
                 clips_constructs  = excluded.clips_constructs,
@@ -274,7 +286,8 @@ impl CoireStore {
                 prolog_session_id = excluded.prolog_session_id,
                 clips_session_id  = excluded.clips_session_id,
                 created_at_ms     = excluded.created_at_ms,
-                expires_at_ms     = excluded.expires_at_ms",
+                expires_at_ms     = excluded.expires_at_ms,
+                context           = excluded.context",
             duckdb::params![
                 snap.deduction_id.to_string(),
                 clauses,
@@ -288,6 +301,7 @@ impl CoireStore {
                 snap.clips_session_id.to_string(),
                 snap.created_at_ms,
                 snap.expires_at_ms,
+                context,
             ],
         )?;
         log::info!("CoireStore: saved snapshot {}", snap.deduction_id);
@@ -301,7 +315,8 @@ impl CoireStore {
         let mut stmt = conn.prepare(
             "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
                     initial_goal, max_cycles, status, cycles_run,
-                    prolog_session_id, clips_session_id, created_at_ms, expires_at_ms
+                    prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
+                    context
              FROM deduction_snapshots
              WHERE deduction_id = ?",
         )?;
@@ -319,6 +334,7 @@ impl CoireStore {
                 row.get::<_, String>(9)?,
                 row.get::<_, i64>(10)?,
                 row.get::<_, i64>(11)?,
+                row.get::<_, String>(12)?,
             ))
         })?;
         match rows.next() {
@@ -326,7 +342,7 @@ impl CoireStore {
             Some(row) => {
                 let (did, clauses_s, constructs_s, clips_file, initial_goal,
                      max_cycles, status, cycles_run, prolog_sid, clips_sid,
-                     created_at_ms, expires_at_ms) = row?;
+                     created_at_ms, expires_at_ms, context_s) = row?;
                 Ok(Some(DeductionSnapshot {
                     deduction_id:      Uuid::parse_str(&did).unwrap(),
                     prolog_clauses:    serde_json::from_str(&clauses_s)?,
@@ -340,6 +356,7 @@ impl CoireStore {
                     clips_session_id:  Uuid::parse_str(&clips_sid).unwrap(),
                     created_at_ms,
                     expires_at_ms,
+                    context:           serde_json::from_str(&context_s).unwrap_or_default(),
                 }))
             }
         }
@@ -403,7 +420,8 @@ impl CoireStore {
         let mut stmt = conn.prepare(
             "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
                     initial_goal, max_cycles, status, cycles_run,
-                    prolog_session_id, clips_session_id, created_at_ms, expires_at_ms
+                    prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
+                    context
              FROM deduction_snapshots
              WHERE expires_at_ms < ?
              ORDER BY expires_at_ms ASC",
@@ -422,13 +440,14 @@ impl CoireStore {
                 row.get::<_, String>(9)?,
                 row.get::<_, i64>(10)?,
                 row.get::<_, i64>(11)?,
+                row.get::<_, String>(12)?,
             ))
         })?;
         let mut snaps = Vec::new();
         for row in rows {
             let (did, clauses_s, constructs_s, clips_file, initial_goal,
                  max_cycles, status, cycles_run, prolog_sid, clips_sid,
-                 created_at_ms, expires_at_ms) = row?;
+                 created_at_ms, expires_at_ms, context_s) = row?;
             let prolog_id = Uuid::parse_str(&prolog_sid).unwrap();
             let clips_id  = Uuid::parse_str(&clips_sid).unwrap();
             if exclude.contains(&prolog_id) || exclude.contains(&clips_id) {
@@ -447,6 +466,7 @@ impl CoireStore {
                 clips_session_id:  clips_id,
                 created_at_ms,
                 expires_at_ms,
+                context:           serde_json::from_str(&context_s).unwrap_or_default(),
             });
         }
         Ok(snaps)
@@ -650,6 +670,7 @@ mod tests {
             clips_session_id:  clips_id,
             created_at_ms:     expires_at_ms - 1000,
             expires_at_ms,
+            context:           vec![],
         };
         store.save_snapshot(&snap).unwrap();
         (snap, prolog_id, clips_id)

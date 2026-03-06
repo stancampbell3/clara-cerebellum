@@ -253,6 +253,7 @@ mod tests {
             clips_session_id:  clips_id,
             created_at_ms:     now_ms - 2000,
             expires_at_ms:     now_ms - 1,   // already expired
+            context:           vec![],
         };
         store.save_snapshot(&snap).unwrap();
 

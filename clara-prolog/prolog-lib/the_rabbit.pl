@@ -8,11 +8,14 @@
     classify_text_k/3,
     enable_evaluator/2,
     ponder_text/2,
+    ponder_text_with_context/3,
     extract_field/3,
     extract_response/3,
     extract_nested/3,
     descriminate/2,
-    descriminate_k/3
+    descriminate_k/3,
+    descriminate_k_with_context/4,
+    current_context/1
 ]).
 
 :- use_module(library(http/json)).
@@ -39,13 +42,32 @@ enable_evaluator(Evaluator, Result) :-
                                 evaluator: Evaluator}}, Json),
     clara_evaluate(Json, Result).
 
-%% ponder_text - Evaluate a prompt using the LLM
+%% ponder_text/2 - Evaluate a prompt using the LLM
 ponder_text(Text, Result) :-
     dict_to_json(_{tool: splinteredmind,
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
                                          model: 'qwen2.5:7b'}}}, Json),
     clara_evaluate(Json, Result).
+
+%% ponder_text_with_context/3 - Evaluate a prompt using the LLM with conversation context.
+%%   Context is a list of message dicts, e.g. [_{role:user, content:"hello"}, ...].
+ponder_text_with_context(Text, Context, Result) :-
+    dict_to_json(_{tool: splinteredmind,
+                   arguments: _{operation: evaluate,
+                                data: _{prompt: Text,
+                                        context: Context,
+                                        model: 'qwen2.5:7b'}}}, Json),
+    clara_evaluate(Json, Result).
+
+%% current_context/1 - Retrieve the conversational context injected at deduce time.
+%%   Returns a list of message dicts parsed from the deduce_context_json/1 fact.
+%%   Falls back to an empty list when no context was provided.
+current_context(Context) :-
+    deduce_context_json(Json),
+    atom_json_dict(Json, Context, []),
+    !.
+current_context([]).
 
 %% extract_field/3 - Extract a field from a dict, converting key to atom if needed
 extract_field(Dict, FieldName, Value) :-
@@ -146,5 +168,25 @@ descriminate_k(Text, K, Results) :-
         classify_text_k(Pair, K, Results) % Classify with top K results
     ).
 descriminate_k(_, _, _) :-
+    format(user_error, "Error: Could not extract response from LLM output.~n", []),
+    fail.
+
+%% descriminate_k_with_context/4 - Like descriminate_k/3 but grounds the LLM
+%%   call with a conversation context list.
+descriminate_k_with_context(Text, K, Context, Results) :-
+    ponder_text_with_context(Text, Context, LLMSez),
+    extract_nested(LLMSez, [hohi, response, response], Response),
+    !,
+    ( response_shortcut(Response, Shortcut) ->
+        shortcut_label(Shortcut, LabelStr),
+        atom_json_dict(Results, _{predictions: [_{label: LabelStr, probability: 0.99}]}, [])
+    ;
+        atom_string(Text, TextStr),
+        atom_string(Response, RespStr),
+        string_concat(TextStr, " ", Tmp),
+        string_concat(Tmp, RespStr, Pair),
+        classify_text_k(Pair, K, Results)
+    ).
+descriminate_k_with_context(_, _, _, _) :-
     format(user_error, "Error: Could not extract response from LLM output.~n", []),
     fail.
