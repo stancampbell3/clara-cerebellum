@@ -309,6 +309,7 @@ The `clara-api` crate exposes deduction and Coire management endpoints.
 | `GET` | `/deduce/{id}` | Poll the status and result of a deduction |
 | `DELETE` | `/deduce/{id}` | Cancel a running deduction (sets the interrupt flag) |
 | `POST` | `/deduce/resume` | Resume a persisted session by `deduction_id` |
+| `GET` | `/deduce/{id}/snapshot` | Inspect a persisted snapshot (returns `DeductionSnapshot` JSON) |
 | `DELETE` | `/deduce/{id}/snapshot` | Explicitly delete a persisted snapshot and its Coire events |
 
 ### Coire inspection
@@ -375,6 +376,7 @@ Store errors (`CoireError`) surface as `CycleError::Coire` when returned from
 - **Persistent deduction sessions** — opt-in full session snapshots:
   - `POST /deduce` with `persist: true` saves a `DeductionSnapshot` at cycle completion (seed knowledge + result metadata + TTL); Coire pending events are saved automatically by `save_to_store()`
   - `POST /deduce/resume` — resumes a persisted session; looks up the snapshot by `deduction_id`, re-seeds fresh engines, restores Coire events, runs the cycle; returns a new `deduction_id`; optional `persist: true` to save another snapshot on completion
+  - `GET /deduce/{id}/snapshot` — inspect a persisted snapshot; returns full `DeductionSnapshot` JSON or `404`
   - `DELETE /deduce/{id}/snapshot` — explicit snapshot deletion (removes snapshot row and both Coire mailboxes); returns `409` if session is still active
   - Known limitation: dynamically-asserted Prolog facts and CLIPS working-memory facts accumulated during a run are not captured — only seed knowledge and pending Coire events survive
 

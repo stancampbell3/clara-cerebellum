@@ -328,19 +328,11 @@ fn render_arg_as_literal(t: &Term) -> String {
 
 /// Resolve the effective CLIPS trigger for a positive body goal.
 ///
-/// - `assertz(T)` / `assert(T)` / `asserta(T)` → unwrap to `T`
-///   (trigger on the asserted fact, not the meta-call)
-/// - Other known meta-predicates (I/O, control, arithmetic, etc.) → `None`
+/// - Known meta-predicates (assert/retract, I/O, control, arithmetic, etc.) → `None`
 ///   (no meaningful CLIPS trigger; skip the rule)
 /// - All other goals → `Some(t)` (use as-is)
 fn effective_trigger(t: &Term) -> Option<&Term> {
     match t {
-        Term::Compound { functor, args }
-            if args.len() == 1
-                && matches!(functor.as_str(), "assertz" | "assert" | "asserta") =>
-        {
-            Some(&args[0])
-        }
         Term::Compound { functor, .. } if is_meta_predicate(functor) => None,
         Term::Atom(s) if is_meta_predicate(s) => None,
         // Bare variables (e.g. from `Reason = "..."` parsed as `Reason`) have no
@@ -353,7 +345,10 @@ fn effective_trigger(t: &Term) -> Option<&Term> {
 fn is_meta_predicate(name: &str) -> bool {
     matches!(
         name,
-        "retract"
+        "assert"
+            | "assertz"
+            | "asserta"
+            | "retract"
             | "retractall"
             | "abolish"
             | "format"
@@ -907,17 +902,18 @@ mod tests {
     // ── effective_trigger / meta-predicate handling ───────────────────────────
 
     #[test]
-    fn transduce_assertz_unwraps_to_inner_fact() {
+    fn transduce_assertz_is_skipped() {
         let clp = transduce_source(
             "prejudiced(Who,Whom,Group) :- member_of(Who,Group), assertz(dislikes(Who,Whom)).",
         );
-        // Must trigger on the asserted fact, NOT the assertz wrapper
-        assert!(clp.contains("(dislikes ?Who ?Whom)"));
-        // No defrule should be triggered by assertz itself
+        // assertz is a meta-predicate — skip it entirely, do NOT generate a rule for it
         assert!(!clp.contains("on-assertz-"));
         assert!(!clp.contains("(assertz"));
-        // Both vars bound from LHS
-        assert!(clp.contains("(str-cat \"prejudiced(\" ?Who \",\" ?Whom \",Group)\")"));
+        // No CLIPS fact pattern for dislikes (it may appear in the comment line)
+        assert!(!clp.contains("\n    (dislikes"));
+        // Only member_of triggers a defrule
+        assert!(clp.contains("transduced-prejudiced-on-member_of-0"));
+        assert_eq!(clp.matches("(defrule").count(), 1);
     }
 
     #[test]

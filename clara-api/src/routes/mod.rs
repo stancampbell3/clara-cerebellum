@@ -42,6 +42,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/deduce/resume",               web::post().to(deduce::resume_deduce))
             .route("/deduce/{id}",                 web::get().to(deduce::poll_deduce))
             .route("/deduce/{id}",                 web::delete().to(deduce::interrupt_deduce))
+            .route("/deduce/{id}/snapshot",        web::get().to(deduce::get_snapshot))
             .route("/deduce/{id}/snapshot",        web::delete().to(deduce::delete_snapshot))
             // Coire observability / push hooks
             .route("/cycle/coire/snapshot", web::get().to(coire::snapshot))

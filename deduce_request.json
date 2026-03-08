@@ -1,7 +1,8 @@
 {
-    "prolog_clauses": ["consult('city_of_dis_reception_clara.pl').", "visitor(perstefanie)."],
+    "prolog_clauses": ["consult('redscare1_clara.pl').", "commie_state(hidden)."],
     "clips_constructs": [],
-    "clips_file": "./city_of_dis_reception_clara.clp",
-    "initial_goal": "visitor_admitted(perstefanie, Reason).",
-    "max_cycles": 100
+    "clips_file": "./redscare1_clara.clp",
+    "initial_goal": "suggestion(Suggestion).",
+    "context": [],
+    "max_cycles": 2
 }

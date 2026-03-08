@@ -374,6 +374,33 @@ pub async fn resume_deduce(
     })
 }
 
+/// GET /deduce/{id}/snapshot — inspect a persisted deduction snapshot.
+///
+/// Returns the [`DeductionSnapshot`] stored for the given `deduction_id`,
+/// or `404` if no snapshot exists.
+pub async fn get_snapshot(
+    state: web::Data<AppState>,
+    path:  web::Path<Uuid>,
+) -> HttpResponse {
+    let deduction_id = path.into_inner();
+
+    let store = match &state.coire_store {
+        Some(s) => s.clone(),
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(json!({ "error": "persistence not enabled" }));
+        }
+    };
+
+    match store.load_snapshot(deduction_id) {
+        Ok(Some(snap)) => HttpResponse::Ok().json(snap),
+        Ok(None) => HttpResponse::NotFound()
+            .json(json!({ "error": "snapshot not found" })),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(json!({ "error": e.to_string() })),
+    }
+}
+
 /// DELETE /deduce/{id}/snapshot — explicitly delete a persisted snapshot.
 ///
 /// Removes the snapshot row and all associated Coire events from the store.
