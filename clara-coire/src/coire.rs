@@ -140,37 +140,85 @@ impl Coire {
     /// Read all pending events for a session and atomically mark them as processed.
     /// Returns the events (with status flipped to Processed).
     pub fn poll_pending(&self, session_id: Uuid) -> CoireResult<Vec<ClaraEvent>> {
+        self.poll_pending_impl(session_id, None)
+    }
+
+    /// Read pending events for a session whose origin starts with `prefix`, and
+    /// atomically mark them as processed.  Events with other origins are left
+    /// untouched so a different consumer can pick them up.
+    pub fn poll_pending_with_origin_prefix(
+        &self,
+        session_id: Uuid,
+        prefix: &str,
+    ) -> CoireResult<Vec<ClaraEvent>> {
+        self.poll_pending_impl(session_id, Some(prefix))
+    }
+
+    fn poll_pending_impl(
+        &self,
+        session_id: Uuid,
+        origin_prefix: Option<&str>,
+    ) -> CoireResult<Vec<ClaraEvent>> {
         let conn = self.conn.lock().unwrap();
         let sid = session_id.to_string();
 
         log::debug!("Coire: polling pending events for session {}", sid);
 
-        // Read pending events
-        let mut stmt = conn.prepare(
-            "SELECT event_id, session_id, origin, created_at_ms, payload, status
-             FROM coire_events
-             WHERE session_id = ? AND status = 'pending'
-             ORDER BY created_at_ms ASC",
-        )?;
-        let rows = stmt.query_map(duckdb::params![sid], |row| {
-            Ok(RawRow {
-                event_id: row.get(0)?,
-                session_id: row.get(1)?,
-                origin: row.get(2)?,
-                created_at_ms: row.get(3)?,
-                payload: row.get(4)?,
-                status: row.get(5)?,
-            })
-        })?;
-
         let mut events = Vec::new();
-        let mut ids = Vec::new();
-        for row in rows {
-            let raw = row?;
-            ids.push(raw.event_id.clone());
-            let mut event = raw_to_event(raw)?;
-            event.status = EventStatus::Processed;
-            events.push(event);
+        let mut ids: Vec<String> = Vec::new();
+
+        match origin_prefix {
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT event_id, session_id, origin, created_at_ms, payload, status
+                     FROM coire_events
+                     WHERE session_id = ? AND status = 'pending'
+                     ORDER BY created_at_ms ASC",
+                )?;
+                let rows = stmt.query_map(duckdb::params![sid], |row| {
+                    Ok(RawRow {
+                        event_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        origin: row.get(2)?,
+                        created_at_ms: row.get(3)?,
+                        payload: row.get(4)?,
+                        status: row.get(5)?,
+                    })
+                })?;
+                for row in rows {
+                    let raw = row?;
+                    ids.push(raw.event_id.clone());
+                    let mut event = raw_to_event(raw)?;
+                    event.status = EventStatus::Processed;
+                    events.push(event);
+                }
+            }
+            Some(prefix) => {
+                let pattern = format!("{}%", prefix);
+                let mut stmt = conn.prepare(
+                    "SELECT event_id, session_id, origin, created_at_ms, payload, status
+                     FROM coire_events
+                     WHERE session_id = ? AND status = 'pending' AND origin LIKE ?
+                     ORDER BY created_at_ms ASC",
+                )?;
+                let rows = stmt.query_map(duckdb::params![sid, pattern], |row| {
+                    Ok(RawRow {
+                        event_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        origin: row.get(2)?,
+                        created_at_ms: row.get(3)?,
+                        payload: row.get(4)?,
+                        status: row.get(5)?,
+                    })
+                })?;
+                for row in rows {
+                    let raw = row?;
+                    ids.push(raw.event_id.clone());
+                    let mut event = raw_to_event(raw)?;
+                    event.status = EventStatus::Processed;
+                    events.push(event);
+                }
+            }
         }
 
         // Mark them all processed

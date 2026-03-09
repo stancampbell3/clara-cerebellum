@@ -103,6 +103,53 @@ pub extern "C" fn pl_coire_poll(t_session: term_t, t_events: term_t) -> c_int {
     }
 }
 
+/// `coire_poll_inbound(+SessionId, -EventsJSON)`
+///
+/// Like `coire_poll/2` but only returns events whose origin starts with
+/// `"relay-"` (i.e. events relayed from the paired engine).  Self-emitted
+/// events (origin `"prolog"`) are left pending so the relay can forward them
+/// to the CLIPS engine.
+#[no_mangle]
+pub extern "C" fn pl_coire_poll_inbound(t_session: term_t, t_events: term_t) -> c_int {
+    let result = (|| -> Result<String, String> {
+        let session_str = unsafe { term_to_string(t_session) }
+            .ok_or("failed to read SessionId")?;
+        let session_id = Uuid::parse_str(&session_str)
+            .map_err(|e| format!("invalid session_id: {}", e))?;
+
+        let events = global_coire()
+            .poll_pending_with_origin_prefix(session_id, "relay-")
+            .map_err(|e| format!("poll_pending_with_origin_prefix: {}", e))?;
+
+        serde_json::to_string(&events)
+            .map_err(|e| format!("JSON serialization: {}", e))
+    })();
+
+    match result {
+        Ok(json) => {
+            let c_str = match CString::new(json) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("coire_poll_inbound/2: CString creation failed: {}", e);
+                    return 0;
+                }
+            };
+            unsafe {
+                if PL_unify_string_chars(t_events, c_str.as_ptr()) != 0 {
+                    1
+                } else {
+                    log::error!("coire_poll_inbound/2: unification failed");
+                    0
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("coire_poll_inbound/2: {}", e);
+            0
+        }
+    }
+}
+
 /// `coire_mark(+EventId)`
 #[no_mangle]
 pub extern "C" fn pl_coire_mark(t_event_id: term_t) -> c_int {
@@ -171,6 +218,7 @@ pub fn register_coire_predicates() -> bool {
             let predicates: &[(&str, c_int, *const std::ffi::c_void)] = &[
                 ("coire_emit", 3, pl_coire_emit as *const std::ffi::c_void),
                 ("coire_poll", 2, pl_coire_poll as *const std::ffi::c_void),
+                ("coire_poll_inbound", 2, pl_coire_poll_inbound as *const std::ffi::c_void),
                 ("coire_mark", 1, pl_coire_mark as *const std::ffi::c_void),
                 ("coire_count", 2, pl_coire_count as *const std::ffi::c_void),
             ];

@@ -15,7 +15,10 @@ use crate::transpile;
 /// Returns the number of events forwarded.
 pub fn relay_prolog_to_clips(session: &mut DeductionSession) -> Result<usize, CycleError> {
     let coire = clara_coire::global();
-    let events = coire.poll_pending(session.prolog_id)?;
+    // Only forward events that Prolog itself emitted (origin "prolog").
+    // Events with origin "relay-clips:*" are inbound from CLIPS and are meant
+    // to be consumed by Prolog's own coire_consume — leave them untouched.
+    let events = coire.poll_pending_with_origin_prefix(session.prolog_id, "prolog")?;
     let count = events.len();
     for event in events {
         session.record_event_in_tableau(&event.payload);

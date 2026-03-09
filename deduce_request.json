@@ -1,8 +1,8 @@
 {
-    "prolog_clauses": ["consult('redscare1_clara.pl').", "commie_state(hidden)."],
+    "prolog_clauses": ["consult('redscare1_clara.pl').", "commie_state(visible)."],
     "clips_constructs": [],
     "clips_file": "./redscare1_clara.clp",
     "initial_goal": "suggestion(Suggestion).",
     "context": [],
-    "max_cycles": 2
+    "max_cycles": 100 
 }

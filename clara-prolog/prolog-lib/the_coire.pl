@@ -28,10 +28,12 @@ coire_publish_assert(Fact)  :- coire_publish(assert,  Fact).
 coire_publish_retract(Fact) :- coire_publish(retract, Fact).
 coire_publish_goal(Goal)    :- coire_publish(goal,    Goal).
 
-% Consume: poll events for this session, dispatch each one.
+% Consume: poll inbound events for this session (origin "relay-*"), dispatch each.
+% Self-emitted events (origin "prolog") are intentionally left in the mailbox
+% so the Rust relay can forward them to the paired CLIPS engine.
 coire_consume :-
     coire_session(Session),
-    coire_poll(Session, Json),
+    coire_poll_inbound(Session, Json),
     setup_call_cleanup(
         open_string(Json, Stream),
         (json_read_dict(Stream, Events, []),
