@@ -18,6 +18,7 @@ pub fn relay_prolog_to_clips(session: &mut DeductionSession) -> Result<usize, Cy
     let events = coire.poll_pending(session.prolog_id)?;
     let count = events.len();
     for event in events {
+        session.record_event_in_tableau(&event.payload);
         let payload = translate_prolog_to_clips(event.payload);
         let forwarded = ClaraEvent::new(
             session.clips_id,
@@ -44,6 +45,7 @@ pub fn relay_clips_to_prolog(session: &mut DeductionSession) -> Result<usize, Cy
     let count = events.len();
     for event in events {
         let payload = translate_clips_to_prolog(event.payload);
+        session.record_event_in_tableau(&payload);
         let forwarded = ClaraEvent::new(
             session.prolog_id,
             format!("relay-clips:{}", event.origin),

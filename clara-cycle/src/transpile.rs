@@ -71,6 +71,11 @@ pub fn clips_fact_to_prolog(s: &str) -> Result<String, String> {
     Ok(render_prolog_term(&term))
 }
 
+/// Parse a Prolog term string into the shared Term AST.
+pub fn parse_prolog_term(s: &str) -> Result<Term, String> {
+    PrologParser::new(s.trim()).parse_term()
+}
+
 /// Generate a CLIPS expression that retracts all facts matching the Prolog term.
 ///
 /// ```text

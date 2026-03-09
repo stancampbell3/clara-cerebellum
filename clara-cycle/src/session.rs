@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::error::CycleError;
 use crate::transduction::{BodyGoal, parse_prolog_rules};
-use crate::transpile::{render_prolog_term, Term};
+use crate::transpile::{parse_prolog_term, render_prolog_term, Term};
 
 /// A paired Prolog + CLIPS environment for a single deduction run.
 ///
@@ -181,6 +181,62 @@ impl DeductionSession {
             rules.len()
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Live tableau updates
+    // -----------------------------------------------------------------------
+
+    /// Update the tableau from a single Coire event payload.
+    ///
+    /// Handles "assert" (→ KnownTrue) and "retract" (→ KnownFalse) payloads.
+    /// All other event types (e.g. "goal") are silently ignored.
+    /// Parse failures are logged at DEBUG and silently skipped.
+    pub fn record_event_in_tableau(&mut self, payload: &serde_json::Value) {
+        let ev_type = payload.get("type").and_then(|v| v.as_str());
+        let data    = payload.get("data").and_then(|v| v.as_str());
+        let (Some(ev_type), Some(data)) = (ev_type, data) else { return; };
+
+        let truth = match ev_type {
+            "assert"  => TruthValue::KnownTrue,
+            "retract" => TruthValue::KnownFalse,
+            _         => return,
+        };
+
+        let term = match parse_prolog_term(data) {
+            Ok(t)  => t,
+            Err(e) => {
+                log::debug!("tableau: could not parse event data {:?}: {}", data, e);
+                return;
+            }
+        };
+
+        let functor     = term_functor(&term);
+        let ground_args = extract_ground_args(&term);
+        let args_ref: Vec<&str> = ground_args.iter().map(String::as_str).collect();
+
+        // 1. Upsert a ground entry for the exact fact.
+        if let Err(e) = self.tableau.update_truth(
+            self.prolog_id, &functor, &args_ref, truth.clone(), &[],
+        ) {
+            log::warn!("tableau: update_truth failed for {}: {}", functor, e);
+        }
+
+        // 2. If a seeded wildcard entry exists for this functor/arity, update it
+        //    and populate variable bindings by zipping bound_vars with ground args.
+        let arity = ground_args.len() as u32;
+        let wildcard: Vec<&str> = (0..arity).map(|_| "*").collect();
+        if let Ok(Some(seed)) = self.tableau.get_entry(self.prolog_id, &functor, &wildcard) {
+            let bindings: Vec<Binding> = seed.bound_vars.iter()
+                .zip(ground_args.iter())
+                .map(|(var, val)| Binding { var: var.clone(), val: val.clone() })
+                .collect();
+            if let Err(e) = self.tableau.update_truth(
+                self.prolog_id, &functor, &wildcard, truth, &bindings,
+            ) {
+                log::warn!("tableau: wildcard update failed for {}: {}", functor, e);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +251,14 @@ fn term_functor(term: &Term) -> String {
         Term::Integer(n) => n.to_string(),
         Term::Float(f) => f.to_string(),
         Term::Compound { functor, .. } => functor.clone(),
+    }
+}
+
+/// Render each argument of a term as a Prolog term string.
+fn extract_ground_args(term: &Term) -> Vec<String> {
+    match term {
+        Term::Compound { args, .. } => args.iter().map(|a| render_prolog_term(a)).collect(),
+        _                           => vec![],
     }
 }
 
@@ -250,4 +314,88 @@ fn clara_dagda_now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .expect("system time before epoch")
         .as_millis() as i64
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_session() -> DeductionSession {
+        DeductionSession::new().expect("DeductionSession::new failed")
+    }
+
+    #[test]
+    fn record_assert_creates_ground_entry() {
+        let mut session = make_session();
+        let payload = json!({"type": "assert", "data": "defcon(4)"});
+        session.record_event_in_tableau(&payload);
+        let tv = session.tableau.get(session.prolog_id, "defcon", &["4"]).unwrap();
+        assert_eq!(tv, TruthValue::KnownTrue);
+    }
+
+    #[test]
+    fn record_assert_updates_seeded_wildcard() {
+        let mut session = make_session();
+        // Pre-seed a wildcard entry as a rule body goal.
+        let seed = PredicateEntry {
+            session_id:   session.prolog_id,
+            entry_id:     uuid::Uuid::new_v4(),
+            functor:      "commie".into(),
+            arity:        1,
+            args:         vec!["*".into()],
+            kind:         Kind::Predicate,
+            source:       None,
+            bound_vars:   vec!["Bastard".into()],
+            truth_value:  TruthValue::Unknown,
+            bindings:     vec![],
+            parent_id:    None,
+            updated_at_ms: 0,
+        };
+        session.tableau.set_entry(&seed).unwrap();
+
+        let payload = json!({"type": "assert", "data": "commie(mary)"});
+        session.record_event_in_tableau(&payload);
+
+        // Ground entry should be KnownTrue.
+        let tv = session.tableau.get(session.prolog_id, "commie", &["mary"]).unwrap();
+        assert_eq!(tv, TruthValue::KnownTrue);
+
+        // Wildcard entry should be updated with bindings.
+        let entry = session.tableau.get_entry(session.prolog_id, "commie", &["*"]).unwrap().unwrap();
+        assert_eq!(entry.truth_value, TruthValue::KnownTrue);
+        assert_eq!(entry.bindings, vec![Binding { var: "Bastard".into(), val: "mary".into() }]);
+    }
+
+    #[test]
+    fn record_retract_marks_known_false() {
+        let mut session = make_session();
+        let payload = json!({"type": "retract", "data": "commie(josef)"});
+        session.record_event_in_tableau(&payload);
+        let tv = session.tableau.get(session.prolog_id, "commie", &["josef"]).unwrap();
+        assert_eq!(tv, TruthValue::KnownFalse);
+    }
+
+    #[test]
+    fn record_ignores_goal_events() {
+        let mut session = make_session();
+        let payload = json!({"type": "goal", "data": "(do-for-all-facts ((?f foo)) TRUE (retract ?f))"});
+        session.record_event_in_tableau(&payload);
+        // No entry should have been created for a "goal" event type.
+        let tv = session.tableau.get(session.prolog_id, "do-for-all-facts", &[]).unwrap();
+        assert_eq!(tv, TruthValue::Unknown);
+    }
+
+    #[test]
+    fn record_ignores_malformed_data() {
+        let mut session = make_session();
+        // Garbage data should not panic; it is silently skipped.
+        let payload = json!({"type": "assert", "data": "!!!not prolog!!!"});
+        session.record_event_in_tableau(&payload);
+        // No assertion: we only care that this does not panic.
+    }
 }
