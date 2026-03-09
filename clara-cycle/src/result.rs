@@ -1,3 +1,4 @@
+use clara_dagda::PredicateEntry;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -29,12 +30,17 @@ pub struct DeductionResult {
     pub prolog_session_id: Uuid,
     pub clips_session_id:  Uuid,
     /// All solutions produced by the `initial_goal` on cycle 0.
-    /// Each element is a JSON object mapping variable name → value,
-    /// e.g. `[{"Man": "stan"}]`.  Empty array means the goal succeeded
-    /// with no variable bindings; absent means no goal was run or the
-    /// run did not complete normally.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prolog_solutions:  Option<serde_json::Value>,
+    /// Final variable bindings for the root goal once it resolves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_bindings:     Option<Vec<clara_dagda::Binding>>,
+    /// Final tableau state on completion.  Absent for in-memory-only sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tableau:           Option<Vec<PredicateEntry>>,
+    /// Reserved for future proof-tree / explanation output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation:       Option<serde_json::Value>,
 }
 
 /// Point-in-time snapshot of pending Coire event counts used for convergence

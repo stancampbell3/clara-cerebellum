@@ -37,3 +37,4 @@ pub use error::CycleError;
 pub use result::{CoireSnapshot, CycleStatus, DeductionResult};
 pub use session::DeductionSession;
 pub use clara_coire::CoireStore;
+pub use clara_dagda::{Binding, Dagda, Kind, PredicateEntry, TruthValue};

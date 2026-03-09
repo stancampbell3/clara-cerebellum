@@ -254,6 +254,7 @@ mod tests {
             created_at_ms:     now_ms - 2000,
             expires_at_ms:     now_ms - 1,   // already expired
             context:           vec![],
+            tableau_entries:   serde_json::json!([]),
         };
         store.save_snapshot(&snap).unwrap();
 

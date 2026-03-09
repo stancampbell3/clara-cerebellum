@@ -1070,6 +1070,7 @@ version = "0.1.0"
 dependencies = [
  "clara-clips",
  "clara-coire",
+ "clara-dagda",
  "clara-prolog",
  "log",
  "serde",

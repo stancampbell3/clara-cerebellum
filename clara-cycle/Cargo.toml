@@ -10,6 +10,7 @@ publish = false
 clara-prolog  = { path = "../clara-prolog" }
 clara-clips   = { path = "../clara-clips", features = ["ffi"] }
 clara-coire   = { path = "../clara-coire" }
+clara-dagda   = { path = "../clara-dagda" }
 uuid          = { version = "1", features = ["v4"] }
 thiserror     = "2"
 log           = "0.4"

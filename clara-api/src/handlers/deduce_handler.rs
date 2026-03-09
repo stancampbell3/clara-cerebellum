@@ -7,7 +7,7 @@ use clara_coire::DeductionSnapshot;
 use serde_json::json;
 use uuid::Uuid;
 
-use clara_cycle::{CycleController, CycleStatus, DeductionSession};
+use clara_cycle::{CycleController, CycleStatus, DeductionSession, PredicateEntry};
 
 use crate::handlers::session_handler::{AppState, DeductionEntry};
 use crate::models::{
@@ -124,29 +124,33 @@ pub async fn start_deduce(
         }
 
         // Update the deduction entry with the final result.
-        let (final_status, final_cycles) = {
+        let (final_status, final_cycles, final_tableau) = {
             let mut deductions = state_bg.deductions.write().unwrap();
             if let Some(entry) = deductions.get_mut(&deduction_id) {
-                match bg_result {
+                let tableau = match bg_result {
                     Ok(Ok(ref deduction_result)) => {
                         entry.cycles = deduction_result.cycles;
                         entry.status = deduction_result.status.clone();
+                        let t = deduction_result.tableau.clone();
                         entry.result = Some(deduction_result.clone());
+                        t
                     }
                     Ok(Err(ref e)) => {
                         if let clara_cycle::CycleError::MaxCyclesExceeded(n) = e {
                             entry.cycles = *n;
                         }
                         entry.status = CycleStatus::Error(e.to_string());
+                        None
                     }
                     Err(ref join_err) => {
                         entry.status =
                             CycleStatus::Error(format!("spawn_blocking panicked: {}", join_err));
+                        None
                     }
-                }
-                (entry.status.to_string(), entry.cycles)
+                };
+                (entry.status.to_string(), entry.cycles, tableau)
             } else {
-                (CycleStatus::Error("entry missing".into()).to_string(), 0)
+                (CycleStatus::Error("entry missing".into()).to_string(), 0, None)
             }
         };
 
@@ -156,6 +160,10 @@ pub async fn start_deduce(
                 (Some(store), Some((prolog_id, clips_id))) => {
                     let snapshot_ttl_ms = state_bg.snapshot_ttl_ms;
                     let created = now_ms();
+                    let tableau_json = final_tableau
+                        .as_deref()
+                        .map(|t| serde_json::to_value(t).unwrap_or(serde_json::json!([])))
+                        .unwrap_or(serde_json::json!([]));
                     let snap = DeductionSnapshot {
                         deduction_id,
                         prolog_clauses:    clauses,
@@ -170,6 +178,7 @@ pub async fn start_deduce(
                         created_at_ms:     created,
                         expires_at_ms:     created + snapshot_ttl_ms,
                         context,
+                        tableau_entries:   tableau_json,
                     };
                     if let Err(e) = store.save_snapshot(&snap) {
                         log::warn!("deduce {}: failed to save snapshot: {}", deduction_id, e);
@@ -276,7 +285,11 @@ pub async fn resume_deduce(
         let clips_file_bg = clips_file.clone();
         let context_bg    = context.clone();
 
+        let snap_tableau = snap.tableau_entries.clone();
         let bg_handle = tokio::task::spawn_blocking(move || {
+            // Deserialize stored tableau entries (best-effort; empty on failure).
+            let prev_tableau: Vec<PredicateEntry> =
+                serde_json::from_value(snap_tableau).unwrap_or_default();
             let mut session = DeductionSession::new()?;
             session.seed_prolog(&clauses_bg)?;
             if let Some(ref path) = clips_file_bg {
@@ -287,7 +300,7 @@ pub async fn resume_deduce(
             let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = CycleController::new(session, max_cycles, None, interrupt_bg)
                 .with_store(store_bg.clone());
-            controller.restore_from(&store_bg, prev_prolog_id, prev_clips_id)?;
+            controller.restore_from(&store_bg, prev_prolog_id, prev_clips_id, &prev_tableau)?;
             controller.run()
         });
 
@@ -316,29 +329,33 @@ pub async fn resume_deduce(
             active.remove(&clips_id);
         }
 
-        let (final_status, final_cycles) = {
+        let (final_status, final_cycles, final_tableau) = {
             let mut deductions = state_bg.deductions.write().unwrap();
             if let Some(entry) = deductions.get_mut(&deduction_id) {
-                match bg_result {
+                let tableau = match bg_result {
                     Ok(Ok(ref r)) => {
                         entry.cycles = r.cycles;
                         entry.status = r.status.clone();
+                        let t = r.tableau.clone();
                         entry.result = Some(r.clone());
+                        t
                     }
                     Ok(Err(ref e)) => {
                         if let clara_cycle::CycleError::MaxCyclesExceeded(n) = e {
                             entry.cycles = *n;
                         }
                         entry.status = CycleStatus::Error(e.to_string());
+                        None
                     }
                     Err(ref join_err) => {
                         entry.status =
                             CycleStatus::Error(format!("spawn_blocking panicked: {}", join_err));
+                        None
                     }
-                }
-                (entry.status.to_string(), entry.cycles)
+                };
+                (entry.status.to_string(), entry.cycles, tableau)
             } else {
-                (CycleStatus::Error("entry missing".into()).to_string(), 0)
+                (CycleStatus::Error("entry missing".into()).to_string(), 0, None)
             }
         };
 
@@ -346,6 +363,10 @@ pub async fn resume_deduce(
             if let Some((prolog_id, clips_id)) = tracked_ids {
                 let snapshot_ttl_ms = state_bg.snapshot_ttl_ms;
                 let created = now_ms();
+                let tableau_json = final_tableau
+                    .as_deref()
+                    .map(|t| serde_json::to_value(t).unwrap_or(serde_json::json!([])))
+                    .unwrap_or(serde_json::json!([]));
                 let new_snap = DeductionSnapshot {
                     deduction_id,
                     prolog_clauses:    clauses,
@@ -360,6 +381,7 @@ pub async fn resume_deduce(
                     created_at_ms:     created,
                     expires_at_ms:     created + snapshot_ttl_ms,
                     context,
+                    tableau_entries:   tableau_json,
                 };
                 if let Err(e) = store.save_snapshot(&new_snap) {
                     log::warn!("resume {}: failed to save snapshot: {}", deduction_id, e);

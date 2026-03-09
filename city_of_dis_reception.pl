@@ -2,6 +2,7 @@
 
 % we will use context to power the inference backed conditions
 :- dynamic(context/1).
+%% FOR TESTING OVERRIDE clary_fy
 :- use_module(library(the_rat)).
 
 %% City of Dis Reception
