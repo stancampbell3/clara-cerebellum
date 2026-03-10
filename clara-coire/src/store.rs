@@ -97,16 +97,35 @@ impl CoireStore {
                 ON deduction_snapshots (expires_at_ms);",
         )?;
         // Migrations: add columns to stores created before these fields existed.
-        let _ = conn.execute(
-            "ALTER TABLE deduction_snapshots \
-             ADD COLUMN IF NOT EXISTS context VARCHAR NOT NULL DEFAULT '[]'",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE deduction_snapshots \
-             ADD COLUMN IF NOT EXISTS tableau_entries VARCHAR NOT NULL DEFAULT '[]'",
-            [],
-        );
+        // We check information_schema first because some DuckDB versions silently
+        // ignore ADD COLUMN IF NOT EXISTS with NOT NULL DEFAULT on existing tables.
+        for (col, definition) in [
+            ("context",         "context         VARCHAR NOT NULL DEFAULT '[]'"),
+            ("tableau_entries", "tableau_entries  VARCHAR NOT NULL DEFAULT '[]'"),
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 \
+                     FROM information_schema.columns \
+                     WHERE table_name = 'deduction_snapshots' AND column_name = ?",
+                    duckdb::params![col],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if !exists {
+                if let Err(e) = conn.execute(
+                    &format!("ALTER TABLE deduction_snapshots ADD COLUMN {}", definition),
+                    [],
+                ) {
+                    log::error!(
+                        "CoireStore: migration failed to add column '{}': {}",
+                        col, e
+                    );
+                } else {
+                    log::info!("CoireStore: migrated — added column '{}'", col);
+                }
+            }
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

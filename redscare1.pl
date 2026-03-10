@@ -5,3 +5,6 @@
 :- dynamic(suggestion/1).
 
 bash_the_reds :- commie_state(visible), assertz(suggestion(bash_the_reds)).
+
+advice(Suggestion) :- suggestion(Suggestion).
+

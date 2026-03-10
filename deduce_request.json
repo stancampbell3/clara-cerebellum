@@ -1,8 +1,8 @@
 {
-    "prolog_clauses": ["consult('redscare1_clara.pl').", "commie_state(visible)."],
+    "prolog_clauses": ["consult('samplekb_clara.pl').", "visitor(stan).", "greeted(stan)."],
     "clips_constructs": [],
-    "clips_file": "./redscare1_clara.clp",
-    "initial_goal": "suggestion(Suggestion).",
+    "clips_file": "./samplekb_clara.clp",
+    "initial_goal": "admit(stan, Reason).",
     "context": [],
     "max_cycles": 100 
 }
