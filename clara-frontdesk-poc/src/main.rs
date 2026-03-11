@@ -5,6 +5,7 @@ mod state;
 mod ws;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix_files::Files;
 use actix_web::{web, App, HttpServer};
@@ -13,6 +14,46 @@ use fiery_pit_client::FieryPitClient;
 use config::load_config;
 use state::AppState;
 use ws::ws_index;
+
+/// Set the evaluator to "kindling", retrying on timeout or connection errors.
+///
+/// FieryPit may take up to ~2 minutes to be ready on a cold start; rather than
+/// panicking immediately we retry a handful of times and log a clear warning if
+/// we still cannot reach it, so the server starts and surfaces a useful error
+/// on the first `/evaluate` call instead of crashing silently.
+fn init_evaluator(fiery_pit: &FieryPitClient) {
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY: Duration = Duration::from_secs(10);
+
+    for attempt in 1..=MAX_RETRIES {
+        match fiery_pit.set_evaluator("kindling") {
+            Ok(resp) => {
+                log::info!("FieryPit evaluator set to 'kindling': {}", resp);
+                return;
+            }
+            Err(e) => {
+                if attempt < MAX_RETRIES {
+                    log::warn!(
+                        "set_evaluator attempt {}/{} failed: {}. Retrying in {}s…",
+                        attempt,
+                        MAX_RETRIES,
+                        e,
+                        RETRY_DELAY.as_secs()
+                    );
+                    std::thread::sleep(RETRY_DELAY);
+                } else {
+                    log::error!(
+                        "set_evaluator failed after {} attempts: {}. \
+                         Server will start but /evaluate calls will likely fail until \
+                         FieryPit is reachable and an evaluator is set.",
+                        MAX_RETRIES,
+                        e
+                    );
+                }
+            }
+        }
+    }
+}
 
 fn main() -> std::io::Result<()> {
     env_logger::Builder::from_default_env()
@@ -39,6 +80,9 @@ fn main() -> std::io::Result<()> {
 
     // FieryPitClient uses blocking reqwest — must be created BEFORE the actix runtime.
     let fiery_pit = FieryPitClient::new(&cfg.paths.fiery_pit_url);
+
+    // Set the KindlingEvaluator before handing the client to any async code.
+    init_evaluator(&fiery_pit);
 
     let state = web::Data::new(AppState {
         fiery_pit,
