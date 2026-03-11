@@ -1,5 +1,5 @@
 {
-    "prolog_clauses": ["consult('front_desk_poc_reprise_clara.pl').", "visitor(perstefanie)."],
+    "prolog_clauses": ["consult('front_desk_poc_reprise_clara.pl').", "visitor(perstefanie).", "greeted(perstefanie)."],
     "clips_constructs": [],
     "clips_file": "./front_desk_poc_reprise_clara.clp",
     "initial_goal": "suggestion(perstefanie, S).",
