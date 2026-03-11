@@ -1,0 +1,26 @@
+[package]
+name = "clara-frontdesk-poc"
+version = "0.1.0"
+edition = "2021"
+description = "City of Dis front desk PoC — Clara neurosymbolic reasoning demo"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "clara-frontdesk"
+path = "src/main.rs"
+
+[dependencies]
+actix-web = "4"
+actix-web-actors = "4"
+actix = "0.13"
+actix-files = "0.6"
+fiery-pit-client = { path = "../fiery-pit-client" }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+toml = "0.8"
+env_logger = "0.10"
+log = "0.4"
+thiserror = "1.0"

@@ -1,0 +1,80 @@
+{
+  "deduction_id": "05831a79-56ed-43c4-8d46-f1c8d41236ca",
+  "status": "converged",
+  "result": {
+    "clips_session_id": "5dbb990a-affa-4a39-9e92-5e8ca8ee5f44",
+    "cycles": 2,
+    "goal_bindings": [
+      {
+        "val": "Greet the visitor.",
+        "var": "S"
+      }
+    ],
+    "prolog_session_id": "6b2e8cd0-f868-4449-97ba-7b5e079c77fb",
+    "prolog_solutions": [
+      {
+        "S": "Greet the visitor."
+      },
+      {
+        "S": "Direct the visitor to the nearest map kiosk."
+      }
+    ],
+    "status": "Converged",
+    "tableau": [
+      {
+        "args": [
+          "'front_desk_poc_reprise_clara.pl'"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "35934caf-551e-42b0-9e72-961add539271",
+        "functor": "consult",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "6b2e8cd0-f868-4449-97ba-7b5e079c77fb",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1773212365525
+      },
+      {
+        "args": [
+          "*"
+        ],
+        "arity": 1,
+        "bindings": [
+          {
+            "val": "Greet the visitor.",
+            "var": "S"
+          }
+        ],
+        "bound_vars": [],
+        "entry_id": "e21a8c26-b65f-45a4-aacf-d24c9b9f22bd",
+        "functor": "suggestion",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "6b2e8cd0-f868-4449-97ba-7b5e079c77fb",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1773212367836
+      },
+      {
+        "args": [
+          "perstefanie"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "845ea123-4f9e-4a7b-99e9-13b94eaf9dd0",
+        "functor": "visitor",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "6b2e8cd0-f868-4449-97ba-7b5e079c77fb",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1773212367864
+      }
+    ]
+  },
+  "cycles": 2
+}

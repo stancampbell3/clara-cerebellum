@@ -1,40 +1,137 @@
-## City of Dis - Front Desk POC
-==============================
-# This is a small self-contained web application which makes use of the Clara API to demonstrate how to use it to build a front desk application.
+# City of Dis — Front Desk POC
 
-### We will:
-1.  Demonstrate the use of the LittleDaemon client to power both conversational and decision making capabilities of the application.
-2.  Show how to use the Clara API to manage conversations and decisions.
-3.  Provide a simple user interface to interact with the application.
-4.  We'll have a simple backend server to handle API requests and manage the state of the application.
-5. Provide a simple frontend application to interact with the backend server and display the results to the user.
+A self-contained Rust binary that demonstrates the Clara neurosymbolic reasoning stack in a visitor intake scenario set at the infernal City of Dis administrative offices.
 
-### We will simulate a visitor entering the City of Dis administrative offices and the interactions between the visitor
-and the agent on duty there.
+## What it does
 
-### We will leverage the eval endpoint of a KindlingEvaluator through FieryPit (running on port 6666 on the same server)
-to evaluate the visitor's responses and determine the next steps in the conversation.
+A visitor chats with **Agent Minos** via a browser-based WebSocket UI. Each visitor turn drives two parallel reasoning calls:
 
-### We will leverage the /deduce endpoint of a KindlingDeductor through FieryPit to make decisions based on the visitor's
-responses and the current state of the conversation.
+1. **Suggestions** — `clara-api /deduce` runs `suggestion(visitor, S)` against the Prolog+CLIPS knowledge base and returns actionable hints to guide the conversation.
+2. **Admittance** — `clara-api /deduce` runs `admit(visitor, Reason)` to evaluate whether the visitor qualifies for entry under the five admittance rules.
 
-### Final states are that the visitor has been granted access to the City of Dis administrative offices and has been given
-a visitor badge or the visitor, the visitor has been denied access, and the visitor has been directed
-elsewhere (say to a help kiosk or another office).
+Both results are injected into the system prompt of a **FieryPit `/evaluate`** call that generates Agent Minos's response. The session ends in one of three terminal states: **Admitted**, **Denied**, or **Redirected** (e.g., to the map kiosk).
 
-## Existing resources
-* in clara-frontdesk-poc/roost/front_desk_poc_reprise.pl is our source Prolog program which will enforce the "admit/2" predicate, giving a Reason for admittance if it evaluates to true.  It will be "transduced" and decorated into .roost/front_desk_poc_reprise_clara.pl and roost/front_desk_poc_reprise_clara.clp.
-* please see ./docs/deduce_endpoint.md for details on the using /deduce to check admittance and for getting Suggestions
-* the Clara reasoning systems clara-cycle coordinates evaluation of goals, suggestions of new goals, and recommendations to the caller.  we'll use it to check for admittance given the current conversational context.
-* we'll "transduce" and produce the decorated Prolog and the CLIPS files at build time.  the _clara.pl and _clara.clp resources will be deployed with the POC webapp.
-* we'll use the fierypitclient to establish a connection to a KindlingEvaluator.
-* we'll use the /evaluate request for conversational interaction with the user/visitor
-* we'll use the /deduce request for checking whether the current conversation context includes facts which justify admitting the visitor.
-* if the /deduce returns "Suggestions" then we'll prompt the LLM during evaluate with this additional context to ask relevant questions or give relevant advice.
+## Architecture
 
-Feel free to rework the front_desk_poc_reprise.pl as needed, but remember *control* lives outside the /deduce system so we don't embed state machines or the like in Prolog.  we use it only to justify decisions and, through forward chaining, suggest alternative paths of reasoning or feedback to the visitor and/or agent.
+```
+Browser (WS) ──► clara-frontdesk (8088)
+                      │
+                      ├─► clara-api /deduce (8080)
+                      │       └─► clara-cycle: Prolog + CLIPS + Dagda tableau
+                      │
+                      └─► FieryPit /evaluate (6666)
+                              └─► KindlingEvaluator (LLM)
+```
 
-We can assume a running FieryPit on port 6666 with a configured KindlingEvaluator available to set.
-Also, the clara-api will be running locally to serve the FieryPit's instance of KindlingEvaluator through the Demonic Voice.
+**Knowledge base source:** `roost/front_desk_poc_reprise.pl`
+Five admittance rules and six suggestion predicates. Each rule may use either symbolic Prolog facts (asserted per turn) or `clara_fy/3` LLM-mediated checks for conditions that cannot be verified symbolically.
 
+## File layout
 
+```
+clara-frontdesk-poc/
+├── Cargo.toml
+├── config/
+│   └── city_of_dis.toml         # company persona + service URLs + file paths
+├── roost/
+│   ├── front_desk_poc_reprise.pl          # source Prolog (edit this)
+│   ├── front_desk_poc_reprise_clara.pl    # generated — do not edit
+│   └── front_desk_poc_reprise_clara.clp   # generated — do not edit
+├── src/
+│   ├── main.rs      # server init (FieryPitClient before actix runtime)
+│   ├── config.rs    # TOML config structs
+│   ├── state.rs     # AppState shared across WS connections
+│   ├── session.rs   # VisitorSession per-connection state + fact accumulation
+│   ├── deduce.rs    # blocking POST+poll client for /deduce
+│   └── ws.rs        # WebSocket actor, per-turn reasoning loop
+└── static/
+    └── index.html   # single-file chat UI (infernal theme)
+```
+
+## Prerequisites
+
+### 1. Build the workspace
+
+```bash
+cargo build -p clara-frontdesk-poc
+```
+
+### 2. Transduce the Prolog source
+
+Run this once from the workspace root whenever `front_desk_poc_reprise.pl` changes:
+
+```bash
+transduction --decorate clara-frontdesk-poc/roost/front_desk_poc_reprise.pl
+```
+
+This produces:
+- `roost/front_desk_poc_reprise_clara.pl`
+- `roost/front_desk_poc_reprise_clara.clp`
+
+### 3. Update the config with absolute paths
+
+Edit `clara-frontdesk-poc/config/city_of_dis.toml` and replace the `CHANGE_ME` placeholders with the absolute paths to the generated files **as seen by the `clara-api` process**:
+
+```toml
+[paths]
+clara_api_url  = "http://localhost:8080"
+fiery_pit_url  = "http://localhost:6666"
+clara_pl_path  = "/abs/path/to/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl"
+clara_clp_path = "/abs/path/to/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp"
+```
+
+The paths must be absolute because `clara-api` reads these files from its own working directory.
+
+### 4. Start the dependent services
+
+| Service | Default port | How to start |
+|---------|-------------|--------------|
+| FieryPit (lildaemon) | 6666 | per your local setup |
+| clara-api | 8080 | `cargo run -p clara-api` |
+
+### 5. Run the front desk server
+
+```bash
+FRONTDESK_CONFIG=clara-frontdesk-poc/config/city_of_dis.toml cargo run -p clara-frontdesk-poc
+```
+
+Open `http://localhost:8088` in a browser.
+
+## Visitor test scenarios
+
+| Scenario | Facts to trigger | Expected outcome |
+|----------|-----------------|-----------------|
+| Summoned visitor with three artifacts | `summoned_by`, three `has_artifact` facts | Admitted |
+| Urgent message, came directly | `urgent_message`, no `stopped_elsewhere` | Admitted |
+| Flamefruit carrier before sundown | `carries_flamefruit`, no `after_sundown` | Admitted |
+| Critical info + completed task | `has_critical_info`, `performed_task` | Admitted |
+| Lost or confused visitor | LLM-detected via `clara_fy` | Redirected to map kiosk |
+
+Facts are accumulated as Prolog clauses in `VisitorSession` and injected into every `/deduce` call. The LLM-mediated rules (`clara_fy/3`) extract conditions from conversation context when symbolic facts are absent.
+
+## Configuration reference
+
+```toml
+[company]
+name          = "City of Dis Administrative Office"
+agent_name    = "Agent Minos"
+system_prompt = "..."   # injected into every /evaluate call
+
+[server]
+port = 8088             # override with FRONTDESK_PORT not yet supported; edit this field
+
+[paths]
+clara_api_url  = "http://localhost:8080"
+fiery_pit_url  = "http://localhost:6666"
+clara_pl_path  = "..."  # absolute path to _clara.pl
+clara_clp_path = "..."  # absolute path to _clara.clp
+```
+
+Config file location is read from the `FRONTDESK_CONFIG` environment variable; defaults to `clara-frontdesk-poc/config/city_of_dis.toml` (relative to workspace root).
+
+## Known constraints
+
+- **`FieryPitClient` must be created before the actix runtime.** The blocking `reqwest` client panics if dropped inside a tokio context. `main.rs` constructs it before `actix_web::rt::System::new()`.
+- **Transduced files are not committed.** They are generated artefacts; regenerate after every edit to the source `.pl`.
+- **Fixed visitor atom.** The Prolog atom `visitor` is used throughout for simplicity; dynamic name extraction from conversation is not implemented in the POC.
+- **`/evaluate` payload shape.** The current payload uses `{ prompt, context, model }` matching the KindlingEvaluator's OllamaFish backend. Adjust `session.rs::evaluate_data()` if the evaluator changes.

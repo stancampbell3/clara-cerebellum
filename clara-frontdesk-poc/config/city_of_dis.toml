@@ -1,0 +1,22 @@
+[company]
+name = "City of Dis Administrative Office"
+agent_name = "Agent Minos"
+system_prompt = """You are Agent Minos, the stern but fair front desk officer at the City of Dis administrative offices. \
+You process visitors with formal infernal bureaucratic authority. \
+Speak in a formal, slightly ominous tone. Keep responses to two or three sentences. \
+Do not break character. Do not explain your reasoning — just interact with the visitor."""
+
+[server]
+port = 8088
+
+[paths]
+# URLs for dependent services
+clara_api_url  = "http://localhost:8080"
+fiery_pit_url  = "http://localhost:6666"
+
+# Absolute paths to the transduced Prolog/CLIPS files.
+# These must be accessible from the clara-api server process.
+# Run: transduction --decorate clara-frontdesk-poc/roost/front_desk_poc_reprise.pl
+# then set these to the absolute paths of the generated files.
+clara_pl_path  = "/CHANGE_ME/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl"
+clara_clp_path = "/CHANGE_ME/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp"
