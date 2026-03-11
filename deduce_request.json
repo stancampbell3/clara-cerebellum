@@ -1,8 +1,11 @@
 {
-    "prolog_clauses": ["consult('samplekb_clara.pl').", "visitor(stan).", "greeted(stan)."],
+    "prolog_clauses": ["consult('samplekb_clara.pl').", "visitor(perstefanie).", "greeted(perstefanie)."],
     "clips_constructs": [],
     "clips_file": "./samplekb_clara.clp",
-    "initial_goal": "admit(stan, Reason).",
-    "context": [],
+    "initial_goal": "suggestion(perstefanie, S).",
+    "context": [
+	{"role": "user",      "content": "I need help finding the exit."},
+        {"role": "assistant", "content": "I can help with that."}
+    ],
     "max_cycles": 100 
 }
