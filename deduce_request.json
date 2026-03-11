@@ -4,8 +4,9 @@
     "clips_file": "./front_desk_poc_reprise_clara.clp",
     "initial_goal": "suggestion(perstefanie, S).",
     "context": [
-	    {"role": "user",      "content": "I need help finding the exit."},
+        {"role": "system", "content": "You are an expert in determining the answers to yes or no questions within a conversational context. Please answer any question with one of Yes, No.  Do not generate any other response."},
+        {"role": "user",      "content": "I need help finding the exit."},
         {"role": "assistant", "content": "I can help with that."}
     ],
-    "max_cycles": 1
+    "max_cycles": 2
 }
