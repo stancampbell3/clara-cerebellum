@@ -4,7 +4,7 @@
     "clips_file": "./front_desk_poc_reprise_clara.clp",
     "initial_goal": "suggestion(perstefanie, S).",
     "context": [
-        {"role": "system", "content": "You are an expert in determining the answers to yes or no questions within a conversational context. Please answer any question with one of Yes, No.  Do not generate any other response."},
+        {"role": "system", "content": "You are an expert in determining the answers to yes or no questions within a conversational context. Please answer in one or two concise sentences. 'Yes, ...' and 'No, ...' responses are preferred."},
         {"role": "user",      "content": "I need help finding the exit."},
         {"role": "assistant", "content": "I can help with that."}
     ],
