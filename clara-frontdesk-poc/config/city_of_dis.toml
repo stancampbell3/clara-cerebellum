@@ -18,5 +18,5 @@ fiery_pit_url  = "http://localhost:6666"
 # These must be accessible from the clara-api server process.
 # Run: transduction --decorate clara-frontdesk-poc/roost/front_desk_poc_reprise.pl
 # then set these to the absolute paths of the generated files.
-clara_pl_path  = "/CHANGE_ME/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl"
-clara_clp_path = "/CHANGE_ME/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp"
+clara_pl_path  = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl"
+clara_clp_path = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp"
