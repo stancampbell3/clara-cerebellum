@@ -32,7 +32,7 @@ do
     break
   fi
 
-  sleep 1  # Wait a second between attempts to avoid overwhelming the server with requests
+  sleep 10  # Wait a few seconds between attempts to avoid overwhelming the server with requests
 done
 
 # Pretty-print the final response using jq
