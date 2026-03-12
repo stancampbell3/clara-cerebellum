@@ -1,7 +1,9 @@
 //! FieryPitClient - Synchronous client for FieryPit REST API
 //!
 //! Provides a blocking client to interact with the FieryPit REST API in lildaemon.
-//! Supports health checks, evaluator management, CLIPS sessions, and Prolog sessions.
+//! Supports health checks, evaluator management, evaluation monitoring,
+//! hung-detector control, fish (input translator) management, CLIPS sessions,
+//! and Prolog sessions.
 
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,10 @@ pub enum FieryPitError {
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
 }
+
+// =========================================================================
+// Session request types (CLIPS + Prolog)
+// =========================================================================
 
 /// Session configuration for CLIPS/Prolog sessions
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -80,21 +86,121 @@ pub struct PrologConsultRequest {
     pub clauses: Vec<String>,
 }
 
-/// Set evaluator request
+// =========================================================================
+// Evaluator request types
+// =========================================================================
+
+/// Optional authentication configuration for an evaluator.
+/// `auth_token` is accepted but never logged by the server.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EvaluatorAuth {
+    /// e.g. "bearer" or "basic"
+    pub auth_type: String,
+    /// Direct token value (avoid if possible; prefer `auth_token_env`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
+    /// Name of an environment variable holding the token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_token_env: Option<String>,
+}
+
+/// POST /evaluators/set
 #[derive(Debug, Clone, Serialize)]
 pub struct SetEvaluatorRequest {
     pub evaluator: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<EvaluatorAuth>,
+}
+
+/// POST /evaluators/{name}/load
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct LoadEvaluatorRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<EvaluatorAuth>,
+}
+
+/// POST /evaluators/{name}/fish
+#[derive(Debug, Clone, Serialize)]
+pub struct SetFishRequest {
+    pub fish: String,
+}
+
+/// POST /hung-detector/configure — all fields optional
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct HungDetectorConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hung_threshold_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_cancel_hung: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_interval_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warn_threshold_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub critical_threshold_seconds: Option<f64>,
 }
 
 // =========================================================================
 // Response types
 // =========================================================================
 
-/// Response from POST /evaluators/set or POST /evaluators/reset
+/// Response from POST /evaluators/set, POST /evaluators/reset,
+/// POST /evaluators/{name}/load
 #[derive(Debug, Clone, Deserialize)]
 pub struct EvaluatorActionResponse {
     pub status: String,
     pub evaluator: Option<String>,
+    /// Present on /load responses
+    #[serde(default)]
+    pub auth_configured: Option<bool>,
+}
+
+/// Response from GET /evaluators/{name}/auth-status
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvaluatorAuthStatus {
+    pub auth_configured: bool,
+    #[serde(default)]
+    pub auth_type: Option<String>,
+    #[serde(default)]
+    pub auth_token_env_set: Option<bool>,
+}
+
+/// A single evaluation entry from the monitoring endpoints
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvaluationEntry {
+    pub task_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub evaluator: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub prompt_preview: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<f64>,
+    #[serde(default)]
+    pub completed_at: Option<f64>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+}
+
+/// Response from GET /evaluations/stats
+#[derive(Debug, Clone, Deserialize)]
+pub struct EvaluationStats {
+    #[serde(default)]
+    pub running: u64,
+    #[serde(default)]
+    pub completed: u64,
+    #[serde(default)]
+    pub cancelled: u64,
+    #[serde(default)]
+    pub failed: u64,
+    #[serde(default)]
+    pub total_tracked: u64,
 }
 
 /// Success payload inside a Tephra response
@@ -163,6 +269,10 @@ impl Tephra {
     }
 }
 
+// =========================================================================
+// Client
+// =========================================================================
+
 /// FieryPit REST API Client
 #[derive(Clone)]
 pub struct FieryPitClient {
@@ -174,7 +284,7 @@ impl FieryPitClient {
     /// Create a new FieryPitClient
     ///
     /// # Arguments
-    /// * `base_url` - Base URL of the FieryPit API, e.g. "http://localhost:8000"
+    /// * `base_url` - Base URL of the FieryPit API, e.g. "http://localhost:6666"
     pub fn new(base_url: impl Into<String>) -> Self {
         let base = base_url.into();
         FieryPitClient {
@@ -184,7 +294,7 @@ impl FieryPitClient {
     }
 
     // =========================================================================
-    // Helper methods
+    // Internal helpers
     // =========================================================================
 
     fn get(&self, path: &str) -> Result<Value, FieryPitError> {
@@ -220,101 +330,246 @@ impl FieryPitClient {
     }
 
     // =========================================================================
-    // Health & Status Endpoints
+    // Health & Status
     // =========================================================================
 
-    /// Health check - GET /health
+    /// Health check — GET /health
     pub fn health(&self) -> Result<Value, FieryPitError> {
         self.get("/health")
     }
 
-    /// Get status - GET /status
+    /// Current status including active evaluator — GET /status
     pub fn status(&self) -> Result<Value, FieryPitError> {
         self.get("/status")
     }
 
-    /// Get API info - GET /
+    /// API metadata — GET /
     pub fn info(&self) -> Result<Value, FieryPitError> {
         self.get("/")
     }
 
     // =========================================================================
-    // Evaluation Endpoints
+    // Evaluation
     // =========================================================================
 
-    /// Evaluate using current evaluator - POST /evaluate (raw JSON)
+    /// Evaluate using the current active evaluator — POST /evaluate
     pub fn evaluate(&self, data: Value) -> Result<Value, FieryPitError> {
         log::debug!("FieryPitClient evaluate with data: {}", data);
         self.post("/evaluate", &json!({ "data": data }))
     }
 
-    /// Evaluate and return a typed Tephra response
+    /// Evaluate and return a typed Tephra envelope
     pub fn evaluate_tephra(&self, data: Value) -> Result<Tephra, FieryPitError> {
         let value = self.evaluate(data)?;
         Ok(serde_json::from_value(value)?)
     }
 
     // =========================================================================
-    // Evaluator Management Endpoints
+    // Evaluation Monitoring — /evaluations/*
     // =========================================================================
 
-    /// List all evaluators - GET /evaluators
+    /// List all currently running evaluations — GET /evaluations/active
+    pub fn evaluations_active(&self) -> Result<Vec<EvaluationEntry>, FieryPitError> {
+        let v = self.get("/evaluations/active")?;
+        Ok(serde_json::from_value(v["active_evaluations"].clone()).unwrap_or_default())
+    }
+
+    /// Evaluation statistics — GET /evaluations/stats
+    pub fn evaluations_stats(&self) -> Result<EvaluationStats, FieryPitError> {
+        let v = self.get("/evaluations/stats")?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// Recent evaluation history — GET /evaluations/history?limit=N
+    pub fn evaluations_history(&self, limit: Option<u32>) -> Result<Vec<EvaluationEntry>, FieryPitError> {
+        let path = match limit {
+            Some(n) => format!("/evaluations/history?limit={}", n),
+            None => "/evaluations/history".to_string(),
+        };
+        let v = self.get(&path)?;
+        Ok(serde_json::from_value(v["evaluations"].clone()).unwrap_or_default())
+    }
+
+    /// Evaluations exceeding the hung threshold — GET /evaluations/hung
+    pub fn evaluations_hung(&self) -> Result<Vec<EvaluationEntry>, FieryPitError> {
+        let v = self.get("/evaluations/hung")?;
+        Ok(serde_json::from_value(v["hung_evaluations"].clone()).unwrap_or_default())
+    }
+
+    /// Evaluations running longer than a threshold — GET /evaluations/long-running
+    ///
+    /// `threshold_seconds`: uses server's `warn_threshold` if omitted.
+    pub fn evaluations_long_running(
+        &self,
+        threshold_seconds: Option<f64>,
+    ) -> Result<Vec<EvaluationEntry>, FieryPitError> {
+        let path = match threshold_seconds {
+            Some(t) => format!("/evaluations/long-running?threshold={}", t),
+            None => "/evaluations/long-running".to_string(),
+        };
+        let v = self.get(&path)?;
+        Ok(serde_json::from_value(v["long_running_evaluations"].clone()).unwrap_or_default())
+    }
+
+    /// Details of a specific evaluation — GET /evaluations/{task_id}
+    pub fn evaluation_get(&self, task_id: &str) -> Result<EvaluationEntry, FieryPitError> {
+        let v = self.get(&format!("/evaluations/{}", task_id))?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// Cancel a specific active evaluation — DELETE /evaluations/{task_id}
+    pub fn evaluation_cancel(&self, task_id: &str) -> Result<Value, FieryPitError> {
+        self.delete(&format!("/evaluations/{}", task_id))
+    }
+
+    /// Cancel all hung evaluations — POST /evaluations/cancel-hung
+    pub fn evaluations_cancel_hung(&self) -> Result<Value, FieryPitError> {
+        self.post("/evaluations/cancel-hung", &json!({}))
+    }
+
+    // =========================================================================
+    // Hung Detector — /hung-detector/*
+    // =========================================================================
+
+    /// Hung detector status and configuration — GET /hung-detector/status
+    pub fn hung_detector_status(&self) -> Result<Value, FieryPitError> {
+        self.get("/hung-detector/status")
+    }
+
+    /// Update hung detector configuration — POST /hung-detector/configure
+    ///
+    /// All fields optional; only specified values are updated.
+    pub fn hung_detector_configure(&self, config: HungDetectorConfig) -> Result<Value, FieryPitError> {
+        self.post("/hung-detector/configure", &config)
+    }
+
+    // =========================================================================
+    // Evaluator Management — /evaluators/*
+    // =========================================================================
+
+    /// List all available evaluators — GET /evaluators
     pub fn list_evaluators(&self) -> Result<Value, FieryPitError> {
-        log::debug!("FieryPitClient list_evaluators");
         self.get("/evaluators")
     }
 
-    /// Get evaluator details - GET /evaluators/{name}
+    /// Details for a specific evaluator — GET /evaluators/{name}
     pub fn get_evaluator(&self, name: &str) -> Result<Value, FieryPitError> {
-        log::debug!("FieryPitClient get_evaluator {}", name);
         self.get(&format!("/evaluators/{}", name))
     }
 
-    /// Set current evaluator - POST /evaluators/set (raw JSON)
-    pub fn set_evaluator(&self, evaluator: &str) -> Result<Value, FieryPitError> {
-        log::debug!("FieryPitClient set_evaluator to {}", evaluator);
-        self.post("/evaluators/set", &SetEvaluatorRequest {
-            evaluator: evaluator.to_string(),
-        })
+    /// Authentication configuration status for an evaluator — GET /evaluators/{name}/auth-status
+    pub fn get_evaluator_auth_status(&self, name: &str) -> Result<EvaluatorAuthStatus, FieryPitError> {
+        let v = self.get(&format!("/evaluators/{}/auth-status", name))?;
+        Ok(serde_json::from_value(v)?)
     }
 
-    /// Set current evaluator and return typed response
+    /// Set the current active evaluator — POST /evaluators/set
+    ///
+    /// Simple form: name only, no params or auth. Existing callers unchanged.
+    pub fn set_evaluator(&self, evaluator: &str) -> Result<Value, FieryPitError> {
+        log::debug!("FieryPitClient set_evaluator to {}", evaluator);
+        self.post(
+            "/evaluators/set",
+            &SetEvaluatorRequest {
+                evaluator: evaluator.to_string(),
+                params: None,
+                auth: None,
+            },
+        )
+    }
+
+    /// Set the current active evaluator with optional params and auth config.
+    pub fn set_evaluator_with_config(
+        &self,
+        evaluator: &str,
+        params: Option<Value>,
+        auth: Option<EvaluatorAuth>,
+    ) -> Result<Value, FieryPitError> {
+        log::debug!("FieryPitClient set_evaluator_with_config to {}", evaluator);
+        self.post(
+            "/evaluators/set",
+            &SetEvaluatorRequest {
+                evaluator: evaluator.to_string(),
+                params,
+                auth,
+            },
+        )
+    }
+
+    /// Set the current active evaluator and return a typed response
     pub fn set_evaluator_typed(&self, evaluator: &str) -> Result<EvaluatorActionResponse, FieryPitError> {
         let value = self.set_evaluator(evaluator)?;
         Ok(serde_json::from_value(value)?)
     }
 
-    /// Reset to default evaluator - POST /evaluators/reset
+    /// Load/verify an evaluator with optional parameter overrides — POST /evaluators/{name}/load
+    pub fn load_evaluator(
+        &self,
+        name: &str,
+        req: LoadEvaluatorRequest,
+    ) -> Result<EvaluatorActionResponse, FieryPitError> {
+        let v = self.post(&format!("/evaluators/{}/load", name), &req)?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    /// Load an evaluator with no overrides — convenience wrapper
+    pub fn load_evaluator_simple(&self, name: &str) -> Result<EvaluatorActionResponse, FieryPitError> {
+        self.load_evaluator(name, LoadEvaluatorRequest::default())
+    }
+
+    /// Reset to the default echo evaluator — POST /evaluators/reset
     pub fn reset_evaluator(&self) -> Result<Value, FieryPitError> {
         log::debug!("FieryPitClient reset_evaluator");
         self.post("/evaluators/reset", &json!({}))
     }
 
+    /// Unload/unregister an evaluator — DELETE /evaluators/{name}
+    pub fn delete_evaluator(&self, name: &str) -> Result<Value, FieryPitError> {
+        self.delete(&format!("/evaluators/{}", name))
+    }
+
     // =========================================================================
-    // CLIPS Session Endpoints
+    // Fish (Input Translators) — /fish, /evaluators/{name}/fish
     // =========================================================================
 
-    /// Create CLIPS session - POST /clips/sessions
+    /// List all available fish (input translators) — GET /fish
+    pub fn list_fish(&self) -> Result<Value, FieryPitError> {
+        self.get("/fish")
+    }
+
+    /// Set the fish (input translator) for a specific evaluator — POST /evaluators/{name}/fish
+    pub fn set_evaluator_fish(&self, evaluator_name: &str, fish: &str) -> Result<Value, FieryPitError> {
+        self.post(
+            &format!("/evaluators/{}/fish", evaluator_name),
+            &SetFishRequest { fish: fish.to_string() },
+        )
+    }
+
+    // =========================================================================
+    // CLIPS Sessions — /clips/sessions/*
+    // =========================================================================
+
+    /// Create CLIPS session — POST /clips/sessions
     pub fn clips_create_session(&self, req: CreateSessionRequest) -> Result<Value, FieryPitError> {
         self.post("/clips/sessions", &req)
     }
 
-    /// List CLIPS sessions - GET /clips/sessions
+    /// List CLIPS sessions — GET /clips/sessions
     pub fn clips_list_sessions(&self) -> Result<Value, FieryPitError> {
         self.get("/clips/sessions")
     }
 
-    /// Get CLIPS session - GET /clips/sessions/{id}
+    /// Get CLIPS session — GET /clips/sessions/{id}
     pub fn clips_get_session(&self, session_id: &str) -> Result<Value, FieryPitError> {
         self.get(&format!("/clips/sessions/{}", session_id))
     }
 
-    /// Terminate CLIPS session - DELETE /clips/sessions/{id}
+    /// Terminate CLIPS session — DELETE /clips/sessions/{id}
     pub fn clips_terminate_session(&self, session_id: &str) -> Result<Value, FieryPitError> {
         self.delete(&format!("/clips/sessions/{}", session_id))
     }
 
-    /// Evaluate CLIPS code - POST /clips/sessions/{id}/evaluate
+    /// Execute raw CLIPS code — POST /clips/sessions/{id}/evaluate
     pub fn clips_evaluate(
         &self,
         session_id: &str,
@@ -330,7 +585,7 @@ impl FieryPitClient {
         )
     }
 
-    /// Load CLIPS rules - POST /clips/sessions/{id}/rules
+    /// Load CLIPS rules — POST /clips/sessions/{id}/rules
     pub fn clips_load_rules(
         &self,
         session_id: &str,
@@ -342,7 +597,7 @@ impl FieryPitClient {
         )
     }
 
-    /// Load CLIPS facts - POST /clips/sessions/{id}/facts
+    /// Assert CLIPS facts — POST /clips/sessions/{id}/facts
     pub fn clips_load_facts(
         &self,
         session_id: &str,
@@ -354,7 +609,7 @@ impl FieryPitClient {
         )
     }
 
-    /// Query CLIPS facts - GET /clips/sessions/{id}/facts
+    /// Query CLIPS facts — GET /clips/sessions/{id}/facts
     pub fn clips_query_facts(
         &self,
         session_id: &str,
@@ -371,7 +626,7 @@ impl FieryPitClient {
         self.get(&path)
     }
 
-    /// Run CLIPS rule engine - POST /clips/sessions/{id}/run
+    /// Run the CLIPS rule engine — POST /clips/sessions/{id}/run
     pub fn clips_run(
         &self,
         session_id: &str,
@@ -386,10 +641,10 @@ impl FieryPitClient {
     }
 
     // =========================================================================
-    // Prolog Session Endpoints
+    // Prolog Sessions — /prolog/sessions/*
     // =========================================================================
 
-    /// Create Prolog session - POST /prolog/sessions (raw JSON)
+    /// Create Prolog session — POST /prolog/sessions
     pub fn prolog_create_session(&self, req: CreateSessionRequest) -> Result<Value, FieryPitError> {
         self.post("/prolog/sessions", &req)
     }
@@ -397,7 +652,6 @@ impl FieryPitClient {
     /// Create a Prolog session and return just the session_id
     pub fn prolog_create_session_id(&self, req: CreateSessionRequest) -> Result<String, FieryPitError> {
         let value = self.prolog_create_session(req)?;
-        // Try several common shapes: direct string, .session_id, .id
         if let Some(s) = value.as_str() {
             return Ok(s.to_string());
         }
@@ -415,22 +669,22 @@ impl FieryPitClient {
         ))
     }
 
-    /// List Prolog sessions - GET /prolog/sessions
+    /// List Prolog sessions — GET /prolog/sessions
     pub fn prolog_list_sessions(&self) -> Result<Value, FieryPitError> {
         self.get("/prolog/sessions")
     }
 
-    /// Get Prolog session - GET /prolog/sessions/{id}
+    /// Get Prolog session — GET /prolog/sessions/{id}
     pub fn prolog_get_session(&self, session_id: &str) -> Result<Value, FieryPitError> {
         self.get(&format!("/prolog/sessions/{}", session_id))
     }
 
-    /// Terminate Prolog session - DELETE /prolog/sessions/{id}
+    /// Terminate Prolog session — DELETE /prolog/sessions/{id}
     pub fn prolog_terminate_session(&self, session_id: &str) -> Result<Value, FieryPitError> {
         self.delete(&format!("/prolog/sessions/{}", session_id))
     }
 
-    /// Execute Prolog query - POST /prolog/sessions/{id}/query
+    /// Execute a Prolog goal — POST /prolog/sessions/{id}/query
     pub fn prolog_query(
         &self,
         session_id: &str,
@@ -446,7 +700,7 @@ impl FieryPitClient {
         )
     }
 
-    /// Consult Prolog clauses - POST /prolog/sessions/{id}/consult
+    /// Load Prolog clauses into a session — POST /prolog/sessions/{id}/consult
     pub fn prolog_consult(
         &self,
         session_id: &str,
@@ -458,6 +712,10 @@ impl FieryPitClient {
         )
     }
 }
+
+// =========================================================================
+// Tests
+// =========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -498,5 +756,27 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("test_user"));
         assert!(json.contains("my-session"));
+    }
+
+    #[test]
+    fn test_set_evaluator_request_no_optional_fields() {
+        // Verify that simple set_evaluator omits params and auth from JSON
+        let req = SetEvaluatorRequest {
+            evaluator: "kindling".to_string(),
+            params: None,
+            auth: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("kindling"));
+        assert!(!json.contains("params"));
+        assert!(!json.contains("auth"));
+    }
+
+    #[test]
+    fn test_hung_detector_config_empty() {
+        let cfg = HungDetectorConfig::default();
+        let json = serde_json::to_string(&cfg).unwrap();
+        // All fields None → empty object
+        assert_eq!(json, "{}");
     }
 }
