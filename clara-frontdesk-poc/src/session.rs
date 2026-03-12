@@ -75,27 +75,32 @@ impl VisitorSession {
         ctx
     }
 
-    /// Build the evaluate payload: context = history minus last user turn,
-    /// prompt = last user turn (so OllamaFish appends it as final user message).
+    /// Build the evaluate payload for the KindlingEvaluator LLM path.
+    ///
+    /// KindlingEvaluator.evaluate_async() routes `{"prompt": ...}` to OllamaEvaluator.
+    /// It reads the system prompt from the top-level `"system"` string field and
+    /// conversation history from `"context"` (array of role/content objects).
+    /// The system prompt must NOT be embedded as context[0] — KindlingEvaluator reads
+    /// `data.get("system")` directly and the OllamaEvaluator will prepend it to the
+    /// messages array only when the first context entry is not already a system message.
     pub fn evaluate_data(&self, system_message: &str) -> Value {
-        // Split conversation: everything except the last message (which is the user turn)
-        let history = if self.conversation.len() > 1 {
-            &self.conversation[..self.conversation.len() - 1]
-        } else {
-            &[]
-        };
-
+        // Last message is the current user turn (sent as "prompt").
         let prompt = self.conversation.last()
             .and_then(|m| m["content"].as_str())
             .unwrap_or("")
             .to_string();
 
-        let mut ctx = vec![json!({"role": "system", "content": system_message})];
-        ctx.extend(history.iter().cloned());
+        // Prior turns only — no system message embedded here.
+        let history: Vec<Value> = if self.conversation.len() > 1 {
+            self.conversation[..self.conversation.len() - 1].to_vec()
+        } else {
+            vec![]
+        };
 
         json!({
             "prompt":  prompt,
-            "context": ctx,
+            "system":  system_message,
+            "context": history,
             "model":   "qwen2.5:7b"
         })
     }

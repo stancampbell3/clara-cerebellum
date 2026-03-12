@@ -209,22 +209,18 @@ fn run_turn(
     let new_status = interpret_admit(&admit_reasons);
     log::debug!("run_turn: new_status={:?}", new_status.as_ref().map(|s| s.label()));
 
-    // 4. Augment system message with suggestions + decision
+    // 4. Augment system message with suggestions + decision.
+    // The system prompt lives at the top-level "system" key per the KindlingEvaluator
+    // contract — not embedded in context[0].
     let augmented_system = build_system_message(
-        evaluate_data["context"][0]["content"]
-            .as_str()
-            .unwrap_or(""),
+        evaluate_data["system"].as_str().unwrap_or(""),
         &suggestions,
         &new_status,
     );
     log::debug!("run_turn: augmented system prompt:\n{}", augmented_system);
 
     let mut eval_payload = evaluate_data;
-    if let Some(ctx_arr) = eval_payload["context"].as_array_mut() {
-        if let Some(system_msg) = ctx_arr.get_mut(0) {
-            system_msg["content"] = Value::String(augmented_system);
-        }
-    }
+    eval_payload["system"] = Value::String(augmented_system);
 
     // 5. Call /evaluate
     log::debug!(
