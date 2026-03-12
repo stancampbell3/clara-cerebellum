@@ -167,7 +167,10 @@ fn run_turn(
 ) -> Result<TurnResult, Box<dyn std::error::Error + Send + Sync>> {
     let http = Client::new();
 
+    log::debug!("run_turn: prolog_clauses={:?}", prolog_clauses);
+
     // 1. Suggestions
+    log::debug!("run_turn: running suggestions deduce");
     let suggestions = run_deduce(
         &http,
         clara_api_url,
@@ -182,8 +185,10 @@ fn run_turn(
         log::warn!("Suggestions deduce failed: {}", e);
         vec![]
     });
+    log::debug!("run_turn: suggestions={:?}", suggestions);
 
     // 2. Admittance
+    log::debug!("run_turn: running admittance deduce");
     let admit_reasons = run_deduce(
         &http,
         clara_api_url,
@@ -198,9 +203,11 @@ fn run_turn(
         log::warn!("Admittance deduce failed: {}", e);
         vec![]
     });
+    log::debug!("run_turn: admit_reasons={:?}", admit_reasons);
 
     // 3. Interpret admittance
     let new_status = interpret_admit(&admit_reasons);
+    log::debug!("run_turn: new_status={:?}", new_status.as_ref().map(|s| s.label()));
 
     // 4. Augment system message with suggestions + decision
     let augmented_system = build_system_message(
@@ -210,6 +217,7 @@ fn run_turn(
         &suggestions,
         &new_status,
     );
+    log::debug!("run_turn: augmented system prompt:\n{}", augmented_system);
 
     let mut eval_payload = evaluate_data;
     if let Some(ctx_arr) = eval_payload["context"].as_array_mut() {
@@ -219,7 +227,20 @@ fn run_turn(
     }
 
     // 5. Call /evaluate
-    let assistant_text = match fp_client.evaluate(eval_payload) {
+    log::debug!(
+        "run_turn: evaluate payload: {}",
+        serde_json::to_string_pretty(&eval_payload).unwrap_or_default()
+    );
+    let raw_tephra = fp_client.evaluate(eval_payload);
+    log::debug!(
+        "run_turn: evaluate raw response: {}",
+        match &raw_tephra {
+            Ok(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
+            Err(e) => format!("ERROR: {}", e),
+        }
+    );
+
+    let assistant_text = match raw_tephra {
         Ok(tephra) => tephra["hohi"]["response"]["response"]
             .as_str()
             .unwrap_or("(no response from evaluator)")
@@ -229,6 +250,7 @@ fn run_turn(
             "I am unable to process your request at this time. Please try again.".to_string()
         }
     };
+    log::debug!("run_turn: assistant_text={:?}", assistant_text);
 
     Ok(TurnResult {
         assistant_text,

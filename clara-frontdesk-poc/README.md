@@ -92,7 +92,9 @@ The paths must be absolute because `clara-api` reads these files from its own wo
 ### 5. Run the front desk server
 
 ```bash
-FRONTDESK_CONFIG=clara-frontdesk-poc/config/city_of_dis.toml cargo run -p clara-frontdesk-poc
+FRONTDESK_CONFIG=clara-frontdesk-poc/config/city_of_dis.toml \
+    RUST_LOG=clara_frontdesk=debug \
+    cargo run -p clara-frontdesk-poc
 ```
 
 Open `http://localhost:8088` in a browser.

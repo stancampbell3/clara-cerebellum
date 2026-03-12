@@ -20,3 +20,7 @@ fiery_pit_url  = "http://localhost:6666"
 # then set these to the absolute paths of the generated files.
 clara_pl_path  = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl"
 clara_clp_path = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp"
+
+[log]
+level = "debug"
+format = "[${timestamp}] ${target} - ${message}"
