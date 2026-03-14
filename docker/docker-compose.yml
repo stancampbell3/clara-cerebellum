@@ -1,0 +1,96 @@
+# Clara PoC Stack — Docker Compose
+#
+# Build context: Development/ (two levels up from this file)
+# Run from Development/:
+#   docker compose -f clara-cerebrum/docker/docker-compose.yml --env-file clara-cerebrum/docker/.env up -d
+#
+# Or from this directory:
+#   docker compose --env-file .env up -d
+
+version: "3.9"
+
+services:
+
+  clara-api:
+    build:
+      context: ../..
+      dockerfile: clara-cerebrum/docker/Dockerfile
+      target: clara-api
+    image: clara-api:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+    environment:
+      - RUST_LOG=info
+      - JWT_SECRET=${JWT_SECRET}
+    volumes:
+      # FastText model files (860 MB) mounted read-only — not baked into image
+      - ../models:/etc/clara/models:ro
+    restart: unless-stopped
+    networks:
+      - clara-net
+
+  prolog-mcp:
+    build:
+      context: ../..
+      dockerfile: clara-cerebrum/docker/Dockerfile
+      target: prolog-mcp
+    image: clara-prolog-mcp:latest
+    ports:
+      - "127.0.0.1:1968:1968"
+    environment:
+      - REST_API_URL=http://clara-api:8080
+    depends_on:
+      - clara-api
+    restart: unless-stopped
+    networks:
+      - clara-net
+
+  clips-mcp:
+    build:
+      context: ../..
+      dockerfile: clara-cerebrum/docker/Dockerfile
+      target: clips-mcp
+    image: clara-clips-mcp:latest
+    ports:
+      - "127.0.0.1:1951:1951"
+    environment:
+      - REST_API_URL=http://clara-api:8080
+    depends_on:
+      - clara-api
+    restart: unless-stopped
+    networks:
+      - clara-net
+
+  clara-frontdesk:
+    build:
+      context: ../..
+      dockerfile: clara-cerebrum/docker/Dockerfile
+      target: frontdesk
+    image: clara-frontdesk:latest
+    ports:
+      - "127.0.0.1:8088:8088"
+    depends_on:
+      - clara-api
+      - lildaemon
+    restart: unless-stopped
+    networks:
+      - clara-net
+
+  lildaemon:
+    build:
+      context: ../..
+      dockerfile: clara-cerebrum/docker/Dockerfile.lildaemon
+    image: lildaemon:latest
+    ports:
+      - "127.0.0.1:6666:6666"
+    environment:
+      - CEREBELLUM_URL=http://clara-api:8080
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    restart: unless-stopped
+    networks:
+      - clara-net
+
+networks:
+  clara-net:
+    driver: bridge

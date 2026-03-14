@@ -1,0 +1,25 @@
+# lildaemon (FieryPit) — Python 3.11 service
+#
+# Build context: Development/ (parent of lildaemon/)
+# Run from: /app  (so config/evaluators.yaml and evaluators_custom/ resolve correctly)
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the full lildaemon tree to /app.
+# evaluators_custom/ and config/ must be present in the working directory.
+COPY lildaemon/ .
+
+# Install the goat package (packages found via setup.cfg: include = goat*)
+RUN pip install --no-cache-dir -e .
+
+EXPOSE 6666
+
+ENV CEREBELLUM_URL=http://clara-api:8080
+
+CMD ["uvicorn", "goat.app.main:app", "--host", "0.0.0.0", "--port", "6666"]
