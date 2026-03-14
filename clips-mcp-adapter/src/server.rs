@@ -188,11 +188,14 @@ impl McpServer {
 
     fn handle_initialize(&self) -> Value {
         json!({
-            "name": "clara-clips",
-            "version": "0.1.0",
+            "protocolVersion": "2024-11-05",
+            "serverInfo": {
+                "name": "clara-clips",
+                "version": "0.1.0"
+            },
             "capabilities": {
-                "tools": true,
-                "resources": false
+                "tools": {},
+                "resources": {}
             }
         })
     }
