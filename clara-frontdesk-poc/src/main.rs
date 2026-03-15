@@ -93,6 +93,7 @@ fn main() -> std::io::Result<()> {
     });
 
     let port = cfg.server.port;
+    let static_path = cfg.paths.static_path.clone();
 
     actix_web::rt::System::new().block_on(async move {
         HttpServer::new(move || {
@@ -100,7 +101,7 @@ fn main() -> std::io::Result<()> {
                 .app_data(state.clone())
                 .route("/ws", web::get().to(ws_index))
                 .service(
-                    Files::new("/", "clara-frontdesk-poc/static")
+                    Files::new("/", &static_path)
                         .index_file("index.html"),
                 )
         })

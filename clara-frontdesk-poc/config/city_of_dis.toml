@@ -27,6 +27,7 @@ fiery_pit_url  = "http://lildaemon:6666"
 # For local dev: run `transduction --decorate` and update these paths.
 clara_pl_path  = "/app/roost/front_desk_poc_reprise_clara.pl"
 clara_clp_path = "/app/roost/front_desk_poc_reprise_clara.clp"
+static_path    = "/app/static"
 
 [log]
 level = "debug"

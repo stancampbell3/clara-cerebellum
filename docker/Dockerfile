@@ -45,13 +45,22 @@ RUN cargo build --release \
 # Locate the SWI-Prolog shared library and home directory produced by the build.
 # build.rs puts them under target/release/build/clara-prolog-*/out/swipl-build/
 # Copy to known paths so runtime stages can COPY --from=builder.
-RUN SWIPL_LIB=$(find /build/target/release/build -name "libswipl.so" -type f | head -1 | xargs dirname) && \
+# Uses swipl-build/src directory search (avoids fragile pipe-to-dirname pattern)
+# and libswipl.so* glob to handle versioned .so names (libswipl.so.9.x.x etc).
+RUN set -e && \
+    SWIPL_SRC=$(find /build/target/release/build -path "*/swipl-build/src" -type d | head -1) && \
     SWIPL_HOME=$(find /build/target/release/build -path "*/swipl-build/home" -type d | head -1) && \
+    if [ -z "$SWIPL_SRC" ] || [ -z "$SWIPL_HOME" ]; then \
+      echo "ERROR: SWI-Prolog build artifacts not found. Build tree:" && \
+      find /build/target/release/build -maxdepth 3 -type d && \
+      exit 1; \
+    fi && \
     mkdir -p /swipl/lib /swipl/home && \
-    cp "$SWIPL_LIB/libswipl.so" /swipl/lib/ && \
+    cp "$SWIPL_SRC"/libswipl.so* /swipl/lib/ && \
     cp -r "$SWIPL_HOME/." /swipl/home/ && \
-    echo "libswipl.so: $SWIPL_LIB" && \
-    echo "swipl home:  $SWIPL_HOME"
+    echo "swipl src:  $SWIPL_SRC" && \
+    echo "swipl home: $SWIPL_HOME" && \
+    ls -la /swipl/lib/
 
 
 # ── Stage 2: clara-api runtime ────────────────────────────────────────────────
@@ -65,10 +74,12 @@ RUN apt-get update && apt-get install -y \
     libpcre2-8-0 \
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /app
 COPY --from=builder /build/target/release/clara-api /usr/local/bin/
-COPY --from=builder /swipl/lib/libswipl.so          /usr/local/lib/
+COPY --from=builder /swipl/lib/                     /usr/local/lib/
 COPY --from=builder /swipl/home                     /opt/swipl/home
-COPY clara-cerebrum/config                           /etc/clara/
+# Copy config into /app/config/ so the binary finds it at config/default.toml
+COPY clara-cerebrum/config                           /app/config/
 
 RUN ldconfig
 
@@ -94,7 +105,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/prolog-mcp-adapter /usr/local/bin/
-COPY --from=builder /swipl/lib/libswipl.so                   /usr/local/lib/
+COPY --from=builder /swipl/lib/                              /usr/local/lib/
 COPY --from=builder /swipl/home                              /opt/swipl/home
 
 RUN ldconfig

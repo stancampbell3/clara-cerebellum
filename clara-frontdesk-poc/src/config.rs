@@ -26,6 +26,7 @@ pub struct PathsConfig {
     pub fiery_pit_url: String,
     pub clara_pl_path: String,
     pub clara_clp_path: String,
+    pub static_path: String,
 }
 
 pub fn load_config() -> FrontDeskConfig {

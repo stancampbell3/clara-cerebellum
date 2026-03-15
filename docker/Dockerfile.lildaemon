@@ -15,6 +15,9 @@ WORKDIR /app
 # evaluators_custom/ and config/ must be present in the working directory.
 COPY lildaemon/ .
 
+# Create logs directory expected by the logging config
+RUN mkdir -p /app/logs
+
 # Install the goat package (packages found via setup.cfg: include = goat*)
 RUN pip install --no-cache-dir -e .
 

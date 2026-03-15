@@ -7,8 +7,6 @@
 # Or from this directory:
 #   docker compose --env-file .env up -d
 
-version: "3.9"
-
 services:
 
   clara-api:
@@ -23,9 +21,18 @@ services:
     environment:
       - RUST_LOG=info
       - JWT_SECRET=${JWT_SECRET}
+      - FIERYPIT_URL=http://lildaemon:6666
     volumes:
       # FastText model files (860 MB) mounted read-only — not baked into image
       - ../models:/etc/clara/models:ro
+      # Coire DuckDB — persists across container rebuilds
+      - ../data:/app/data
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
     restart: unless-stopped
     networks:
       - clara-net
@@ -41,7 +48,14 @@ services:
     environment:
       - REST_API_URL=http://clara-api:8080
     depends_on:
-      - clara-api
+      clara-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/1968"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     restart: unless-stopped
     networks:
       - clara-net
@@ -57,22 +71,14 @@ services:
     environment:
       - REST_API_URL=http://clara-api:8080
     depends_on:
-      - clara-api
-    restart: unless-stopped
-    networks:
-      - clara-net
-
-  clara-frontdesk:
-    build:
-      context: ../..
-      dockerfile: clara-cerebrum/docker/Dockerfile
-      target: frontdesk
-    image: clara-frontdesk:latest
-    ports:
-      - "127.0.0.1:8088:8088"
-    depends_on:
-      - clara-api
-      - lildaemon
+      clara-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/1951"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     restart: unless-stopped
     networks:
       - clara-net
@@ -87,6 +93,32 @@ services:
     environment:
       - CEREBELLUM_URL=http://clara-api:8080
       - GROQ_API_KEY=${GROQ_API_KEY}
+    depends_on:
+      clara-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6666"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - clara-net
+
+  clara-frontdesk:
+    build:
+      context: ../..
+      dockerfile: clara-cerebrum/docker/Dockerfile
+      target: frontdesk
+    image: clara-frontdesk:latest
+    ports:
+      - "127.0.0.1:8088:8088"
+    depends_on:
+      clara-api:
+        condition: service_healthy
+      lildaemon:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - clara-net

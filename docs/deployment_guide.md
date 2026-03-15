@@ -20,7 +20,7 @@ frontdesk demo and EdgeQuake are reachable from the public internet; all other s
 | edgequake-frontend | 3000 | Auth only — `/edgequake/` |
 | edgequake-postgres | 5432 | No — internal |
 
-**EC2 instance:** `ec2-54-177-89-105.us-west-1.compute.amazonaws.com`
+**EC2 instance:** `ec2-54-176-157-222.us-west-1.compute.amazonaws.com`
 **SSH key:** `~/vastness/.ssh/SeashellAnalytics_220325.pem`
 **Demo is not always running** — start it on demand, stop it when done.
 
@@ -30,30 +30,33 @@ frontdesk demo and EdgeQuake are reachable from the public internet; all other s
 
 Perform these steps once before the first deployment.
 
-### 1. Resize the EC2 Instance
+### 1. Instance and Storage Configuration
 
-The full stack (Clara + EdgeQuake + PostgreSQL) requires at least 8 GB RAM and 40 GB
-disk. The current instance is likely undersized.
+**Already completed.** For reference, the instance is a t3.xlarge (4 vCPU, 16 GB RAM)
+with two NVMe volumes:
 
-1. Open the AWS Console → EC2 → Instances
-2. Stop the instance
-3. Actions → Instance Settings → Change Instance Type → select **t3.large** (8 GB) or
-   **t3.xlarge** (16 GB, recommended if budget allows)
-4. While stopped: Actions → Instance Settings → Modify EBS Volume → resize to **≥ 40 GB**
-5. Start the instance
+| Device | Size | FS | Mount | Purpose |
+|--------|------|----|-------|---------|
+| `/dev/nvme0n1p1` | 30 GB | XFS | `/` | OS, Docker images, build cache |
+| `/dev/nvme1n1` | 8 GB | ext4 | `/opt/clara` | Clara repos, models, PostgreSQL data |
 
-After starting, SSH in and resize the filesystem to use the new disk space:
+The root volume was expanded from 8 GB to 30 GB. To grow the filesystem on a future
+root resize (e.g. if more Docker cache space is needed):
 
 ```bash
-ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-177-89-105.us-west-1.compute.amazonaws.com
-
-# Verify the block device name (usually xvda or nvme0n1)
-lsblk
-
-# Grow the partition and filesystem (AL2023)
-sudo growpart /dev/xvda 1
+sudo growpart /dev/nvme0n1 1
 sudo xfs_growfs /
-df -h /   # confirm new size
+df -h /
+```
+
+To resize `/dev/nvme1n1` (the `/opt/clara` volume): modify it in the AWS Console
+(EC2 → Elastic Block Store → Volumes → Modify Volume — no instance stop needed),
+then:
+
+```bash
+sudo growpart /dev/nvme1n1   # no partition number — whole disk
+sudo resize2fs /dev/nvme1n1
+df -h /opt/clara
 ```
 
 ### 2. Install Docker
@@ -70,7 +73,7 @@ Log out and back in so the `docker` group takes effect:
 
 ```bash
 exit
-ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-177-89-105.us-west-1.compute.amazonaws.com
+ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-176-157-222.us-west-1.compute.amazonaws.com
 docker info   # should work without sudo
 ```
 
@@ -170,7 +173,7 @@ This will:
 Watch the build progress:
 
 ```bash
-ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-177-89-105.us-west-1.compute.amazonaws.com
+ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-176-157-222.us-west-1.compute.amazonaws.com
 cd /opt/clara
 docker compose -f clara-cerebrum/docker/docker-compose.yml logs -f
 ```
@@ -188,8 +191,8 @@ docker compose -f docker/docker-compose.yml --env-file /opt/clara/edgequake.env 
 ### 4. Verify
 
 From a browser:
-- Frontdesk demo: `http://ec2-54-177-89-105.us-west-1.compute.amazonaws.com/frontdesk/`
-- EdgeQuake: `http://ec2-54-177-89-105.us-west-1.compute.amazonaws.com/edgequake/` (enter password when prompted)
+- Frontdesk demo: `http://ec2-54-176-157-222.us-west-1.compute.amazonaws.com/frontdesk/`
+- EdgeQuake: `http://ec2-54-176-157-222.us-west-1.compute.amazonaws.com/edgequake/` (enter password when prompted)
 
 From the EC2 instance (internal health checks):
 ```bash
@@ -233,7 +236,7 @@ To sync files without rebuilding (e.g. to update a config):
 SSH into EC2 and rebuild only the affected container:
 
 ```bash
-ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-177-89-105.us-west-1.compute.amazonaws.com
+ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-176-157-222.us-west-1.compute.amazonaws.com
 cd /opt/clara
 
 # Rebuild and restart just one service (e.g. after a frontdesk config change)
@@ -272,7 +275,7 @@ The demo stack is not meant to run continuously. Start it before a demo, stop it
 SSH into EC2:
 
 ```bash
-ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-177-89-105.us-west-1.compute.amazonaws.com
+ssh -i ~/vastness/.ssh/SeashellAnalytics_220325.pem ec2-user@ec2-54-176-157-222.us-west-1.compute.amazonaws.com
 
 # Start Clara stack
 cd /opt/clara

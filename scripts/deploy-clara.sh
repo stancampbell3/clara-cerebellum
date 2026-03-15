@@ -11,7 +11,7 @@
 
 set -e
 
-EC2_HOST="ec2-54-177-89-105.us-west-1.compute.amazonaws.com"
+EC2_HOST="ec2-54-176-157-222.us-west-1.compute.amazonaws.com"
 EC2_USER="ec2-user"
 SSH_KEY="$HOME/vastness/.ssh/SeashellAnalytics_220325.pem"
 REMOTE_DIR="/opt/clara"
@@ -59,6 +59,7 @@ rsync -avz --delete \
     --exclude='target/' \
     --exclude='.git/' \
     --exclude='*.tmp' \
+    --exclude='docker/.env' \
     -e "ssh -i $SSH_KEY" \
     "$CEREBRUM_DIR/" \
     "$EC2_USER@$EC2_HOST:$REMOTE_DIR/clara-cerebrum/"
