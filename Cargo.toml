@@ -19,7 +19,8 @@ members = ["caw",
   "clara-coire",
   "clara-cycle",
   "clara-transduction",
-  "clara-dagda"]
+  "clara-dagda",
+  "clara-pitsnake"]
 resolver = "2"
 
 [workspace.package]
