@@ -996,6 +996,7 @@ dependencies = [
  "clara-prolog",
  "clara-session",
  "clara-toolbox",
+ "dotenvy",
  "env_logger 0.11.8",
  "log",
  "serde",

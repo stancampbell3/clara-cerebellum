@@ -1,6 +1,9 @@
 use clara_api::start_server;
 
 fn main() -> std::io::Result<()> {
+    // Load .env file if present (silently ignored if missing)
+    let _ = dotenvy::dotenv();
+
     // Initialize logging
     env_logger::Builder::from_default_env()
         .format_timestamp_millis()
