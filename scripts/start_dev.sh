@@ -52,7 +52,7 @@ for i in $(seq 1 30); do
         break
     fi
     sleep 1
-    if [ "$i" -gt 180 ]; then
+    if [ "$i" -gt 90 ]; then
 	log "Clara slept in.  Get the bucket."
 	exit
     fi
@@ -71,4 +71,4 @@ echo $SECOND_PID > second_gate.pid
 log "Started Second Gate (prolog-mcp-adapter) with PID: ${SECOND_PID} → /tmp/second_gate.log"
 
 log "All services started. Tailing /tmp/dis.log (Ctrl-C to detach)."
-tail -f /tmp/dis.log
+multitail /tmp/dis.log /tmp/first_gate.log /tmp/second_gate.log

@@ -19,6 +19,7 @@
 ]).
 
 :- use_module(library(http/json)).
+:- dynamic(deduce_context_json/1).
 
 %% dict_to_json/2 - Safely serialize a dict to a JSON atom
 %%   Handles all escaping (newlines, quotes, unicode, control chars)
@@ -47,7 +48,7 @@ ponder_text(Text, Result) :-
     dict_to_json(_{tool: splinteredmind,
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
-                                         model: 'qwen2.5:7b'}}}, Json),
+                                         model: 'qwen-clara:latest'}}}, Json),
     clara_evaluate(Json, Result).
 
 %% ponder_text_with_context/3 - Evaluate a prompt using the LLM with conversation context.
@@ -57,7 +58,7 @@ ponder_text_with_context(Text, Context, Result) :-
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
                                         context: Context,
-                                        model: 'qwen2.5:7b'}}}, Json),
+                                        model: 'qwen-clara:latest'}}}, Json),
     clara_evaluate(Json, Result).
 
 %% current_context/1 - Retrieve the conversational context injected at deduce time.

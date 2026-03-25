@@ -101,7 +101,7 @@ impl VisitorSession {
             "prompt":  prompt,
             "system":  system_message,
             "context": history,
-            "model":   "qwen2.5:7b"
+            "model":   "qwen-clara:latest"
         })
     }
 

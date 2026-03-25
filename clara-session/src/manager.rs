@@ -26,6 +26,9 @@ pub enum ManagerError {
 
     #[error("Environment execution error: {0}")]
     EnvironmentError(String),
+
+    #[error("Prolog error: {0}")]
+    PrologError(#[from] clara_prolog::PrologError),
 }
 
 /// Session manager configuration
@@ -281,7 +284,7 @@ impl SessionManager {
     /// Returns an error if the session or environment doesn't exist
     pub fn with_prolog_env<F, R>(&self, session_id: &SessionId, f: F) -> Result<R, ManagerError>
     where
-        F: FnOnce(&mut clara_prolog::PrologEnvironment) -> Result<R, String>,
+        F: FnOnce(&mut clara_prolog::PrologEnvironment) -> Result<R, clara_prolog::PrologError>,
     {
         let mut envs = self.prolog_envs.write()
             .map_err(|_| ManagerError::Store(StoreError::LockPoisoned))?;
@@ -289,7 +292,7 @@ impl SessionManager {
         let env = envs.get_mut(session_id)
             .ok_or_else(|| ManagerError::SessionNotFound)?;
 
-        f(env).map_err(|e| ManagerError::EnvironmentError(e))
+        f(env).map_err(ManagerError::PrologError)
     }
 
     /// Get all sessions for a user

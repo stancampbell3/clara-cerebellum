@@ -171,16 +171,12 @@ pub async fn query_prolog(
     let result = if req.all_solutions.unwrap_or(false) {
         state
             .session_manager
-            .with_prolog_env(&session_id, |env| {
-                env.query(&req.goal).map_err(|e| e.to_string())
-            })
+            .with_prolog_env(&session_id, |env| env.query(&req.goal))
             .map_err(ApiError::from)?
     } else {
         state
             .session_manager
-            .with_prolog_env(&session_id, |env| {
-                env.query_once(&req.goal).map_err(|e| e.to_string())
-            })
+            .with_prolog_env(&session_id, |env| env.query_once(&req.goal))
             .map_err(ApiError::from)?
     };
 
@@ -248,20 +244,20 @@ pub async fn consult_prolog(
                     log::debug!("Executing :- directive in session {}: {}", session_id.0, clause);
                     // Strip the :- prefix and execute as a goal
                     let goal = trimmed.trim_start_matches(":-").trim().trim_end_matches('.').trim();
-                    env.query_once(goal).map(|_| ()).map_err(|e| e.to_string())
+                    env.query_once(goal).map(|_| ())
                 }
                 // Check if this is a bare directive (e.g. use_module(...))
                 else if DIRECTIVE_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
                     log::debug!("Executing directive in session {}: {}", session_id.0, clause);
                     let goal = trimmed.trim_end_matches('.').trim();
-                    env.query_once(goal).map(|_| ()).map_err(|e| e.to_string())
+                    env.query_once(goal).map(|_| ())
                 }
                 // Otherwise, assert as a regular clause/rule
                 else {
                     log::debug!("Asserting clause into session {}: {}", session_id.0, clause);
                     // remove trailing dot if present, since assertz expects a term
                     let clause = trimmed.trim_end_matches('.').trim();
-                    env.assertz(&clause).map_err(|e| e.to_string())
+                    env.assertz(&clause)
                 }
             })
             .map_err(ApiError::from)?;

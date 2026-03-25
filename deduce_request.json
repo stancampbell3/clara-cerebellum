@@ -1,8 +1,8 @@
 {
-    "prolog_clauses": ["consult('/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl').", "visitor(perstefanie).", "greeted(perstefanie)."],
+    "prolog_clauses": ["protocol('book.txt').", "consult('/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl').", "visitor(perstefanie).", "greeted(perstefanie)."],
     "clips_constructs": [],
     "clips_file": "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp",
-    "initial_goal": "suggestion(perstefanie, S).",
+    "initial_goal": "suggestion(perstefanie, Suggestion).",
     "context": [
         {"role": "system", "content": "You are an expert in determining the answers to yes or no questions within a conversational context. Please answer in one or two concise sentences. 'Yes, ...' and 'No, ...' responses are preferred."},
         {"role": "user",      "content": "I need help finding the exit."},

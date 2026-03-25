@@ -34,11 +34,12 @@ impl Coire {
     pub fn write_event(&self, event: &ClaraEvent) -> CoireResult<()> {
         let payload_str = serde_json::to_string(&event.payload)?;
         log::debug!(
-            "Coire: writing event {} (session {}, origin {}, status {})",
+            "Coire: writing event {} (session {}, origin {}, status {}, payload {})",
             event.event_id,
             event.session_id,
             event.origin,
-            event.status.as_str()
+            event.status.as_str(),
+            payload_str
         );
         let conn = self.conn.lock().unwrap();
         conn.execute(

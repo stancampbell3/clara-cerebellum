@@ -1,5 +1,6 @@
 use actix_web::{http::StatusCode, HttpResponse, ResponseError};
 use clara_core::ClaraError;
+use clara_prolog::PrologError;
 use clara_session::ManagerError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -93,8 +94,28 @@ impl From<ManagerError> for ApiError {
             ManagerError::EnvironmentError(msg) => {
                 ClaraError::Internal(format!("Environment execution error: {}", msg))
             }
+            ManagerError::PrologError(prolog_err) => {
+                clara_error_from_prolog(prolog_err)
+            }
         };
         Self { inner: clara_error }
+    }
+}
+
+fn clara_error_from_prolog(err: PrologError) -> ClaraError {
+    match &err {
+        PrologError::ParseError(msg) => ClaraError::SyntaxError(msg.clone()),
+        PrologError::PrologException(msg) => {
+            // SWI-Prolog syntax errors are reported as exceptions:
+            // error(syntax_error(...), ...) — detect by the "syntax_error" term.
+            if msg.contains("syntax_error") {
+                ClaraError::SyntaxError(msg.clone())
+            } else {
+                ClaraError::EvalFailed(msg.clone())
+            }
+        }
+        PrologError::QueryFailed(msg) => ClaraError::EvalFailed(msg.clone()),
+        _ => ClaraError::Internal(err.to_string()),
     }
 }
 
