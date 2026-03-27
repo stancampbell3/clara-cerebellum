@@ -20,6 +20,7 @@
 meets_condition(Visitor, Question) :-
     visitor(Visitor),
     current_context(Context),
+    format('Current context: ~w~n', Context),
     clara_fy(Question, Context, R),
     R == true.
 
@@ -147,3 +148,4 @@ suggestion(Visitor, 'Advise the visitor to wait until dawn before entry.') :-
     visitor(Visitor),
     carries_flamefruit(Visitor),
     after_sundown.
+

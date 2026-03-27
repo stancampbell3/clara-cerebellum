@@ -75,7 +75,7 @@ impl DeductionSession {
             .map_err(|e| CycleError::ContextSeedFailed(e.to_string()))?;
         let escaped = json.replace('\'', "\\'");
         self.prolog
-            .assertz(&format!("deduce_context_json('{escaped}')"))
+            .assertz(&format!("the_rabbit:deduce_context_json('{escaped}')"))
             .map_err(CycleError::Prolog)?;
         log::debug!("DeductionSession: seeded {} context message(s)", context.len());
         Ok(())
