@@ -52,7 +52,7 @@ for i in $(seq 1 30); do
         break
     fi
     sleep 1
-    if [ "$i" -gt 90 ]; then
+    if [ "$i" -gt 30 ]; then
 	log "Clara slept in.  Get the bucket."
 	exit
     fi
