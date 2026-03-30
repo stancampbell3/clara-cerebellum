@@ -1073,6 +1073,7 @@ dependencies = [
  "clara-coire",
  "clara-dagda",
  "clara-prolog",
+ "env_logger 0.11.8",
  "log",
  "serde",
  "serde_json",

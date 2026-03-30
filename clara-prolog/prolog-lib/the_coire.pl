@@ -47,8 +47,13 @@ coire_dispatch_event(Event) :-
     ; true).
 
 % Built-in handlers keyed on payload.type.
+% json_read_dict produces SWI-Prolog strings for JSON string values, but
+% coire_dispatch_type clauses use atoms.  Normalise both fields here so that
+% the dispatch pattern-matches correctly regardless of which JSON reader was used.
 coire_builtin_handle(Payload) :-
-    (get_dict(type, Payload, Type), get_dict(data, Payload, Data) ->
+    (get_dict(type, Payload, Type0), get_dict(data, Payload, Data0) ->
+        (string(Type0) -> atom_string(Type, Type0) ; Type = Type0),
+        (string(Data0) -> atom_string(Data, Data0) ; Data = Data0),
         coire_dispatch_type(Type, Data)
     ; true).
 
