@@ -1,8 +1,8 @@
 {
-    "prolog_clauses": ["consult('./test9_clara.pl').", "visitor(bob)."],
+    "prolog_clauses": ["consult('./test9_clara.pl').", "visitor(bob).", "egg(unbroken)."], 
     "clips_constructs": [],
     "clips_file": "./test9_clara.clp",
     "initial_goal": "omelette(bob, X).",
     "context": [],
-    "max_cycles": 3
+    "max_cycles": 5 
 }
