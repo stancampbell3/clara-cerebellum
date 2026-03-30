@@ -463,7 +463,7 @@ mod tests {
 
         // Execute a simple query
         let result = manager.with_prolog_env(&session.session_id, |env| {
-            env.query_once("X = 42").map_err(|e| e.to_string())
+            env.query_once("X = 42")
         });
 
         assert!(result.is_ok(), "Query should succeed: {:?}", result);

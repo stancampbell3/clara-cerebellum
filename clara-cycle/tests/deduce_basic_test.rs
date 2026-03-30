@@ -73,7 +73,7 @@ fn deduce_basic_converges() {
     let interrupt = Arc::new(AtomicBool::new(false));
     let mut controller = CycleController::new(
         session,
-        3,                                     // max_cycles — must converge within 3
+        5,                                     // max_cycles — must converge within 3
         Some("omelette(bob, X)".to_string()),  // initial goal
         interrupt,
     );

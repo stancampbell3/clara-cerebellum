@@ -74,8 +74,8 @@ fn test_with_prolog_env() {
 
     // Use the Prolog environment
     let result = manager.with_prolog_env(&session.session_id, |env| {
-        env.assertz("test_fact(hello)").map_err(|e| e.to_string())?;
-        env.query_once("test_fact(X)").map_err(|e| e.to_string())
+        env.assertz("test_fact(hello)")?;
+        env.query_once("test_fact(X)")
     });
 
     assert!(result.is_ok(), "Should be able to use Prolog env: {:?}", result.err());
@@ -99,20 +99,20 @@ fn test_prolog_session_isolation() {
 
     // Assert different facts in each session
     manager.with_prolog_env(&session1.session_id, |env| {
-        env.assertz("data(session_one)").map_err(|e| e.to_string())
+        env.assertz("data(session_one)")
     }).expect("Failed to assert in session1");
 
     manager.with_prolog_env(&session2.session_id, |env| {
-        env.assertz("data(session_two)").map_err(|e| e.to_string())
+        env.assertz("data(session_two)")
     }).expect("Failed to assert in session2");
 
     // Each session should only see its own data
     let result1 = manager.with_prolog_env(&session1.session_id, |env| {
-        env.query_once("data(X)").map_err(|e| e.to_string())
+        env.query_once("data(X)")
     }).expect("Failed to query session1");
 
     let result2 = manager.with_prolog_env(&session2.session_id, |env| {
-        env.query_once("data(X)").map_err(|e| e.to_string())
+        env.query_once("data(X)")
     }).expect("Failed to query session2");
 
     println!("Session1 result: {}", result1);
@@ -174,7 +174,7 @@ fn test_access_wrong_session_type_env() {
 
     // Try to access it as Prolog environment (should fail)
     let result = manager.with_prolog_env(&clips_session.session_id, |_env| {
-        Ok::<_, String>("should not get here".to_string())
+        Ok::<_, clara_prolog::PrologError>("should not get here".to_string())
     });
 
     assert!(result.is_err(), "Should fail to access CLIPS session as Prolog env");
@@ -212,24 +212,24 @@ fn test_sequential_prolog_queries() {
 
     // Build up a knowledge base over multiple operations
     manager.with_prolog_env(&session.session_id, |env| {
-        env.assertz("likes(mary, food)").map_err(|e| e.to_string())
+        env.assertz("likes(mary, food)")
     }).expect("Assert 1 failed");
 
     manager.with_prolog_env(&session.session_id, |env| {
-        env.assertz("likes(mary, wine)").map_err(|e| e.to_string())
+        env.assertz("likes(mary, wine)")
     }).expect("Assert 2 failed");
 
     manager.with_prolog_env(&session.session_id, |env| {
-        env.assertz("likes(john, wine)").map_err(|e| e.to_string())
+        env.assertz("likes(john, wine)")
     }).expect("Assert 3 failed");
 
     manager.with_prolog_env(&session.session_id, |env| {
-        env.assertz("likes(john, mary)").map_err(|e| e.to_string())
+        env.assertz("likes(john, mary)")
     }).expect("Assert 4 failed");
 
     // Query the accumulated knowledge
     let result = manager.with_prolog_env(&session.session_id, |env| {
-        env.query("likes(X, wine)").map_err(|e| e.to_string())
+        env.query("likes(X, wine)")
     }).expect("Query failed");
 
     println!("Who likes wine: {}", result);
@@ -248,13 +248,13 @@ fn test_prolog_env_persistence() {
     for i in 0..5 {
         let fact = format!("counter({})", i);
         manager.with_prolog_env(&session.session_id, |env| {
-            env.assertz(&fact).map_err(|e| e.to_string())
+            env.assertz(&fact)
         }).expect(&format!("Failed to assert counter {}", i));
     }
 
     // All facts should still be there
     let result = manager.with_prolog_env(&session.session_id, |env| {
-        env.query("counter(X)").map_err(|e| e.to_string())
+        env.query("counter(X)")
     }).expect("Failed to query counters");
 
     println!("Counters: {}", result);
