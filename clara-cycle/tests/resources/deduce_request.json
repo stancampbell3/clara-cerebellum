@@ -1,0 +1,8 @@
+{
+    "prolog_clauses": ["consult('./deduce_basic_test_clara.pl').", "visitor(bob), egg(unbroken)."],
+    "clips_constructs": [],
+    "clips_file": "./test9_clara.clp",
+    "initial_goal": "omelette(bob, X).",
+    "context": [],
+    "max_cycles": 3
+}
