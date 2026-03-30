@@ -73,7 +73,7 @@ fn deduce_basic_converges() {
     let interrupt = Arc::new(AtomicBool::new(false));
     let mut controller = CycleController::new(
         session,
-        5,                                     // max_cycles — must converge within 3
+        5,                                     // max_cycles — must converge within
         Some("omelette(bob, X)".to_string()),  // initial goal
         interrupt,
     );
@@ -112,4 +112,21 @@ fn deduce_basic_converges() {
             .filter(|e| e.functor == "egg")
             .collect::<Vec<_>>(),
     );
+
+    // Our initial goal should also be KnownTrue with Dish bound to lovely_fluffy_goodness
+    let omelette_entry = tableau.iter().find(|e| {
+        e.functor == "omelette"
+            && e.args.len() == 2
+            && e.args[0] == "bob"
+            && e.truth_value == TruthValue::KnownTrue
+    });
+
+    assert!(
+        omelette_entry.is_some(),
+        "expected omelette(bob, X) to be KnownTrue in the tableau after convergence.\n\"
+         omelette entries in tableau: {:#?}",
+        tableau.iter()
+            .filter(|e| e.functor == "omelette")
+            .collect::<Vec<_>>(),
+    )
 }

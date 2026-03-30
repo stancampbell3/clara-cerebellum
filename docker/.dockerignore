@@ -1,0 +1,38 @@
+# .dockerignore for Clara PoC Docker build
+# Build context is Development/ (parent of clara-cerebrum/ and lildaemon/)
+# This file must be placed at the build context root: Development/.dockerignore
+# The deploy script copies it there automatically.
+
+# Exclude large/unnecessary directories from other projects
+edgequake/
+seashell/
+dagda/
+fastText/
+huggingface/
+llama.cpp/
+ollama/
+tensorflow/
+openpose/
+musicgen/
+videogen/
+target/
+*.tar.bz2
+*.gguf
+
+# Exclude Rust build artifacts (very large)
+clara-cerebrum/target/
+
+# Exclude Python caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+lildaemon/.venv/
+lildaemon/venv/
+lildaemon/*.egg-info/
+lildaemon/logs/
+lildaemon/output/
+
+# Exclude git history and dev cruft
+**/.git/
+**/.env
+**/node_modules/

@@ -24,6 +24,8 @@ use crate::session::DeductionSession;
 struct GoalAgenda {
     /// Functor name of the initial goal (e.g. `"launch_missiles"`).
     root_functor: Option<String>,
+    /// Arity of the initial goal (0 for atoms, N for compound terms).
+    root_arity: u32,
     /// Timestamp at the start of the last completed cycle; used to detect
     /// tableau changes via `tableau_changed_since`.
     last_cycle_ts: i64,
@@ -32,7 +34,8 @@ struct GoalAgenda {
 impl GoalAgenda {
     fn new(initial_goal: &Option<String>) -> Self {
         let root_functor = initial_goal.as_deref().map(extract_functor_from_goal);
-        Self { root_functor, last_cycle_ts: now_ms() }
+        let root_arity   = initial_goal.as_deref().map(extract_arity_from_goal).unwrap_or(0);
+        Self { root_functor, root_arity, last_cycle_ts: now_ms() }
     }
 
     /// Record the start of a new cycle (snapshot the current timestamp).
@@ -55,8 +58,9 @@ impl GoalAgenda {
             Some(f) => f,
             None => return false,
         };
-        // Look for any entry for this functor with a resolved truth value.
-        match session.tableau.list_by_functor(session.prolog_id, functor, 0) {
+        // Look for any entry for this functor (at the correct arity) with a
+        // resolved truth value.
+        match session.tableau.list_by_functor(session.prolog_id, functor, self.root_arity) {
             Ok(entries) => entries.iter().any(|e| e.truth_value.is_resolved()),
             Err(_) => false,
         }
@@ -339,6 +343,15 @@ impl CycleController {
             .unwrap_or(true);
 
         let mailboxes_empty = curr.prolog_pending == 0 && curr.clips_pending == 0;
+
+        // When all queues have drained, re-query the root goal so the tableau
+        // reflects the latest truth value before we test convergence.  This
+        // catches the case where forward-chaining added the missing fact that
+        // makes the original goal succeed on a later cycle.
+        if mailboxes_empty && clips_agenda_empty {
+            self.re_evaluate_root_goal();
+        }
+
         let snapshot_stable = prev == curr;
         let tableau_stable  = !agenda.tableau_progressed(&self.session);
         let root_resolved   = agenda.root_goal_resolved(&self.session);
@@ -415,6 +428,98 @@ impl CycleController {
             .unwrap_or_default()
     }
 
+    /// Re-query the initial goal against the current Prolog database and
+    /// update the tableau with the result.
+    ///
+    /// Called from `has_converged` once all Coire mailboxes and the CLIPS
+    /// agenda are empty, so we capture any truth value changes that resulted
+    /// from forward-chaining in the completed cycle.
+    fn re_evaluate_root_goal(&mut self) {
+        use crate::transpile::{parse_prolog_term, Term};
+
+        let Some(goal_str) = self.initial_goal.clone() else { return };
+
+        let term = match parse_prolog_term(&goal_str) {
+            Ok(t)  => t,
+            Err(e) => {
+                log::warn!("re_evaluate_root_goal: parse failed for '{}': {}", goal_str, e);
+                return;
+            }
+        };
+
+        // Extract functor + per-argument template strings (atoms kept as-is,
+        // variables kept by name so we can substitute from solution bindings).
+        let (functor, arg_templates) = match term {
+            Term::Atom(f) => (f, vec![]),
+            Term::Compound { functor, args } => {
+                let templates: Vec<String> = args.iter().map(term_to_template_str).collect();
+                (functor, templates)
+            }
+            _ => return,
+        };
+
+        // Re-query Prolog for the current truth of the root goal.
+        let json_str = match self.session.prolog.query_with_bindings(&goal_str) {
+            Ok(s)  => s,
+            Err(e) => {
+                log::debug!("re_evaluate_root_goal: '{}' still fails: {}", goal_str, e);
+                return; // Goal still failing — leave existing tableau entry alone.
+            }
+        };
+
+        let solutions: serde_json::Value = match serde_json::from_str(&json_str) {
+            Ok(v)  => v,
+            Err(_) => return,
+        };
+
+        let arr = match solutions.as_array() {
+            Some(a) if !a.is_empty() => a,
+            _ => return, // No solutions — do not downgrade to KnownFalse here.
+        };
+
+        // Build ground args for the first solution by substituting variable
+        // bindings into the template.
+        let sol = &arr[0];
+        let bindings_map = sol.as_object().cloned().unwrap_or_default();
+
+        let ground_args: Vec<String> = arg_templates.iter().map(|t| {
+            if is_prolog_variable(t) {
+                bindings_map.get(t)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| t.clone())
+            } else {
+                t.clone()
+            }
+        }).collect();
+
+        let bindings: Vec<Binding> = bindings_map.iter().map(|(k, v)| Binding {
+            var: k.clone(),
+            val: v.as_str().unwrap_or(&v.to_string()).to_string(),
+        }).collect();
+
+        let ground_refs: Vec<&str> = ground_args.iter().map(String::as_str).collect();
+
+        if let Err(e) = self.session.tableau.update_truth(
+            self.session.prolog_id,
+            &functor,
+            &ground_refs,
+            TruthValue::KnownTrue,
+            &bindings,
+        ) {
+            log::warn!(
+                "re_evaluate_root_goal: tableau update failed for {}: {}",
+                functor, e
+            );
+        } else {
+            log::debug!(
+                "re_evaluate_root_goal: marked {}({}) KnownTrue",
+                functor,
+                ground_args.join(", ")
+            );
+        }
+    }
+
     /// Extract the final bindings for the root goal from the tableau.
     fn root_goal_bindings(&self, agenda: &GoalAgenda) -> Option<Vec<Binding>> {
         let functor = agenda.root_functor.as_deref()?;
@@ -435,6 +540,30 @@ impl CycleController {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Flatten a parsed `Term` into a template string.
+///
+/// Atoms and numbers are rendered literally; variables keep their name (so
+/// callers can substitute from solution binding maps).
+fn term_to_template_str(term: &crate::transpile::Term) -> String {
+    use crate::transpile::Term;
+    match term {
+        Term::Atom(a)     => a.clone(),
+        Term::Variable(v) => v.clone(),
+        Term::Integer(i)  => i.to_string(),
+        Term::Float(f)    => f.to_string(),
+        Term::Str(s)      => s.clone(),
+        Term::Compound { functor, args } => {
+            let inner = args.iter().map(term_to_template_str).collect::<Vec<_>>().join(",");
+            format!("{}({})", functor, inner)
+        }
+    }
+}
+
+/// Returns `true` for Prolog variable names (uppercase first char or `_`).
+fn is_prolog_variable(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_uppercase() || c == '_')
+}
+
 /// Extract the functor name from a goal string like `"launch_missiles"` or
 /// `"commie(mary)"`.
 fn extract_functor_from_goal(goal: &str) -> String {
@@ -444,6 +573,36 @@ fn extract_functor_from_goal(goal: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// Extract the arity from a goal string.
+///
+/// Returns 0 for atoms with no argument list, and counts top-level commas + 1
+/// inside the first `(…)` for compound terms.
+fn extract_arity_from_goal(goal: &str) -> u32 {
+    let trimmed = goal.trim();
+    let paren = match trimmed.find('(') {
+        Some(p) => p,
+        None    => return 0,
+    };
+    // Slice the argument list (strip outer parens).
+    let inner = &trimmed[paren + 1..];
+    let inner = inner.trim_end_matches(')');
+    if inner.trim().is_empty() {
+        return 0;
+    }
+    // Count top-level commas (depth-aware).
+    let mut depth: u32 = 0;
+    let mut commas: u32 = 0;
+    for ch in inner.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => commas += 1,
+            _ => {}
+        }
+    }
+    commas + 1
 }
 
 fn now_ms() -> i64 {
