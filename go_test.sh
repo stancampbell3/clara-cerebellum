@@ -1,5 +1,13 @@
 #!/usr/bin/bash
 
+# Transduce the source
+echo "Transducing.."  
+./td_test.sh
+
+# Truncate existing log
+echo "... truncate log"
+truncate -s 0 /tmp/dis.log
+
 # Execute POST request and capture deduction_id
 response=$(curl -X POST http://localhost:8080/deduce -H "Content-Type: application/json" -d @deduce_request.json)
 
@@ -38,3 +46,6 @@ done
 # Pretty-print the final response using jq
 echo "Final status:"
 echo $final_response | jq .
+
+# Copy dis.log to wok for analysis
+cp /tmp/dis.log ./wok/dis.log

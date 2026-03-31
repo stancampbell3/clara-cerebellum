@@ -3,14 +3,11 @@
 %% function again
 
 :- use_module(library(the_rabbit)).
-:- dynamic(clara_evaluate_result/2).
-
-determinate(P, Q) :- clara_evaluate_result(P, Q), !.
-determinate(P, Q) :- clara_evaluate(P, Q), !, assertz(clara_evaluate_result(P, Q)).
+table(clara_evaluate).
 
 echo1(R1) :- Q = '{"tool":"echo","arguments":{"message":"startup test"}}',
-    determinate('{"tool":"echo","arguments":{"message":"startup test"}}', R1).
+    clara_evaluate(Q, R1).
 echo2(R2) :- Q = '{"tool":"echo","arguments":{"message":"startup test"}}',
-    determinate('{"tool":"echo","arguments":{"message":"startup test"}}', R2).
+    clara_evaluate(Q, R2).
 
 duh_dun :- echo1(_), echo2(_).
