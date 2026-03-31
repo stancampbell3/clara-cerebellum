@@ -6,7 +6,7 @@ use clara_dagda::{Binding, PredicateEntry, TruthValue};
 use uuid::Uuid;
 
 use crate::error::CycleError;
-use crate::relay::{relay_clips_to_prolog, relay_prolog_to_clips};
+use crate::relay::{relay_clips_to_prolog, relay_prolog_to_clips, RelayRecorder};
 use crate::result::{CoireSnapshot, CycleStatus, DeductionResult};
 use crate::session::DeductionSession;
 
@@ -77,6 +77,9 @@ impl GoalAgenda {
 /// The controller is **blocking** — call it from `tokio::task::spawn_blocking`
 /// inside async handlers so the async event loop is never stalled.
 pub struct CycleController {
+    /// Stable identifier for this deduction run, used to link tableau-change
+    /// rows in the on-file DuckDB store.
+    deduction_id:  Uuid,
     session:       DeductionSession,
     max_cycles:    u32,
     /// Optional Prolog goal to execute on the first cycle.
@@ -95,7 +98,7 @@ impl CycleController {
         initial_goal: Option<String>,
         interrupt:    Arc<AtomicBool>,
     ) -> Self {
-        Self { session, max_cycles, initial_goal, interrupt, store: None }
+        Self { deduction_id: Uuid::new_v4(), session, max_cycles, initial_goal, interrupt, store: None }
     }
 
     /// Attach a persistent [`CoireStore`]. Both mailboxes will be saved
@@ -146,6 +149,9 @@ impl CycleController {
         let mut initial_solutions: Option<serde_json::Value> = None;
         let mut agenda = GoalAgenda::new(&self.initial_goal);
 
+        // Record the initial tableau state before any cycles run.
+        self.record_tableau("initial", 0);
+
         for cycle in 0..self.max_cycles {
             log::debug!("CycleController: cycle {}", cycle);
             agenda.begin_cycle();
@@ -162,7 +168,8 @@ impl CycleController {
 
             // 2. Relay Prolog → CLIPS
             log::debug!("Relay Prolog → CLIPS");
-            relay_prolog_to_clips(&mut self.session)?;
+            let rec = self.make_recorder(cycle);
+            relay_prolog_to_clips(&mut self.session, rec.as_ref())?;
             log::debug!("... relay clips complete");
 
             // 3. Evaluator pass (structural stub — no LLM/FieryPit yet)
@@ -177,7 +184,8 @@ impl CycleController {
 
             // 5. Relay CLIPS → Prolog
             log::debug!("Relay CLIPS → Prolog");
-            relay_clips_to_prolog(&mut self.session)?;
+            let rec = self.make_recorder(cycle);
+            relay_clips_to_prolog(&mut self.session, rec.as_ref())?;
             log::debug!("... relay prolog complete");
 
             // 6. Convergence check
@@ -187,6 +195,7 @@ impl CycleController {
                 log::info!("CycleController: converged after {} cycle(s)", cycle + 1);
                 let tableau = self.export_tableau();
                 let goal_bindings = self.root_goal_bindings(&agenda);
+                self.record_tableau("final_converged", cycle);
                 self.save_to_store();
                 self.evict_coire_sessions();
                 return Ok(DeductionResult {
@@ -210,6 +219,7 @@ impl CycleController {
                 log::info!("CycleController: interrupted after {} cycle(s)", cycle + 1);
                 let tableau = self.export_tableau();
                 let goal_bindings = self.root_goal_bindings(&agenda);
+                self.record_tableau("final_interrupted", cycle);
                 self.save_to_store();
                 self.evict_coire_sessions();
                 return Ok(DeductionResult {
@@ -231,6 +241,7 @@ impl CycleController {
             "CycleController: max cycles exceeded ({} cycles) without convergence",
             self.max_cycles
         );
+        self.record_tableau("final_max_cycles", self.max_cycles.saturating_sub(1));
         self.save_to_store();
         self.evict_coire_sessions();
         Err(CycleError::MaxCyclesExceeded(self.max_cycles))
@@ -239,6 +250,39 @@ impl CycleController {
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /// Build a [`RelayRecorder`] for the given `cycle`.
+    /// Returns `None` when no store is attached.
+    /// The store is cloned cheaply via its internal `Arc`.
+    fn make_recorder(&self, cycle: u32) -> Option<RelayRecorder> {
+        self.store.as_ref().map(|store| RelayRecorder {
+            store: store.clone(),
+            deduction_id: self.deduction_id,
+            cycle,
+        })
+    }
+
+    /// Record a full tableau snapshot to the on-file store at a bookend phase
+    /// (`"initial"`, `"final_converged"`, etc.). Errors are logged, not propagated.
+    fn record_tableau(&self, phase: &str, cycle: u32) {
+        let Some(store) = &self.store else { return };
+        match self.session.tableau.export_session(self.session.prolog_id) {
+            Ok(entries) => {
+                if let Err(e) = store.record_tableau_change(
+                    self.deduction_id,
+                    cycle,
+                    phase,
+                    None,
+                    None,
+                    None,
+                    &entries,
+                ) {
+                    log::warn!("CycleController: failed to record tableau ({}): {}", phase, e);
+                }
+            }
+            Err(e) => log::warn!("CycleController: failed to export tableau ({}): {}", phase, e),
+        }
+    }
 
     /// Remove all events for both engine mailboxes from the global in-memory
     /// Coire. Always runs after `save_to_store()`.

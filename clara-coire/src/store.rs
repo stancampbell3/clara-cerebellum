@@ -50,6 +50,29 @@ pub struct DeductionSnapshot {
     pub tableau_entries:   serde_json::Value,
 }
 
+/// A single row from the `tableau_changes` table — one snapshot of the
+/// in-memory Dagda tableau captured at a specific point in a deduction run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableauChange {
+    pub change_id:     Uuid,
+    pub deduction_id:  Uuid,
+    /// Deduction cycle number (0-based) when this change was recorded.
+    pub cycle_num:     u32,
+    /// Lifecycle phase: `"initial"`, `"prolog_to_clips"`, `"clips_to_prolog"`,
+    /// `"final_converged"`, `"final_interrupted"`, or `"final_max_cycles"`.
+    pub phase:         String,
+    /// Origin string of the triggering relay event, or `None` for bookend snapshots.
+    pub event_origin:  Option<String>,
+    /// Event type (`"assert"`, `"retract"`, …), or `None` for bookend snapshots.
+    pub event_type:    Option<String>,
+    /// Full event payload JSON, or `None` for bookend snapshots.
+    pub event_data:    Option<String>,
+    /// Full tableau snapshot serialised as a JSON array of `PredicateEntry`.
+    pub entries_json:  String,
+    /// Unix timestamp (ms) when this row was inserted.
+    pub recorded_at_ms: i64,
+}
+
 /// Persistent DuckDB-backed store for Coire session snapshots.
 ///
 /// Uses the same schema as the in-memory [`Coire`] but writes to a file,
@@ -94,7 +117,23 @@ impl CoireStore {
                 tableau_entries   VARCHAR NOT NULL DEFAULT '[]'
             );
             CREATE INDEX IF NOT EXISTS idx_snapshots_expires
-                ON deduction_snapshots (expires_at_ms);",
+                ON deduction_snapshots (expires_at_ms);
+
+            CREATE TABLE IF NOT EXISTS tableau_changes (
+                change_id      VARCHAR NOT NULL PRIMARY KEY,
+                deduction_id   VARCHAR NOT NULL,
+                cycle_num      INTEGER NOT NULL,
+                phase          VARCHAR NOT NULL,
+                event_origin   VARCHAR,
+                event_type     VARCHAR,
+                event_data     VARCHAR,
+                entries_json   VARCHAR NOT NULL,
+                recorded_at_ms BIGINT  NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tableau_changes_deduction
+                ON tableau_changes (deduction_id);
+            CREATE INDEX IF NOT EXISTS idx_tableau_changes_deduction_cycle
+                ON tableau_changes (deduction_id, cycle_num);",
         )?;
         // Migrations: add columns to stores created before these fields existed.
         // We check information_schema first because some DuckDB versions silently
@@ -505,6 +544,103 @@ impl CoireStore {
             });
         }
         Ok(snaps)
+    }
+
+    // ── Tableau change recording ─────────────────────────────────────────────
+
+    /// Append a row to `tableau_changes` capturing a snapshot of the tableau
+    /// at a specific point in the deduction cycle.
+    ///
+    /// - `phase`: `"initial"` | `"prolog_to_clips"` | `"clips_to_prolog"` | `"final_converged"` | etc.
+    /// - `event_origin` / `event_type` / `event_data`: context when triggered by a relay event; `None` for bookend snapshots.
+    /// - `entries`: full tableau export from [`Dagda::export_session`].
+    pub fn record_tableau_change(
+        &self,
+        deduction_id: Uuid,
+        cycle_num:    u32,
+        phase:        &str,
+        event_origin: Option<&str>,
+        event_type:   Option<&str>,
+        event_data:   Option<&str>,
+        entries:      &[clara_dagda::PredicateEntry],
+    ) -> CoireResult<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let recorded_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let entries_json = serde_json::to_string(entries)?;
+        let change_id = Uuid::new_v4().to_string();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO tableau_changes
+                (change_id, deduction_id, cycle_num, phase,
+                 event_origin, event_type, event_data, entries_json, recorded_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            duckdb::params![
+                change_id,
+                deduction_id.to_string(),
+                cycle_num as i64,
+                phase,
+                event_origin,
+                event_type,
+                event_data,
+                entries_json,
+                recorded_at_ms,
+            ],
+        )?;
+        log::debug!(
+            "CoireStore: recorded tableau change deduction={} cycle={} phase={}",
+            deduction_id, cycle_num, phase
+        );
+        Ok(())
+    }
+
+    /// Return all recorded tableau changes for a deduction run, ordered by
+    /// cycle number and recording time. Useful for post-hoc analysis.
+    pub fn query_tableau_changes(
+        &self,
+        deduction_id: Uuid,
+    ) -> CoireResult<Vec<TableauChange>> {
+        let conn = self.conn.lock().unwrap();
+        let did  = deduction_id.to_string();
+        let mut stmt = conn.prepare(
+            "SELECT change_id, deduction_id, cycle_num, phase,
+                    event_origin, event_type, event_data, entries_json, recorded_at_ms
+             FROM tableau_changes
+             WHERE deduction_id = ?
+             ORDER BY cycle_num ASC, recorded_at_ms ASC",
+        )?;
+        let rows = stmt.query_map(duckdb::params![did], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        let mut changes = Vec::new();
+        for row in rows {
+            let (change_id, did_s, cycle_num, phase, event_origin,
+                 event_type, event_data, entries_json, recorded_at_ms) = row?;
+            changes.push(TableauChange {
+                change_id:     Uuid::parse_str(&change_id).unwrap(),
+                deduction_id:  Uuid::parse_str(&did_s).unwrap(),
+                cycle_num:     cycle_num as u32,
+                phase,
+                event_origin,
+                event_type,
+                event_data,
+                entries_json,
+                recorded_at_ms,
+            });
+        }
+        Ok(changes)
     }
 
     // ── Coire event methods ──────────────────────────────────────────────────

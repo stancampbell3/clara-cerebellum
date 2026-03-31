@@ -7,6 +7,7 @@ description = "In-memory event mailbox for Clara's reasoning engines"
 publish.workspace = true
 
 [dependencies]
+clara-dagda = { path = "../clara-dagda" }
 duckdb = { version = "1.2.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -4,5 +4,6 @@
     "clips_file": "./test9_clara.clp",
     "initial_goal": "omelette(bob, X).",
     "context": [],
-    "max_cycles": 5 
+    "max_cycles": 5,
+    "persist": true
 }

@@ -1030,6 +1030,7 @@ dependencies = [
 name = "clara-coire"
 version = "0.1.0"
 dependencies = [
+ "clara-dagda",
  "duckdb",
  "libc",
  "log",
