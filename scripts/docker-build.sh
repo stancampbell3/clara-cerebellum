@@ -50,4 +50,4 @@ if [ ! -f "$DOCKERFILE_PATH" ]; then
 fi
 
 echo "Building image $IMAGE_NAME from $DOCKERFILE_PATH"
-docker build -f "$DOCKERFILE_PATH" -t "$IMAGE_NAME" .
+docker build -f "$DOCKERFILE_PATH" -t "$IMAGE_NAME" ..
