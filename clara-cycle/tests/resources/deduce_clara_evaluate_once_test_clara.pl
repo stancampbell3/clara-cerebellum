@@ -12,9 +12,9 @@ updated(Pred, Action, Context) :-
 :- use_module(library(the_rabbit)).
 table(clara_evaluate).
 
-echo1(R1) :- Q = '{"tool":"echo","arguments":{"message":"startup test"}}',
-    clara_evaluate(Q, R1).
-echo2(R2) :- Q = '{"tool":"echo","arguments":{"message":"startup test"}}',
-    clara_evaluate(Q, R2).
+q1('{"tool":"echo","arguments":{"message":"startup test"}}').
+
+echo1(R1) :- q1(Q), clara_evaluate(Q, R1).
+echo2(R2) :- q1(Q), clara_evaluate(Q, R2).
 
 duh_dun :- echo1(_), echo2(_).

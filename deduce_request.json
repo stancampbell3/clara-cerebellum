@@ -2,7 +2,9 @@
     "prolog_clauses": ["consult('./test11_clara.pl')."],
     "clips_constructs": [],
     "clips_file": "./test11_clara.clp",
-    "initial_goal": "suggestion(S).",
-    "context": [],
-    "max_cycles": 3
+    "initial_goal": "suggest(S).",
+    "context": [
+      {"role" : "user", "content": "good morning, let's talk about numbers."}
+    ],
+    "max_cycles": 5
 }
