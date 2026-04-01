@@ -6,8 +6,42 @@
 use crate::{ToolboxManager, ToolRequest, ToolResponse};
 use libc::c_char;
 use serde_json::json;
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{OnceLock, RwLock};
 use std::thread;
+
+// ── Call counter ──────────────────────────────────────────────────────────────
+// Counts real tool executions only; cache hits do not increment the counter.
+// Reset with `reset_evaluate_call_count` before a test run for a clean baseline.
+static EVALUATE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the number of actual tool executions since the last reset.
+/// Cache hits are not counted.
+pub fn get_evaluate_call_count() -> usize {
+    EVALUATE_CALL_COUNT.load(Ordering::SeqCst)
+}
+
+/// Reset the execution counter to zero.
+pub fn reset_evaluate_call_count() {
+    EVALUATE_CALL_COUNT.store(0, Ordering::SeqCst);
+}
+
+// ── Result cache ──────────────────────────────────────────────────────────────
+// Key: trimmed input JSON string.  Value: output JSON string.
+// RwLock allows concurrent reads (cache hits) without exclusive locking.
+// Size/TTL limits are intentionally omitted — callers use `clear_evaluate_cache`
+// to bound growth (once per deduction run is the expected usage pattern).
+fn evaluate_cache() -> &'static RwLock<HashMap<String, String>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Clear all cached results. Call before a test run to ensure a cold cache.
+pub fn clear_evaluate_cache() {
+    evaluate_cache().write().unwrap().clear();
+}
 
 /// Main callback function for external use (compatible with CLIPS and Prolog patterns)
 ///
@@ -54,6 +88,25 @@ pub extern "C" fn rust_clara_evaluate(input_json: *const c_char) -> *mut c_char 
 /// This is the core evaluation logic, separated out so it can be used
 /// by both the C FFI function and Rust callers.
 pub fn evaluate_json_string(input_str: &str) -> *mut c_char {
+    let key = input_str.trim();
+
+    // 1. Cache hit: return memoised result without executing the tool or
+    //    incrementing the counter.
+    {
+        let cache = evaluate_cache().read().unwrap();
+        if let Some(cached) = cache.get(key) {
+            log::debug!("evaluate_json_string: cache hit");
+            return CString::new(cached.clone())
+                .unwrap_or_else(|e| {
+                    log::error!("evaluate_json_string: CString from cache failed: {}", e);
+                    CString::new("{}").unwrap()
+                })
+                .into_raw();
+        }
+    }
+
+    // 2. Cache miss — count this real execution.
+    EVALUATE_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
     log::debug!("evaluate_json_string called with input: {}", input_str);
 
     // Parse the JSON input
@@ -105,6 +158,13 @@ pub fn evaluate_json_string(input_str: &str) -> *mut c_char {
     });
 
     let response_str = serde_json::to_string(&response).unwrap();
+
+    // 3. Store result in cache before returning so future identical calls are
+    //    served without re-executing the tool.
+    evaluate_cache()
+        .write()
+        .unwrap()
+        .insert(key.to_string(), response_str.clone());
 
     // Convert Rust string to C string
     match CString::new(response_str) {

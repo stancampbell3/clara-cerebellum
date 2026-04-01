@@ -11,4 +11,7 @@ pub use tool::{Tool, ToolError, ToolRequest, ToolResponse};
 pub use tools::{ClassifyTool, ClaraSplinteredMindTool, EchoTool, EvaluateTool};
 
 // Re-export FFI functions for convenience
-pub use ffi::{evaluate_json_string, free_c_string};
+pub use ffi::{
+    evaluate_json_string, free_c_string,
+    get_evaluate_call_count, reset_evaluate_call_count, clear_evaluate_cache,
+};

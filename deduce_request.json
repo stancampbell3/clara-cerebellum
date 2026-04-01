@@ -1,8 +1,8 @@
 {
-    "prolog_clauses": ["consult('/home/stanc/Desktop/Development/clara-cerebrum/clara-cycle/tests/resources/deduce_clara_evaluate_once_test_clara.pl')."],
+    "prolog_clauses": ["consult('./test11_clara.pl')."],
     "clips_constructs": [],
-    "clips_file": "/home/stanc/Desktop/Development/clara-cerebrum/clara-cycle/tests/resources/deduce_clara_evaluate_once_test_clara.clp",
-    "initial_goal": "duh_dun.",
+    "clips_file": "./test11_clara.clp",
+    "initial_goal": "suggestion(S).",
     "context": [],
     "max_cycles": 3
 }
