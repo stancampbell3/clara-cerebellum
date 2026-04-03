@@ -92,8 +92,11 @@ pub struct PersistenceConfig {
     /// The carrion-picker evicts entries older than this on each sweep.
     /// Default: 14400 (4 hours). Set to 0 to disable TTL eviction of the
     /// evaluate cache (per-deduction eviction on snapshot expiry still runs).
+    #[serde(default = "default_evaluate_cache_ttl_seconds")]
     pub evaluate_cache_ttl_seconds: u64,
 }
+
+fn default_evaluate_cache_ttl_seconds() -> u64 { 14400 }
 
 /// Observability configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
