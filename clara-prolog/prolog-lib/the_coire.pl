@@ -57,9 +57,9 @@ coire_builtin_handle(Payload) :-
         coire_dispatch_type(Type, Data)
     ; true).
 
-coire_dispatch_type(assert,  D) :- !, term_to_atom(Fact, D), assertz(Fact).
-coire_dispatch_type(retract, D) :- !, term_to_atom(Fact, D), (retract(Fact) -> true ; true).
-coire_dispatch_type(goal,    D) :- !, term_to_atom(Goal, D), (call(Goal) -> true ; true).
+coire_dispatch_type(assert,  D) :- !, term_to_atom(Fact, D), assertz(user:Fact).
+coire_dispatch_type(retract, D) :- !, term_to_atom(Fact, D), (retract(user:Fact) -> true ; true).
+coire_dispatch_type(goal,    D) :- !, term_to_atom(Goal, D), (user:call(Goal) -> true ; true).
 coire_dispatch_type(_, _).
 
 % User-extensible hook. Define coire_on_event/1 clauses to intercept events

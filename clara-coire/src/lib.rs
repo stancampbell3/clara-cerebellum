@@ -1,3 +1,4 @@
+pub mod cache_eviction;
 pub mod carrion_picker;
 pub mod coire;
 pub mod error;
@@ -7,6 +8,7 @@ pub mod store;
 #[cfg(feature = "ffi")]
 pub mod clips_bridge;
 
+pub use cache_eviction::EvaluateCacheEviction;
 pub use carrion_picker::CarrionPicker;
 pub use coire::Coire;
 pub use error::{CoireError, CoireResult};

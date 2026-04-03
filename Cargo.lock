@@ -1225,6 +1225,7 @@ dependencies = [
 name = "clara-toolbox"
 version = "0.1.0"
 dependencies = [
+ "clara-coire",
  "demonic-voice",
  "env_logger 0.11.8",
  "fasttext",
@@ -1235,6 +1236,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
+ "uuid",
 ]
 
 [[package]]

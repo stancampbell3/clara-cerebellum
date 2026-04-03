@@ -3,6 +3,7 @@ use clara_coire::CarrionPicker;
 use clara_cycle::CoireStore;
 use clara_session::{SessionManager, ManagerConfig};
 use clara_config::ConfigLoader;
+use clara_toolbox::{set_domain_id, ToolboxCacheEviction};
 use log::info;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -23,8 +24,16 @@ pub async fn start_server(
     // Load configuration
     let config = ConfigLoader::from_env(None)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to load config: {}", e)))?;
-    
+
     info!("Using CLIPS binary at: {}", config.clips.binary_path);
+
+    // Register Dis domain ID for evaluate-cache attribution.
+    if let Some(ref id) = config.server.dis_domain_id {
+        set_domain_id(id.clone());
+        info!("Dis domain ID registered: {}", id);
+    } else {
+        info!("Dis domain ID not configured — cache entries will have domain_id=None");
+    }
 
     // Create session manager with config from file
     let session_config = ManagerConfig {
@@ -70,19 +79,33 @@ pub async fn start_server(
     if let Some(ref store) = coire_store {
         let coire_ttl    = config.persistence.coire_store_ttl_seconds;
         let snapshot_ttl = config.persistence.deduction_snapshot_ttl_seconds;
+        let cache_ttl    = config.persistence.evaluate_cache_ttl_seconds;
         let interval     = config.persistence.coire_store_sweep_interval_seconds;
-        let picker = CarrionPicker::new(
+        let mut picker = CarrionPicker::new(
             store.clone(),
             Duration::from_secs(coire_ttl),
             Duration::from_secs(snapshot_ttl),
             Duration::from_secs(interval.max(1)),
             active_coire_sessions.clone(),
         );
+        if cache_ttl > 0 {
+            picker = picker.with_cache_eviction(
+                Duration::from_secs(cache_ttl),
+                Arc::new(ToolboxCacheEviction),
+            );
+            info!(
+                "CarrionPicker spawned (coire_ttl={}s, snapshot_ttl={}s, \
+                 cache_ttl={}s, interval={}s)",
+                coire_ttl, snapshot_ttl, cache_ttl, interval
+            );
+        } else {
+            info!(
+                "CarrionPicker spawned (coire_ttl={}s, snapshot_ttl={}s, \
+                 interval={}s, cache_eviction=disabled)",
+                coire_ttl, snapshot_ttl, interval
+            );
+        }
         picker.spawn();
-        info!(
-            "CarrionPicker spawned (coire_ttl={}s, snapshot_ttl={}s, interval={}s)",
-            coire_ttl, snapshot_ttl, interval
-        );
     }
 
     let snapshot_ttl_ms =

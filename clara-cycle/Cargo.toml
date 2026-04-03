@@ -7,16 +7,16 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-clara-prolog  = { path = "../clara-prolog" }
-clara-clips   = { path = "../clara-clips", features = ["ffi"] }
-clara-coire   = { path = "../clara-coire" }
-clara-dagda   = { path = "../clara-dagda" }
-uuid          = { version = "1", features = ["v4"] }
-thiserror     = "2"
-log           = "0.4"
-serde         = { version = "1", features = ["derive"] }
-serde_json    = "1"
+clara-prolog   = { path = "../clara-prolog" }
+clara-clips    = { path = "../clara-clips", features = ["ffi"] }
+clara-coire    = { path = "../clara-coire" }
+clara-dagda    = { path = "../clara-dagda" }
+clara-toolbox  = { path = "../clara-toolbox" }
+uuid           = { version = "1", features = ["v4"] }
+thiserror      = "2"
+log            = "0.4"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
 
 [dev-dependencies]
 env_logger    = "0.11"
-clara-toolbox = { path = "../clara-toolbox" }

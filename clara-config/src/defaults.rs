@@ -6,6 +6,7 @@ pub fn default_server_config() -> ServerConfig {
         port: 8080,
         request_timeout_ms: 30000,
         max_request_body_size: 1048576, // 1MB
+        dis_domain_id: None,
     }
 }
 
@@ -61,6 +62,7 @@ pub fn default_persistence_config() -> PersistenceConfig {
         coire_store_ttl_seconds: 86400,
         coire_store_sweep_interval_seconds: 3600,
         deduction_snapshot_ttl_seconds: 604800,
+        evaluate_cache_ttl_seconds: 14400,
     }
 }
 

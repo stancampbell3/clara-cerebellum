@@ -264,7 +264,7 @@ fn test_clara_evaluate_predicate_registration() {
 
     // Test 1: Check that the predicate exists
     println!("\n[1] Checking if clara_evaluate/2 exists...");
-    let result = env.query_once("current_predicate(clara_evaluate/2)");
+    let result = env.query_once("current_predicate(the_rabbit:clara_evaluate/2)");
     match &result {
         Ok(r) => println!("    current_predicate result: {}", r),
         Err(e) => println!("    Error: {}", e),
@@ -274,7 +274,7 @@ fn test_clara_evaluate_predicate_registration() {
     // Test 2: Call clara_evaluate/2 with the echo tool
     println!("\n[2] Calling clara_evaluate/2 with echo tool...");
     let result = env.query_once(
-        r#"clara_evaluate('{"tool":"echo","arguments":{"message":"hello from prolog test"}}', Result)"#
+        r#"the_rabbit:clara_evaluate('{"tool":"echo","arguments":{"message":"hello from prolog test"}}', Result)"#
     );
 
     match &result {
@@ -322,7 +322,7 @@ fn test_consult_code_with_clara_evaluate() {
             format(atom(Json),
                 '{"tool":"echo","arguments":{"message":"~w"}}',
                 [Message]),
-            clara_evaluate(Json, Result).
+            the_rabbit:clara_evaluate(Json, Result).
     "#;
     let consult_result = env.consult_string(prolog_code);
     match &consult_result {

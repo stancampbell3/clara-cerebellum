@@ -48,14 +48,14 @@ fn test_prolog_initialization() {
     let env = clara_prolog::PrologEnvironment::new()
         .expect("Failed to create Prolog environment");
 
-    // Check that clara_evaluate/2 predicate exists
-    let result = env.query_once("current_predicate(clara_evaluate/2)");
+    // Check that clara_evaluate/2 predicate exists in the_rabbit module
+    let result = env.query_once("current_predicate(the_rabbit:clara_evaluate/2)");
     assert!(
         result.is_ok(),
         "clara_evaluate/2 predicate should be registered"
     );
 
-    println!("Prolog initialized with clara_evaluate/2: {:?}", result);
+    println!("Prolog initialized with the_rabbit:clara_evaluate/2: {:?}", result);
 }
 
 /// Test that server components can be initialized together without conflicts
@@ -95,9 +95,9 @@ fn test_full_server_initialization_sequence() {
     let env = clara_prolog::PrologEnvironment::new()
         .expect("Failed to create Prolog environment");
 
-    // Test calling clara_evaluate with echo tool
+    // Test calling clara_evaluate with echo tool (module-qualified: registered in the_rabbit)
     let result = env.query_once(
-        r#"clara_evaluate('{"tool":"echo","arguments":{"message":"startup test"}}', R)"#
+        r#"the_rabbit:clara_evaluate('{"tool":"echo","arguments":{"message":"startup test"}}', R)"#
     );
 
     match &result {

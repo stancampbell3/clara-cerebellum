@@ -20,6 +20,11 @@ pub struct ServerConfig {
     pub port: u16,
     pub request_timeout_ms: u64,
     pub max_request_body_size: usize,
+    /// Dis domain identifier for this Clara instance.
+    /// Stamped onto every evaluate-cache entry as `domain_id` for future
+    /// cross-domain gossip via the Coire/Feathers relay.
+    /// Optional — omit or set to `null` to leave entries un-attributed.
+    pub dis_domain_id: Option<String>,
 }
 
 /// CLIPS binary and subprocess configuration
@@ -83,6 +88,11 @@ pub struct PersistenceConfig {
     /// Default: 604800 (7 days). Set to 0 to never expire snapshots via TTL
     /// (they can still be deleted explicitly via `DELETE /deduce/{id}/snapshot`).
     pub deduction_snapshot_ttl_seconds: u64,
+    /// Time-to-live for in-memory evaluate-cache entries in seconds.
+    /// The carrion-picker evicts entries older than this on each sweep.
+    /// Default: 14400 (4 hours). Set to 0 to disable TTL eviction of the
+    /// evaluate cache (per-deduction eviction on snapshot expiry still runs).
+    pub evaluate_cache_ttl_seconds: u64,
 }
 
 /// Observability configuration

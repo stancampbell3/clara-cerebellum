@@ -139,6 +139,11 @@ impl CycleController {
     /// interrupted) and `Err(CycleError::MaxCyclesExceeded)` when the cycle
     /// budget is exhausted without convergence.
     pub fn run(&mut self) -> Result<DeductionResult, CycleError> {
+        // Establish deduction context for evaluate-cache attribution.
+        // The guard restores `None` on drop — including on unwind — so every
+        // cache entry produced during this run is tagged with `deduction_id`.
+        let _ctx = clara_toolbox::ffi::deduction_context(self.deduction_id);
+
         log::info!(
             "CycleController: starting (max_cycles={}, goal={:?})",
             self.max_cycles,

@@ -14,7 +14,7 @@ table(clara_evaluate).
 
 q1('{"tool":"echo","arguments":{"message":"startup test"}}').
 
-echo1(R1) :- q1(Q), clara_evaluate(Q, R1).
-echo2(R2) :- q1(Q), clara_evaluate(Q, R2).
+echo1(R1) :- q1(Q), the_rabbit:clara_evaluate(Q, R1).
+echo2(R2) :- q1(Q), the_rabbit:clara_evaluate(Q, R2).
 
 duh_dun :- echo1(_), echo2(_).
