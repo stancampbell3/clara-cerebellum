@@ -88,6 +88,14 @@ static CLARA_EVALUATE_REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLoc
 pub fn register_clara_evaluate() -> bool {
     *CLARA_EVALUATE_REGISTERED.get_or_init(|| {
         unsafe {
+            let module = match CString::new("the_rabbit") {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to create module name: {}", e);
+                    return false;
+                }
+            };
+
             let name = match CString::new("clara_evaluate") {
                 Ok(s) => s,
                 Err(e) => {
@@ -96,7 +104,8 @@ pub fn register_clara_evaluate() -> bool {
                 }
             };
 
-            let result = PL_register_foreign(
+            let result = PL_register_foreign_in_module(
+                module.as_ptr(),
                 name.as_ptr(),
                 2, // arity
                 pl_clara_evaluate as pl_function_t,

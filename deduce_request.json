@@ -1,10 +1,9 @@
 {
-    "prolog_clauses": ["consult('./test11_clara.pl')."],
+    "prolog_clauses": ["consult('./test12_clara.pl')."],
     "clips_constructs": [],
-    "clips_file": "./test11_clara.clp",
-    "initial_goal": "suggest(S).",
+    "clips_file": "./test12_clara.clp",
+    "initial_goal": "reasoned_response('is it that saltwater a conductor of electricity?', Response, ReasonedResponse)",
     "context": [
-      {"role" : "user", "content": "good morning, let's talk about numbers."}
     ],
     "max_cycles": 5
 }
