@@ -89,6 +89,10 @@ pub struct CycleController {
     /// Optional persistent store. When set, both mailboxes are saved on every
     /// exit from `run()` (converged, interrupted, or max-cycles exceeded).
     store:         Option<clara_coire::CoireStore>,
+    /// Solutions captured by `re_evaluate_root_goal` when the root goal
+    /// succeeds on a later cycle (after forward-chaining).  Overrides the
+    /// cycle-0 `initial_solutions` in the final `DeductionResult`.
+    final_solutions: Option<serde_json::Value>,
 }
 
 impl CycleController {
@@ -98,7 +102,7 @@ impl CycleController {
         initial_goal: Option<String>,
         interrupt:    Arc<AtomicBool>,
     ) -> Self {
-        Self { deduction_id: Uuid::new_v4(), session, max_cycles, initial_goal, interrupt, store: None }
+        Self { deduction_id: Uuid::new_v4(), session, max_cycles, initial_goal, interrupt, store: None, final_solutions: None }
     }
 
     /// Attach a persistent [`CoireStore`]. Both mailboxes will be saved
@@ -200,6 +204,9 @@ impl CycleController {
                 log::info!("CycleController: converged after {} cycle(s)", cycle + 1);
                 let tableau = self.export_tableau();
                 let goal_bindings = self.root_goal_bindings(&agenda);
+                // Prefer solutions captured by re_evaluate_root_goal (post-forward-chain)
+                // over the cycle-0 snapshot, which may have been empty.
+                let solutions = self.final_solutions.take().or(initial_solutions);
                 self.record_tableau("final_converged", cycle);
                 self.save_to_store();
                 self.evict_coire_sessions();
@@ -208,7 +215,7 @@ impl CycleController {
                     cycles:            cycle + 1,
                     prolog_session_id: self.session.prolog_id,
                     clips_session_id:  self.session.clips_id,
-                    prolog_solutions:  initial_solutions,
+                    prolog_solutions:  solutions,
                     goal_bindings,
                     tableau:           Some(tableau),
                     explanation:       None,
@@ -224,6 +231,7 @@ impl CycleController {
                 log::info!("CycleController: interrupted after {} cycle(s)", cycle + 1);
                 let tableau = self.export_tableau();
                 let goal_bindings = self.root_goal_bindings(&agenda);
+                let solutions = self.final_solutions.take().or(initial_solutions);
                 self.record_tableau("final_interrupted", cycle);
                 self.save_to_store();
                 self.evict_coire_sessions();
@@ -232,7 +240,7 @@ impl CycleController {
                     cycles:            cycle + 1,
                     prolog_session_id: self.session.prolog_id,
                     clips_session_id:  self.session.clips_id,
-                    prolog_solutions:  initial_solutions,
+                    prolog_solutions:  solutions,
                     goal_bindings,
                     tableau:           Some(tableau),
                     explanation:       None,
@@ -326,12 +334,18 @@ impl CycleController {
             let goal = self.initial_goal.clone().unwrap_or_else(|| "true".to_string());
             let solutions = match self.session.prolog.query_with_bindings(&goal) {
                 Ok(json_str) => {
-                    log::debug!("CycleController: prolog_pass goal succeeded: {}", goal);
-                    serde_json::from_str::<serde_json::Value>(&json_str)
-                        .unwrap_or(serde_json::json!([]))
+                    let v = serde_json::from_str::<serde_json::Value>(&json_str)
+                        .unwrap_or(serde_json::json!([]));
+                    let n = v.as_array().map(|a| a.len()).unwrap_or(0);
+                    if n > 0 {
+                        log::debug!("CycleController: prolog_pass goal proved ({} solution(s)): {}", n, goal);
+                    } else {
+                        log::debug!("CycleController: prolog_pass goal failed (no solutions): {}", goal);
+                    }
+                    v
                 }
                 Err(e) => {
-                    log::warn!("CycleController: prolog_pass goal failed: {}: {}", goal, e);
+                    log::warn!("CycleController: prolog_pass goal exception: {}: {}", goal, e);
                     serde_json::json!([])
                 }
             };
@@ -432,6 +446,8 @@ impl CycleController {
     fn update_tableau_from_solutions(&mut self, solutions: &Option<serde_json::Value>) {
         let Some(ref goal_str) = self.initial_goal else { return };
         let functor = extract_functor_from_goal(goal_str);
+        let arity   = extract_arity_from_goal(goal_str) as usize;
+        let wildcards: Vec<&str> = vec!["*"; arity];
 
         let Some(ref sols) = solutions else { return };
         let arr = match sols.as_array() {
@@ -461,7 +477,7 @@ impl CycleController {
         if let Err(e) = self.session.tableau.update_truth(
             self.session.prolog_id,
             &functor,
-            &["*"],
+            &wildcards,
             truth,
             &bindings,
         ) {
@@ -562,10 +578,14 @@ impl CycleController {
             );
         } else {
             log::debug!(
-                "re_evaluate_root_goal: marked {}({}) KnownTrue",
+                "re_evaluate_root_goal: marked {}({}) KnownTrue — capturing {} solution(s)",
                 functor,
-                ground_args.join(", ")
+                ground_args.join(", "),
+                arr.len(),
             );
+            // Save re-evaluated solutions so the final DeductionResult reflects
+            // the goal state AFTER forward-chaining, not just cycle-0.
+            self.final_solutions = Some(solutions.clone());
         }
     }
 
