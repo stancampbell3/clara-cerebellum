@@ -1,8 +1,8 @@
 {
-    "prolog_clauses": ["consult('./test12_clara.pl').", "prompt('can we use butter to gross out the robot?')."],
+    "prolog_clauses": ["consult('./test12_clara.pl')."],
     "clips_constructs": [],
     "clips_file": "./test12_clara.clp",
-    "initial_goal": "reasoned_response(Prompt, Response, ReasonedResponse).",
+    "initial_goal": "reasoned_response('can salt be dissolved in water at standard temperature and pressure?', Response, ReasonedResponse).",
     "context": [
     ],
     "max_cycles": 5
