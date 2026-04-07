@@ -27,14 +27,30 @@ dict_to_json(Dict, Json) :-
     atom_json_dict(Json, Dict, []).
 
 %% classify_text/2 - Classify text using the fastText classify tool
+%% Fails cleanly if the classify tool is unavailable or returns an error.
 classify_text(Text, Result) :-
     dict_to_json(_{tool: classify, arguments: _{text: Text}}, Json),
-    clara_evaluate(Json, Result).
+    clara_evaluate(Json, Raw),
+    atom_json_dict(Raw, Dict, []),
+    ( get_dict(status, Dict, error) ->
+        format(user_error, "classify tool error: ~w~n", [Dict.message]),
+        fail
+    ;
+        Result = Raw
+    ).
 
 %% classify_text_k/3 - Classify text returning top K predictions
+%% Fails cleanly if the classify tool is unavailable or returns an error.
 classify_text_k(Text, K, Result) :-
     dict_to_json(_{tool: classify, arguments: _{text: Text, k: K}}, Json),
-    clara_evaluate(Json, Result).
+    clara_evaluate(Json, Raw),
+    atom_json_dict(Raw, Dict, []),
+    ( get_dict(status, Dict, error) ->
+        format(user_error, "classify tool error: ~w~n", [Dict.message]),
+        fail
+    ;
+        Result = Raw
+    ).
 
 %% enable_evaluator
 enable_evaluator(Evaluator, Result) :-

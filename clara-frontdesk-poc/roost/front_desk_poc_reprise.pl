@@ -20,7 +20,6 @@
 meets_condition(Visitor, Question) :-
     visitor(Visitor),
     the_rabbit:current_context(Context),
-    format('Current context: ~w~n', Context),
     clara_fy(Question, Context, R),
     R == true.
 

@@ -38,7 +38,7 @@ updated(Pred, Action, Context) :-
 %% Helper: ask Clara whether a condition is satisfied in context.
 meets_condition(Visitor, Question) :-
     visitor(Visitor),
-    current_context(Context),
+    the_rabbit:current_context(Context),
     clara_fy(Question, Context, R),
     R == true.
 
@@ -166,3 +166,4 @@ suggestion(Visitor, 'Advise the visitor to wait until dawn before entry.') :-
     visitor(Visitor),
     carries_flamefruit(Visitor),
     after_sundown.
+
