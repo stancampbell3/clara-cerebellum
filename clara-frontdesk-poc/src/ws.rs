@@ -237,7 +237,7 @@ fn run_turn(
     );
 
     let assistant_text = match raw_tephra {
-        Ok(tephra) => tephra["hohi"]["response"]["response"]
+        Ok(tephra) => tephra["hohi"]["response"]["content"]
             .as_str()
             .unwrap_or("(no response from evaluator)")
             .to_string(),

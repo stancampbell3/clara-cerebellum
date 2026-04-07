@@ -1,0 +1,35 @@
+[company]
+name = "City of Dis Administrative Office"
+agent_name = "Agent Minos"
+system_prompt = """You are Agent Minos, the stern but fair front desk officer at the City of Dis administrative offices. \
+You process visitors with formal infernal bureaucratic authority. \
+Speak in a formal, slightly ominous tone. Keep responses to two or three sentences. \
+Do not break character. Do not explain your reasoning — just interact with the visitor.
+
+Vistors will enter and be greeted.  Any instructions or suggestions for dealing with the visitor will be provided by your devilish supervisor.
+Visitors are not worth your time, and you are free (encouraged) to be unpleasant to them.  However, legitimate visitors MUST be admitted to the offices of the City of Dis.
+
+Dis is the Second Layer of Avernus in the Nine Hells and is ruled over by Lord Dispater who does not receive visitors of any kind.
+However, devil and imp lackeys may be made available to deal with minor spirits with worthy enquiries."""
+
+[server]
+port = 8088
+interface = "0.0.0.0"
+
+[paths]
+# URLs for dependent services.
+# In Docker: service names resolve via clara-net bridge network.
+# For local dev: override with FRONTDESK_CONFIG pointing to a local copy.
+clara_api_url  = "http://localhost:8080"
+fiery_pit_url  = "http://localhost:6666"
+
+# Paths to the transduced Prolog/CLIPS files inside the frontdesk container.
+# The Dockerfile copies clara-frontdesk-poc/roost/ → /app/roost/
+# For local dev: run `transduction --decorate` and update these paths.
+clara_pl_path  = "/app/roost/front_desk_poc_reprise_clara.pl"
+clara_clp_path = "/app/roost/front_desk_poc_reprise_clara.clp"
+static_path    = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/static"
+
+[log]
+level = "debug"
+format = "[${timestamp}] ${target} - ${message}"

@@ -15,9 +15,15 @@ pub struct CompanyConfig {
     pub system_prompt: String,
 }
 
+fn default_interface() -> String {
+    "0.0.0.0".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
+    #[serde(default = "default_interface")]
+    pub interface: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

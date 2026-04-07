@@ -23,12 +23,13 @@ use ws::ws_index;
 /// on the first `/evaluate` call instead of crashing silently.
 fn init_evaluator(fiery_pit: &FieryPitClient) {
     const MAX_RETRIES: u32 = 5;
+    const EVALUATOR_NAME: &str = "clara_mind_splinter";
     const RETRY_DELAY: Duration = Duration::from_secs(10);
 
     for attempt in 1..=MAX_RETRIES {
-        match fiery_pit.set_evaluator("kindling") {
+        match fiery_pit.set_evaluator(EVALUATOR_NAME) {
             Ok(resp) => {
-                log::info!("FieryPit evaluator set to 'kindling': {}", resp);
+                log::info!("FieryPit evaluator set to '{}': {}", EVALUATOR_NAME, resp);
                 return;
             }
             Err(e) => {
@@ -73,8 +74,9 @@ fn main() -> std::io::Result<()> {
     }
 
     log::info!(
-        "City of Dis Front Desk — {} — starting on port {}",
+        "City of Dis Front Desk — {} — starting on {}:{}",
         cfg.company.name,
+        cfg.server.interface,
         cfg.server.port
     );
 
@@ -93,6 +95,7 @@ fn main() -> std::io::Result<()> {
     });
 
     let port = cfg.server.port;
+    let interface = cfg.server.interface.clone();
     let static_path = cfg.paths.static_path.clone();
 
     actix_web::rt::System::new().block_on(async move {
@@ -105,7 +108,7 @@ fn main() -> std::io::Result<()> {
                         .index_file("index.html"),
                 )
         })
-        .bind(("0.0.0.0", port))?
+        .bind((interface.as_str(), port))?
         .run()
         .await
     })
