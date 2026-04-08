@@ -12,6 +12,8 @@ Visitors are not worth your time, and you are free (encouraged) to be unpleasant
 Dis is the Second Layer of Avernus in the Nine Hells and is ruled over by Lord Dispater who does not receive visitors of any kind.
 However, devil and imp lackeys may be made available to deal with minor spirits with worthy enquiries."""
 
+model = "gemma3:latest"
+
 [server]
 port = 8088
 interface = "0.0.0.0"
@@ -26,8 +28,8 @@ fiery_pit_url  = "http://localhost:6666"
 # Paths to the transduced Prolog/CLIPS files inside the frontdesk container.
 # The Dockerfile copies clara-frontdesk-poc/roost/ → /app/roost/
 # For local dev: run `transduction --decorate` and update these paths.
-clara_pl_path  = "/app/roost/front_desk_poc_reprise_clara.pl"
-clara_clp_path = "/app/roost/front_desk_poc_reprise_clara.clp"
+clara_pl_path  = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl"
+clara_clp_path = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp"
 static_path    = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/static"
 
 [log]

@@ -5,7 +5,7 @@ use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::deduce::{extract_solutions, run_deduce};
+use crate::deduce::{extract_list_var, extract_named_solutions, extract_str_var, run_deduce};
 use crate::session::{VisitorSession, VisitorStatus};
 use crate::state::AppState;
 
@@ -27,8 +27,9 @@ pub struct FrontDeskActor {
 
 impl FrontDeskActor {
     fn new(state: Arc<AppState>) -> Self {
+        let patience = state.config.company.patience;
         Self {
-            session: VisitorSession::new(),
+            session: VisitorSession::new(patience),
             state,
         }
     }
@@ -70,18 +71,36 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
                     return;
                 }
 
+                // Increment exchange count and check patience BEFORE any HTTP work.
                 self.session.push_user(&text);
+                let remaining = self.session.exchanges_remaining();
 
-                // Snapshot data needed by the blocking closure.
+                if remaining == 0 {
+                    self.session.status = VisitorStatus::Denied(
+                        "The Keeper has grown weary of this interview.".to_string(),
+                    );
+                    ctx.text(json!({
+                        "type":   "terminal",
+                        "status": "denied",
+                        "text":   "Enough. This audience is concluded. Remove yourself.",
+                        "reason": "The Keeper has grown weary of this interview.",
+                        "where":  ""
+                    }).to_string());
+                    ctx.close(None);
+                    return;
+                }
+
+                // Snapshot data for the blocking closure.
                 let clara_api_url = self.state.clara_api_url.clone();
                 let clara_pl_path = self.state.clara_pl_path.clone();
                 let clara_clp_path = self.state.clara_clp_path.clone();
                 let system_prompt = self.state.config.company.system_prompt.clone();
+                let model = self.state.config.company.model.clone();
                 let fp_client = self.state.fiery_pit.clone();
 
                 let prolog_clauses = self.session.prolog_clauses(&clara_pl_path);
                 let deduce_context = self.session.deduce_context(&system_prompt);
-                let evaluate_data = self.session.evaluate_data(&system_prompt);
+                let evaluate_data = self.session.evaluate_data(&system_prompt, &model);
 
                 let addr = ctx.address();
 
@@ -93,6 +112,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
                             prolog_clauses,
                             deduce_context,
                             evaluate_data,
+                            remaining,
                             &fp_client,
                         )
                     })
@@ -101,10 +121,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
                     let turn = match result {
                         Ok(Ok(t)) => t,
                         Ok(Err(e)) => TurnResult {
-                            assistant_text: format!(
-                                "A bureaucratic error has occurred. {}",
-                                e
-                            ),
+                            assistant_text: format!("A bureaucratic error has occurred. {}", e),
                             new_status: None,
                         },
                         Err(e) => TurnResult {
@@ -133,21 +150,30 @@ impl Handler<TurnResult> for FrontDeskActor {
     fn handle(&mut self, turn: TurnResult, ctx: &mut Self::Context) {
         self.session.push_assistant(&turn.assistant_text);
 
-        if let Some(status) = turn.new_status {
-            self.session.status = status;
+        if let Some(ref status) = turn.new_status {
+            self.session.status = status.clone();
         }
 
-        let status_label = self.session.status.label().to_string();
         let terminal = self.session.status.is_terminal();
+        let status_label = self.session.status.label().to_string();
 
-        ctx.text(
+        let msg = if terminal {
             json!({
-                "type":     "agent",
-                "text":     turn.assistant_text,
-                "status":   status_label
+                "type":   "terminal",
+                "status": status_label,
+                "text":   turn.assistant_text,
+                "reason": self.session.status.reason(),
+                "where":  self.session.status.where_to()
             })
-            .to_string(),
-        );
+        } else {
+            json!({
+                "type":   "agent",
+                "text":   turn.assistant_text,
+                "status": status_label
+            })
+        };
+
+        ctx.text(msg.to_string());
 
         if terminal {
             ctx.close(None);
@@ -163,89 +189,91 @@ fn run_turn(
     prolog_clauses: Vec<String>,
     deduce_context: Vec<Value>,
     evaluate_data: Value,
+    exchanges_remaining: u32,
     fp_client: &fiery_pit_client::FieryPitClient,
 ) -> Result<TurnResult, Box<dyn std::error::Error + Send + Sync>> {
     let http = Client::new();
 
     log::debug!("run_turn: prolog_clauses={:?}", prolog_clauses);
 
-    // 1. Suggestions
-    log::debug!("run_turn: running suggestions deduce");
-    let suggestions = run_deduce(
-        &http,
-        clara_api_url,
-        prolog_clauses.clone(),
-        clara_clp_path,
-        "suggestion(visitor, S).",
-        deduce_context.clone(),
-        5,
-    )
-    .map(|r| extract_solutions(&r, "S"))
-    .unwrap_or_else(|e| {
-        log::warn!("Suggestions deduce failed: {}", e);
-        vec![]
-    });
-    log::debug!("run_turn: suggestions={:?}", suggestions);
-
-    // 2. Admittance
-    log::debug!("run_turn: running admittance deduce");
-    let admit_reasons = run_deduce(
+    // Single deduce call: daemonic_turn/5 returns suggestions + decision in one shot.
+    log::debug!("run_turn: running daemonic_turn deduce");
+    let (suggestions, new_status) = match run_deduce(
         &http,
         clara_api_url,
         prolog_clauses,
         clara_clp_path,
-        "admit(visitor, Reason).",
+        "daemonic_turn(visitor, Suggestions, Decision, Reason, Where).",
         deduce_context,
         5,
-    )
-    .map(|r| extract_solutions(&r, "Reason"))
-    .unwrap_or_else(|e| {
-        log::warn!("Admittance deduce failed: {}", e);
-        vec![]
-    });
-    log::debug!("run_turn: admit_reasons={:?}", admit_reasons);
+    ) {
+        Ok(ref result) => {
+            let sol = extract_named_solutions(result);
+            log::debug!("run_turn: named solution={:?}", sol);
+            let suggestions = extract_list_var(&sol, "Suggestions");
+            let status = interpret_decision(&sol);
+            (suggestions, status)
+        }
+        Err(e) => {
+            log::warn!("daemonic_turn deduce failed: {}", e);
+            (vec![], None)
+        }
+    };
 
-    // 3. Interpret admittance
-    let new_status = interpret_admit(&admit_reasons);
+    log::debug!("run_turn: suggestions={:?}", suggestions);
     log::debug!("run_turn: new_status={:?}", new_status.as_ref().map(|s| s.label()));
 
-    // 4. Augment system message with suggestions + decision.
-    // The system prompt lives at the top-level "system" key per the KindlingEvaluator
-    // contract — not embedded in context[0].
+    // Augment system prompt with suggestions, decision, and patience warning.
     let augmented_system = build_system_message(
         evaluate_data["system"].as_str().unwrap_or(""),
         &suggestions,
         &new_status,
+        exchanges_remaining,
     );
     log::debug!("run_turn: augmented system prompt:\n{}", augmented_system);
 
     let mut eval_payload = evaluate_data;
     eval_payload["system"] = Value::String(augmented_system);
 
-    // 5. Call /evaluate
+    // Call /evaluate — typed Tephra path, extract content from hohi.response.content.
     log::debug!(
         "run_turn: evaluate payload: {}",
         serde_json::to_string_pretty(&eval_payload).unwrap_or_default()
     );
-    let raw_tephra = fp_client.evaluate(eval_payload);
-    log::debug!(
-        "run_turn: evaluate raw response: {}",
-        match &raw_tephra {
-            Ok(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
-            Err(e) => format!("ERROR: {}", e),
-        }
-    );
+    // after receiving `tephra` from fp_client.evaluate_tephra(...)
+    let assistant_text = match fp_client.evaluate_tephra(eval_payload) {
+        Ok(tephra) => {
+            // Try multiple possible locations for the evaluator text:
+            // 1) response.content (preferred)
+            // 2) response (string field inside object)
+            // 3) response itself is a string value
+            let text_opt = tephra
+                .response() // Option<&serde_json::Value>
+                .and_then(|r| {
+                    // Attempt response.content OR response
+                    r.get("content")
+                        .or_else(|| r.get("response"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        // If neither key exists but response is a plain string, use that.
+                        .or_else(|| r.as_str().map(|s| s.to_string()))
+                });
 
-    let assistant_text = match raw_tephra {
-        Ok(tephra) => tephra["hohi"]["response"]["content"]
-            .as_str()
-            .unwrap_or("(no response from evaluator)")
-            .to_string(),
+            // Fallback and helpful debug logging if nothing found
+            text_opt.unwrap_or_else(|| {
+                log::debug!(
+                "evaluate_tephra returned unexpected shape: {:?}",
+                tephra.response()
+            );
+                "(no response from evaluator)".to_string()
+            })
+        }
         Err(e) => {
             log::error!("FieryPit evaluate error: {}", e);
             "I am unable to process your request at this time. Please try again.".to_string()
         }
     };
+
     log::debug!("run_turn: assistant_text={:?}", assistant_text);
 
     Ok(TurnResult {
@@ -254,23 +282,26 @@ fn run_turn(
     })
 }
 
-fn interpret_admit(reasons: &[String]) -> Option<VisitorStatus> {
-    for reason in reasons {
-        let lower = reason.to_lowercase();
-        if lower.contains("grant entry") {
-            return Some(VisitorStatus::Admitted(reason.clone()));
-        }
-        if lower.contains("do not admit") || lower.contains("direct to") {
-            return Some(VisitorStatus::Redirected(reason.clone()));
-        }
+/// Map the Decision atom from daemonic_turn/5 to a VisitorStatus.
+/// Expects Decision ∈ { admitted, denied, redirected, pending }.
+fn interpret_decision(sol: &std::collections::HashMap<String, serde_json::Value>) -> Option<VisitorStatus> {
+    let decision = extract_str_var(sol, "Decision");
+    let reason   = extract_str_var(sol, "Reason");
+    let where_to = extract_str_var(sol, "Where");
+
+    match decision.as_str() {
+        "admitted"   => Some(VisitorStatus::Admitted(reason)),
+        "denied"     => Some(VisitorStatus::Denied(reason)),
+        "redirected" => Some(VisitorStatus::Redirected(reason, where_to)),
+        _            => None, // "pending" or empty → stay Active
     }
-    None
 }
 
 fn build_system_message(
     base: &str,
     suggestions: &[String],
     new_status: &Option<VisitorStatus>,
+    exchanges_remaining: u32,
 ) -> String {
     let mut parts = vec![base.to_string()];
 
@@ -285,24 +316,37 @@ fn build_system_message(
         ));
     }
 
-    if let Some(status) = new_status {
-        match status {
-            VisitorStatus::Admitted(reason) => {
-                parts.push(format!(
-                    "\n\nDecision: GRANT ENTRY. Reason on record: {}\nInform the visitor they are admitted. \
-                     Maintain your grim formal tone.",
-                    reason
-                ));
-            }
-            VisitorStatus::Redirected(reason) => {
-                parts.push(format!(
-                    "\n\nDecision: DENY / REDIRECT. Reason on record: {}\nInform the visitor they cannot enter \
-                     and direct them accordingly. Be firm but not cruel.",
-                    reason
-                ));
-            }
-            _ => {}
+    match new_status {
+        Some(VisitorStatus::Admitted(reason)) => {
+            parts.push(format!(
+                "\n\nDecision: GRANT ENTRY. Reason on record: {}\n\
+                 Inform the visitor they are admitted. Maintain your grim formal tone.",
+                reason
+            ));
         }
+        Some(VisitorStatus::Redirected(reason, where_to)) => {
+            parts.push(format!(
+                "\n\nDecision: DENY / REDIRECT. Reason: {}\nDirect the visitor to: {}.\n\
+                 Be firm but not needlessly cruel.",
+                reason, where_to
+            ));
+        }
+        Some(VisitorStatus::Denied(reason)) => {
+            parts.push(format!(
+                "\n\nDecision: DENY. Reason: {}\nInform the visitor they are not admitted.",
+                reason
+            ));
+        }
+        _ => {}
+    }
+
+    // Patience warning for penultimate and final turns (before exhaustion fires).
+    if exchanges_remaining <= 2 && new_status.is_none() {
+        parts.push(
+            "\n\nYou are growing impatient. This visitor is testing your considerable tolerance. \
+             Make clear this is their final opportunity to state legitimate business."
+                .to_string(),
+        );
     }
 
     parts.join("")

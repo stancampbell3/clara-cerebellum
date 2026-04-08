@@ -1,5 +1,6 @@
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 use thiserror::Error;
@@ -69,7 +70,6 @@ pub fn run_deduce(
             return Err(DeduceError::Logic(format!("Deduction failed: {}", status)));
         }
 
-        // converged or interrupted
         log::debug!(
             "deduce id={} finished status={} after {} polls",
             deduction_id, status, poll_count
@@ -79,7 +79,9 @@ pub fn run_deduce(
     }
 }
 
-/// Extract all string values bound to `var_name` from prolog_solutions.
+/// Extract all string values bound to `var_name` across all solutions.
+/// Used for goals like `suggestion(visitor, S).` where each solution binds S once.
+#[allow(dead_code)]
 pub fn extract_solutions(result: &Value, var_name: &str) -> Vec<String> {
     result["result"]["prolog_solutions"]
         .as_array()
@@ -89,4 +91,51 @@ pub fn extract_solutions(result: &Value, var_name: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Extract the first solution as a map of variable name → JSON value.
+/// Used for meta-goals like `daemonic_turn/5` that return multiple named variables
+/// in a single solution.
+pub fn extract_named_solutions(result: &Value) -> HashMap<String, Value> {
+    result["result"]["prolog_solutions"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|sol| sol.as_object())
+        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default()
+}
+
+/// Extract a list-valued variable from a named solution.
+///
+/// The clara-api may serialize a Prolog list as a JSON array or as a Prolog list
+/// atom string. This handles both.
+pub fn extract_list_var(sol: &HashMap<String, Value>, var_name: &str) -> Vec<String> {
+    match sol.get(var_name) {
+        Some(Value::Array(arr)) => {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        }
+        Some(Value::String(s)) => {
+            // Prolog list atom: "['item one','item two']" — strip brackets, split on ','
+            let trimmed = s.trim().trim_start_matches('[').trim_end_matches(']');
+            if trimmed.is_empty() {
+                return vec![];
+            }
+            trimmed
+                .split("','")
+                .map(|p| p.trim_matches('\'').trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        }
+        _ => vec![],
+    }
+}
+
+/// Extract a string-valued variable from a named solution, defaulting to "".
+pub fn extract_str_var(sol: &HashMap<String, Value>, var_name: &str) -> String {
+    sol.get(var_name)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }

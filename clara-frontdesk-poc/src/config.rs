@@ -8,11 +8,23 @@ pub struct FrontDeskConfig {
     pub paths: PathsConfig,
 }
 
+fn default_model() -> String {
+    "qwen-clara:latest".to_string()
+}
+
+fn default_patience() -> u32 {
+    8
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CompanyConfig {
     pub name: String,
     pub agent_name: String,
     pub system_prompt: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default = "default_patience")]
+    pub patience: u32,
 }
 
 fn default_interface() -> String {

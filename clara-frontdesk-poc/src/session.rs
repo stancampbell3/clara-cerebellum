@@ -3,12 +3,11 @@ use std::collections::HashSet;
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum VisitorStatus {
     Active,
     Admitted(String),
     Denied(String),
-    Redirected(String),
+    Redirected(String, String), // (reason, where)
 }
 
 impl VisitorStatus {
@@ -21,7 +20,22 @@ impl VisitorStatus {
             VisitorStatus::Active => "active",
             VisitorStatus::Admitted(_) => "admitted",
             VisitorStatus::Denied(_) => "denied",
-            VisitorStatus::Redirected(_) => "redirected",
+            VisitorStatus::Redirected(_, _) => "redirected",
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            VisitorStatus::Admitted(r) | VisitorStatus::Denied(r) => r,
+            VisitorStatus::Redirected(r, _) => r,
+            VisitorStatus::Active => "",
+        }
+    }
+
+    pub fn where_to(&self) -> &str {
+        match self {
+            VisitorStatus::Redirected(_, w) => w,
+            _ => "",
         }
     }
 }
@@ -34,20 +48,31 @@ pub struct VisitorSession {
     /// Known Prolog facts (besides visitor/1) to assert into each deduce call.
     pub facts: HashSet<String>,
     pub status: VisitorStatus,
+    /// Number of user turns processed so far.
+    pub exchange_count: u32,
+    /// Maximum exchanges before The Keeper loses patience.
+    pub patience_limit: u32,
 }
 
 impl VisitorSession {
-    pub fn new() -> Self {
+    pub fn new(patience_limit: u32) -> Self {
         Self {
             visitor: "visitor".to_string(),
             conversation: Vec::new(),
             facts: HashSet::new(),
             status: VisitorStatus::Active,
+            exchange_count: 0,
+            patience_limit,
         }
+    }
+
+    pub fn exchanges_remaining(&self) -> u32 {
+        self.patience_limit.saturating_sub(self.exchange_count)
     }
 
     pub fn push_user(&mut self, content: &str) {
         self.conversation.push(json!({"role": "user", "content": content}));
+        self.exchange_count += 1;
     }
 
     pub fn push_assistant(&mut self, content: &str) {
@@ -77,20 +102,16 @@ impl VisitorSession {
 
     /// Build the evaluate payload for the KindlingEvaluator LLM path.
     ///
-    /// KindlingEvaluator.evaluate_async() routes `{"prompt": ...}` to OllamaEvaluator.
-    /// It reads the system prompt from the top-level `"system"` string field and
-    /// conversation history from `"context"` (array of role/content objects).
-    /// The system prompt must NOT be embedded as context[0] — KindlingEvaluator reads
-    /// `data.get("system")` directly and the OllamaEvaluator will prepend it to the
-    /// messages array only when the first context entry is not already a system message.
-    pub fn evaluate_data(&self, system_message: &str) -> Value {
-        // Last message is the current user turn (sent as "prompt").
+    /// KindlingEvaluator routes `{"prompt": ...}` to OllamaEvaluator.
+    /// The system prompt is read from the top-level `"system"` string field.
+    /// Conversation history comes from `"context"` (array of role/content objects).
+    /// The system prompt must NOT be embedded as context[0].
+    pub fn evaluate_data(&self, system_message: &str, model: &str) -> Value {
         let prompt = self.conversation.last()
             .and_then(|m| m["content"].as_str())
             .unwrap_or("")
             .to_string();
 
-        // Prior turns only — no system message embedded here.
         let history: Vec<Value> = if self.conversation.len() > 1 {
             self.conversation[..self.conversation.len() - 1].to_vec()
         } else {
@@ -101,8 +122,7 @@ impl VisitorSession {
             "prompt":  prompt,
             "system":  system_message,
             "context": history,
-            "model":   "qwen-clara:latest"
+            "model":   model
         })
     }
-
 }

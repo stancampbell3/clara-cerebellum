@@ -188,6 +188,17 @@ pub struct EvaluationEntry {
     pub duration_ms: Option<i64>,
 }
 
+/// Typed response from POST /prolog/sessions/{id}/query
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrologQueryResponse {
+    pub session_id: String,
+    pub goal: String,
+    #[serde(default)]
+    pub solutions: Vec<std::collections::HashMap<String, Value>>,
+    #[serde(default)]
+    pub all_solutions: bool,
+}
+
 /// Response from GET /evaluations/stats
 #[derive(Debug, Clone, Deserialize)]
 pub struct EvaluationStats {
@@ -291,6 +302,14 @@ impl FieryPitClient {
             base_url: Arc::new(base.trim_end_matches('/').to_string()),
             client: Client::new(),
         }
+    }
+
+    /// Create a FieryPitClient from the `FIERY_PIT_URL` environment variable.
+    /// Falls back to `http://localhost:6666` if the variable is not set.
+    pub fn from_env() -> Self {
+        let url = std::env::var("FIERY_PIT_URL")
+            .unwrap_or_else(|_| "http://localhost:6666".into());
+        Self::new(url)
     }
 
     // =========================================================================
@@ -698,6 +717,17 @@ impl FieryPitClient {
                 all_solutions,
             },
         )
+    }
+
+    /// Execute a Prolog goal and return a typed response — POST /prolog/sessions/{id}/query
+    pub fn prolog_query_typed(
+        &self,
+        session_id: &str,
+        goal: &str,
+        all_solutions: bool,
+    ) -> Result<PrologQueryResponse, FieryPitError> {
+        let value = self.prolog_query(session_id, goal, all_solutions)?;
+        Ok(serde_json::from_value(value)?)
     }
 
     /// Load Prolog clauses into a session — POST /prolog/sessions/{id}/consult

@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>City of Dis — Front Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
 <style>
   :root {
     --bg:       #0d0d0d;
@@ -18,7 +21,9 @@
     --admitted: #1a4a1a;
     --denied:   #4a1a1a;
     --redirect: #2a2a1a;
-    --font:     "Georgia", serif;
+    --font-body: "IM Fell English", Georgia, serif;
+    --font-head: "Cinzel", Georgia, serif;
+    --font-deco: "Cinzel Decorative", Georgia, serif;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26,7 +31,7 @@
   body {
     background: var(--bg);
     color: var(--bone);
-    font-family: var(--font);
+    font-family: var(--font-body);
     height: 100dvh;
     display: flex;
     flex-direction: column;
@@ -39,12 +44,13 @@
     display: flex;
     align-items: center;
     gap: 1rem;
+    font-family: var(--font-head);
   }
 
   header h1 {
-    font-size: 1.1rem;
+    font-size: 1.05rem;
     color: var(--ember);
-    letter-spacing: 0.05em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
 
@@ -52,9 +58,10 @@
     margin-left: auto;
     padding: 0.25rem 0.75rem;
     border-radius: 999px;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
+    font-family: var(--font-head);
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
     border: 1px solid var(--border);
     background: #111;
     color: var(--ash);
@@ -79,7 +86,7 @@
     max-width: 72%;
     padding: 0.65rem 0.9rem;
     border-radius: 4px;
-    line-height: 1.5;
+    line-height: 1.55;
     font-size: 0.92rem;
     white-space: pre-wrap;
   }
@@ -94,10 +101,11 @@
   .bubble.agent::before {
     content: attr(data-speaker) " ";
     display: block;
-    font-size: 0.7rem;
+    font-family: var(--font-head);
+    font-size: 0.65rem;
     color: var(--ember);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     margin-bottom: 0.3rem;
   }
 
@@ -112,10 +120,11 @@
   .bubble.user::before {
     content: "Visitor";
     display: block;
-    font-size: 0.7rem;
+    font-family: var(--font-head);
+    font-size: 0.65rem;
     color: #4a8ab8;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.1em;
     margin-bottom: 0.3rem;
     text-align: right;
   }
@@ -155,7 +164,7 @@
     border: 1px solid var(--border);
     color: var(--bone);
     padding: 0.5rem 0.75rem;
-    font-family: var(--font);
+    font-family: var(--font-body);
     font-size: 0.92rem;
     border-radius: 3px;
     outline: none;
@@ -170,7 +179,9 @@
     color: var(--bone);
     padding: 0.5rem 1rem;
     cursor: pointer;
-    font-family: var(--font);
+    font-family: var(--font-head);
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
     border-radius: 3px;
     transition: background 0.2s;
   }
@@ -189,6 +200,70 @@
   #conn-indicator.open    { background: #4a8a4a; }
   #conn-indicator.closed  { background: #8a4a4a; }
   #conn-indicator.error   { background: var(--ember); }
+
+  /* ── Outcome screen ──────────────────────────────────────────────────── */
+
+  #outcome {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #080808;
+    z-index: 100;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2rem;
+    padding: 2rem;
+    text-align: center;
+    animation: fadeIn 1s ease;
+  }
+
+  #outcome.visible { display: flex; }
+
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  #outcome-graphic {
+    width: min(320px, 80vw);
+    height: auto;
+  }
+
+  #outcome-verdict {
+    font-family: var(--font-deco);
+    font-size: clamp(1.6rem, 6vw, 3rem);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    line-height: 1.2;
+  }
+
+  #outcome-verdict.admitted  { color: #7effa0; text-shadow: 0 0 40px #3a8a3a88; }
+  #outcome-verdict.denied    { color: #ff7070; text-shadow: 0 0 40px #8a3a3a88; }
+  #outcome-verdict.redirected{ color: #ffd070; text-shadow: 0 0 40px #8a7a3a88; }
+
+  #outcome-reason {
+    font-family: var(--font-body);
+    font-style: italic;
+    font-size: clamp(0.85rem, 2.5vw, 1.05rem);
+    color: var(--ash);
+    max-width: 520px;
+    line-height: 1.6;
+  }
+
+  #outcome-where {
+    font-family: var(--font-head);
+    font-size: 0.85rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #ffd070;
+  }
+
+  #outcome-seal {
+    margin-top: 1rem;
+    font-family: var(--font-head);
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #333;
+  }
 </style>
 </head>
 <body>
@@ -206,16 +281,134 @@
   <button id="send-btn" disabled>Submit</button>
 </footer>
 
+<!-- Outcome screen — shown on terminal WS message -->
+<div id="outcome" role="dialog" aria-modal="true">
+  <div id="outcome-graphic" aria-hidden="true"></div>
+  <div id="outcome-verdict"></div>
+  <p id="outcome-reason"></p>
+  <p id="outcome-where" style="display:none"></p>
+  <p id="outcome-seal">City of Dis — Administrative Record</p>
+</div>
+
 <script>
   const messages  = document.getElementById('messages');
   const input     = document.getElementById('input');
   const sendBtn   = document.getElementById('send-btn');
   const badge     = document.getElementById('status-badge');
   const connDot   = document.getElementById('conn-indicator');
+  const outcome   = document.getElementById('outcome');
 
   let ws;
   let thinkingEl = null;
   let agentName  = 'Agent Minos';
+
+  // ── Gate SVG graphics ──────────────────────────────────────────────────────
+
+  const GATE_OPEN = `<svg viewBox="0 0 240 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="glow-g"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <!-- pillars -->
+    <rect x="10" y="30" width="30" height="160" fill="#2a1a0a" stroke="#8a6a3a" stroke-width="1.5"/>
+    <rect x="200" y="30" width="30" height="160" fill="#2a1a0a" stroke="#8a6a3a" stroke-width="1.5"/>
+    <!-- arch -->
+    <path d="M40 30 Q120 -20 200 30" fill="none" stroke="#8a6a3a" stroke-width="3"/>
+    <!-- open gates (swung back) -->
+    <rect x="12" y="30" width="55" height="110" rx="2" fill="#1a0a00" stroke="#5a4a2a" stroke-width="1"
+          transform="skewX(-30) translate(18,0)"/>
+    <rect x="173" y="30" width="55" height="110" rx="2" fill="#1a0a00" stroke="#5a4a2a" stroke-width="1"
+          transform="skewX(30) translate(-18,0)"/>
+    <!-- glow path through gate -->
+    <ellipse cx="120" cy="110" rx="50" ry="70" fill="#7effa022" filter="url(#glow-g)"/>
+    <!-- crossing runes -->
+    <text x="25" y="22" font-size="12" fill="#8a6a3a" font-family="serif">⚔</text>
+    <text x="203" y="22" font-size="12" fill="#8a6a3a" font-family="serif">⚔</text>
+  </svg>`;
+
+  const GATE_BARRED = `<svg viewBox="0 0 240 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="glow-r"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <!-- pillars -->
+    <rect x="10" y="30" width="30" height="160" fill="#2a0a0a" stroke="#8a3a3a" stroke-width="1.5"/>
+    <rect x="200" y="30" width="30" height="160" fill="#2a0a0a" stroke="#8a3a3a" stroke-width="1.5"/>
+    <!-- arch -->
+    <path d="M40 30 Q120 -20 200 30" fill="none" stroke="#8a3a3a" stroke-width="3"/>
+    <!-- closed gate panels -->
+    <rect x="42" y="32" width="76" height="130" rx="2" fill="#1a0808" stroke="#6a2a2a" stroke-width="1.5"/>
+    <rect x="122" y="32" width="76" height="130" rx="2" fill="#1a0808" stroke="#6a2a2a" stroke-width="1.5"/>
+    <!-- vertical bars -->
+    <line x1="60"  y1="32" x2="60"  y2="162" stroke="#4a1a1a" stroke-width="2"/>
+    <line x1="80"  y1="32" x2="80"  y2="162" stroke="#4a1a1a" stroke-width="2"/>
+    <line x1="100" y1="32" x2="100" y2="162" stroke="#4a1a1a" stroke-width="2"/>
+    <line x1="140" y1="32" x2="140" y2="162" stroke="#4a1a1a" stroke-width="2"/>
+    <line x1="160" y1="32" x2="160" y2="162" stroke="#4a1a1a" stroke-width="2"/>
+    <line x1="180" y1="32" x2="180" y2="162" stroke="#4a1a1a" stroke-width="2"/>
+    <!-- horizontal bar / lock -->
+    <rect x="42" y="90" width="156" height="12" fill="#3a1010" stroke="#8a3a3a" stroke-width="1.5"/>
+    <rect x="105" y="84" width="30" height="24" rx="3" fill="#2a0808" stroke="#c0392b" stroke-width="2"/>
+    <!-- ember glow on bars -->
+    <line x1="120" y1="32" x2="120" y2="162" stroke="#c0392b44" stroke-width="8" filter="url(#glow-r)"/>
+  </svg>`;
+
+  const GATE_REDIRECT = `<svg viewBox="0 0 240 200" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="glow-a"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <!-- pillars -->
+    <rect x="10" y="30" width="30" height="160" fill="#1a1a0a" stroke="#7a6a2a" stroke-width="1.5"/>
+    <rect x="200" y="30" width="30" height="160" fill="#1a1a0a" stroke="#7a6a2a" stroke-width="1.5"/>
+    <path d="M40 30 Q120 -20 200 30" fill="none" stroke="#7a6a2a" stroke-width="3"/>
+    <!-- partially ajar gate -->
+    <rect x="42" y="32" width="76" height="130" rx="2" fill="#151508" stroke="#5a5a1a" stroke-width="1.5"
+          transform="skewX(-8)"/>
+    <rect x="122" y="32" width="76" height="130" rx="2" fill="#151508" stroke="#5a5a1a" stroke-width="1.5"/>
+    <!-- direction arrow -->
+    <g filter="url(#glow-a)">
+      <line x1="60" y1="100" x2="180" y2="100" stroke="#ffd070" stroke-width="3"/>
+      <polygon points="175,90 195,100 175,110" fill="#ffd070"/>
+    </g>
+    <text x="85" y="145" font-size="11" fill="#9a8a3a" font-family="serif" text-anchor="middle">This way</text>
+  </svg>`;
+
+  function showOutcome(status, text, reason, where_) {
+    // Show last agent message first, then fade to outcome
+    appendBubble('agent', text, agentName);
+
+    setTimeout(() => {
+      const verdict  = document.getElementById('outcome-verdict');
+      const reasonEl = document.getElementById('outcome-reason');
+      const whereEl  = document.getElementById('outcome-where');
+      const graphic  = document.getElementById('outcome-graphic');
+
+      if (status === 'admitted') {
+        verdict.textContent  = 'Entry Granted';
+        verdict.className    = 'admitted';
+        graphic.innerHTML    = GATE_OPEN;
+      } else if (status === 'redirected') {
+        verdict.textContent  = 'You Have Been Redirected';
+        verdict.className    = 'redirected';
+        graphic.innerHTML    = GATE_REDIRECT;
+      } else {
+        verdict.textContent  = 'Entry Denied';
+        verdict.className    = 'denied';
+        graphic.innerHTML    = GATE_BARRED;
+      }
+
+      reasonEl.textContent = reason || '';
+
+      if (where_ && where_.trim()) {
+        whereEl.textContent = `Proceed to: ${where_}`;
+        whereEl.style.display = '';
+      } else {
+        whereEl.style.display = 'none';
+      }
+
+      outcome.classList.add('visible');
+    }, 1800);
+  }
+
+  // ── WebSocket ──────────────────────────────────────────────────────────────
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -238,9 +431,10 @@
       if (data.type === 'agent') {
         appendBubble('agent', data.text, agentName);
         setStatus(data.status);
-        if (data.status === 'admitted' || data.status === 'denied' || data.status === 'redirected') {
-          disableInput();
-        }
+      } else if (data.type === 'terminal') {
+        setStatus(data.status);
+        disableInput();
+        showOutcome(data.status, data.text, data.reason, data.where);
       } else if (data.type === 'error') {
         appendNote(data.text);
       }
@@ -249,10 +443,13 @@
     ws.onclose = () => {
       connDot.className = 'closed';
       disableInput();
-      if (!['admitted','denied','redirected'].includes(badge.className)) {
-        appendNote('Connection closed.');
-        badge.textContent = 'Disconnected';
-        badge.className   = '';
+      if (!outcome.classList.contains('visible')) {
+        const terminalStatuses = ['admitted', 'denied', 'redirected'];
+        if (!terminalStatuses.includes(badge.className)) {
+          appendNote('Connection closed.');
+          badge.textContent = 'Disconnected';
+          badge.className   = '';
+        }
       }
     };
 
