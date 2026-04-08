@@ -17,6 +17,7 @@
     ],
     "initial_goal": "daemonic_turn(visitor, Suggestions, Decision, Reason, Where).",
     "max_cycles": 5,
+    "persist": true,
     "prolog_clauses": [
         "consult('/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl').",
         "visitor(visitor).",
