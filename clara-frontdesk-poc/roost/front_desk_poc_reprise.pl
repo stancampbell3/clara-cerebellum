@@ -21,8 +21,23 @@
 daemonic_turn(Visitor, Suggestions, Decision, Reason, Where) :-
     visitor(Visitor),
     findall(S, suggestion(Visitor, S), Suggestions),
-    (admit(Visitor, Reason) -> Decision = admit ; Decision = deny),
-    Where = 'pending'.
+    (   admit(Visitor, Reason)
+    ->  true
+    ;   Reason = 'Entry denied.'
+    ),
+    effective_decision(Decision, Where).
+
+%% Priority order: admitted/redirected/denied beat pending.
+%% 'redirected' maps to a human-readable destination for the outcome screen.
+effective_decision(Decision, Where) :-
+    (   where_to_go(admitted)
+    ->  Decision = admitted,   Where = ''
+    ;   where_to_go(redirected)
+    ->  Decision = redirected, Where = 'Nearest Map Kiosk'
+    ;   where_to_go(denied)
+    ->  Decision = denied,     Where = ''
+    ;   Decision = pending,    Where = ''
+    ).
 
 %% Helper: ask Clara whether a condition is satisfied in context.
 meets_condition(Visitor, Question) :-
