@@ -1,4 +1,7 @@
 #!/bin/bash
 echo "Transduce test source..."
-./target/debug/transduction --decorate test12.pl
+CWD=$(pwd)
+cd $CWD/clara-frontdesk-poc/roost
+./target/debug/transduction --decorate front_desk_poc_reprise.pl
 echo "🐇"
+cd $CWD

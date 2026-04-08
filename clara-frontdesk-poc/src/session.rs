@@ -106,7 +106,11 @@ impl VisitorSession {
     /// The system prompt is read from the top-level `"system"` string field.
     /// Conversation history comes from `"context"` (array of role/content objects).
     /// The system prompt must NOT be embedded as context[0].
-    pub fn evaluate_data(&self, system_message: &str, model: &str) -> Value {
+    ///
+    /// `deduction_model` is carried as an in-band field so `run_turn` can
+    /// override the model for the post-deduction evaluate call without growing
+    /// the function signature further.
+    pub fn evaluate_data(&self, system_message: &str, model: &str, deduction_model: &str) -> Value {
         let prompt = self.conversation.last()
             .and_then(|m| m["content"].as_str())
             .unwrap_or("")
@@ -119,10 +123,11 @@ impl VisitorSession {
         };
 
         json!({
-            "prompt":  prompt,
-            "system":  system_message,
-            "context": history,
-            "model":   model
+            "prompt":           prompt,
+            "system":           system_message,
+            "context":          history,
+            "model":            model,
+            "deduction_model":  deduction_model
         })
     }
 }

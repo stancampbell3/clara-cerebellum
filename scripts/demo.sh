@@ -30,7 +30,7 @@ trap cleanup EXIT INT TERM
 
 # Start demo, save PID, append to log
 FRONTDESK_CONFIG=clara-frontdesk-poc/config/localnet_dis.toml RUST_LOG=clara_frontdesk=debug \
-    cargo run -p clara-frontdesk-poc &>> "$LOGFILE" &
+    cargo run -p clara-frontdesk-poc >> "$LOGFILE" 2>&1 &
 DEMO_PID=$!
 echo "$DEMO_PID" > "$PIDFILE"
 echo "Demo started (PID $DEMO_PID). Logging to $LOGFILE"

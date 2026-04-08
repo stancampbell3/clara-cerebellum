@@ -22,6 +22,7 @@ pub fn run_deduce(
     initial_goal: &str,
     context: Vec<Value>,
     max_cycles: u32,
+    persist: bool,
 ) -> Result<Value, DeduceError> {
     let body = json!({
         "prolog_clauses":   prolog_clauses,
@@ -29,7 +30,8 @@ pub fn run_deduce(
         "clips_file":       clips_file,
         "initial_goal":     initial_goal,
         "context":          context,
-        "max_cycles":       max_cycles
+        "max_cycles":       max_cycles,
+        "persist":          persist
     });
 
     let start_url = format!("{}/deduce", clara_api_url);
@@ -97,6 +99,7 @@ pub fn extract_solutions(result: &Value, var_name: &str) -> Vec<String> {
 /// Used for meta-goals like `daemonic_turn/5` that return multiple named variables
 /// in a single solution.
 pub fn extract_named_solutions(result: &Value) -> HashMap<String, Value> {
+    log::debug!("extract_named_solutions({:?})", result);
     result["result"]["prolog_solutions"]
         .as_array()
         .and_then(|arr| arr.first())

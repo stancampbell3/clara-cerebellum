@@ -94,13 +94,16 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
                 let clara_api_url = self.state.clara_api_url.clone();
                 let clara_pl_path = self.state.clara_pl_path.clone();
                 let clara_clp_path = self.state.clara_clp_path.clone();
-                let system_prompt = self.state.config.company.system_prompt.clone();
-                let model = self.state.config.company.model.clone();
+                let system_prompt    = self.state.config.company.system_prompt.clone();
+                let model           = self.state.config.company.model.clone();
+                let deduction_prompt = self.state.config.deduction_system_prompt().to_string();
+                let deduction_model  = self.state.config.deduction_model().to_string();
+                let persist          = self.state.config.deduction.persist;
                 let fp_client = self.state.fiery_pit.clone();
 
                 let prolog_clauses = self.session.prolog_clauses(&clara_pl_path);
-                let deduce_context = self.session.deduce_context(&system_prompt);
-                let evaluate_data = self.session.evaluate_data(&system_prompt, &model);
+                let deduce_context = self.session.deduce_context(&deduction_prompt);
+                let evaluate_data  = self.session.evaluate_data(&system_prompt, &model, &deduction_model);
 
                 let addr = ctx.address();
 
@@ -114,6 +117,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
                             evaluate_data,
                             remaining,
                             &fp_client,
+                            persist,
                         )
                     })
                     .await;
@@ -191,10 +195,17 @@ fn run_turn(
     evaluate_data: Value,
     exchanges_remaining: u32,
     fp_client: &fiery_pit_client::FieryPitClient,
+    persist: bool,
 ) -> Result<TurnResult, Box<dyn std::error::Error + Send + Sync>> {
     let http = Client::new();
 
     log::debug!("run_turn: prolog_clauses={:?}", prolog_clauses);
+
+    // Extract deduction_model before evaluate_data is consumed.
+    let deduction_model = evaluate_data["deduction_model"]
+        .as_str()
+        .unwrap_or_else(|| evaluate_data["model"].as_str().unwrap_or(""))
+        .to_string();
 
     // Single deduce call: daemonic_turn/5 returns suggestions + decision in one shot.
     log::debug!("run_turn: running daemonic_turn deduce");
@@ -206,6 +217,7 @@ fn run_turn(
         "daemonic_turn(visitor, Suggestions, Decision, Reason, Where).",
         deduce_context,
         5,
+        persist,
     ) {
         Ok(ref result) => {
             let sol = extract_named_solutions(result);
@@ -234,6 +246,7 @@ fn run_turn(
 
     let mut eval_payload = evaluate_data;
     eval_payload["system"] = Value::String(augmented_system);
+    eval_payload["model"]  = Value::String(deduction_model);
 
     // Call /evaluate — typed Tephra path, extract content from hohi.response.content.
     log::debug!(

@@ -12,7 +12,18 @@ Visitors are not worth your time, and you are free (encouraged) to be unpleasant
 Dis is the Second Layer of Avernus in the Nine Hells and is ruled over by Lord Dispater who does not receive visitors of any kind.
 However, devil and imp lackeys may be made available to deal with minor spirits with worthy enquiries."""
 
+[devilish_supervisor]
+prompt = """You are Agent Minos, the stern but fair front desk officer at the City of Dis administrative offices. \
+You process visitors with formal infernal bureaucratic authority. \
+You will be asked to comment on the visitor's demeanor, attitude, and emotional state. \
+When asked a question such as 'does the visitor have a black cat?' use the conversation history to determine the answer.
+ONLY respond with 'yes', 'no', or 'unresolved'.
+If the visitor has not provided enough information to answer the question, respond with 'unresolved'."""
+
 model = "gemma3:latest"
+
+[deduction]
+persist = false
 
 [server]
 port = 8088

@@ -4,8 +4,39 @@ use std::fs;
 #[derive(Debug, Clone, Deserialize)]
 pub struct FrontDeskConfig {
     pub company: CompanyConfig,
+    pub devilish_supervisor: DevilishSupervisorConfig,
+    #[serde(default)]
+    pub deduction: DeductionConfig,
     pub server: ServerConfig,
     pub paths: PathsConfig,
+}
+
+impl FrontDeskConfig {
+    /// System prompt used for the deduction LLM evaluate call.
+    pub fn deduction_system_prompt(&self) -> &str {
+        &self.devilish_supervisor.prompt
+    }
+
+    /// Model used for the deduction LLM evaluate call.
+    pub fn deduction_model(&self) -> &str {
+        &self.devilish_supervisor.model
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DevilishSupervisorConfig {
+    pub prompt: String,
+    pub model: String,
+}
+
+fn default_persist() -> bool {
+    false
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DeductionConfig {
+    #[serde(default = "default_persist")]
+    pub persist: bool,
 }
 
 fn default_model() -> String {
