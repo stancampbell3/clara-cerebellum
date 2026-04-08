@@ -16,10 +16,18 @@
 :- dynamic(lost_or_confused/1).
 :- dynamic(greeted/1).
 
+%% POC entry point
+daemonic_turn(Visitor, Suggestions, Decision, Reason, Where) :-
+    visitor(Visitor),
+    findall(S, suggestion(Visitor, S), Suggestions),
+    (admit(Visitor, Reason) -> Decision = admit ; Decision = deny),
+    Where = 'front_desk'.
+
 %% Helper: ask Clara whether a condition is satisfied in context.
 meets_condition(Visitor, Question) :-
     visitor(Visitor),
     the_rabbit:current_context(Context),
+    format('Asking Clara: ~w~nContext: ~w~n', [Question, Context]),
     clara_fy(Question, Context, R),
     R == true.
 
