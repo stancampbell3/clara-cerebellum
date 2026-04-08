@@ -92,6 +92,10 @@ pub fn parse_prolog_rules(source: &str) -> Vec<PrologRule> {
 /// Variables bound by the LHS become CLIPS variable references in the `str-cat`
 /// RHS; unbound head variables are emitted as literal strings.
 /// Facts (rules with empty bodies) are silently skipped.
+///
+/// Rules where the trigger does not bind all variables in the head are also
+/// skipped — the generated goal would contain free Prolog variables, which
+/// causes instantiation errors when Prolog attempts to call them.
 pub fn transduce(rules: &[PrologRule]) -> String {
     let mut out = String::new();
     let mut counter = 0usize;
@@ -102,6 +106,7 @@ pub fn transduce(rules: &[PrologRule]) -> String {
         }
 
         let head_functor = term_functor_name(&rule.head);
+        let head_vars = collect_vars(&rule.head);
 
         for goal in &rule.body {
             match goal {
@@ -115,6 +120,10 @@ pub fn transduce(rules: &[PrologRule]) -> String {
                     counter += 1;
 
                     let bound_vars = collect_vars(trigger);
+                    // Skip if any head variable would be free in the generated goal.
+                    if !head_vars.is_subset(&bound_vars) {
+                        continue;
+                    }
                     let lhs = render_not_clips_pattern(trigger);
                     let rhs_expr = render_head_goal_expr(&rule.head, &bound_vars);
                     let comment = format_rule_comment(rule);
@@ -139,6 +148,10 @@ pub fn transduce(rules: &[PrologRule]) -> String {
                     counter += 1;
 
                     let bound_vars = collect_vars(effective);
+                    // Skip if any head variable would be free in the generated goal.
+                    if !head_vars.is_subset(&bound_vars) {
+                        continue;
+                    }
                     let lhs = render_clips_fact(effective);
                     let rhs_expr = render_head_goal_expr(&rule.head, &bound_vars);
                     let comment = format_rule_comment(rule);
@@ -822,11 +835,12 @@ mod tests {
     }
 
     #[test]
-    fn transduce_unbound_variable_as_literal() {
+    fn transduce_unbound_head_variable_skips_rule() {
+        // B is never bound by the trigger cond(A) — the generated goal would
+        // contain a free Prolog variable, causing instantiation errors at
+        // runtime.  The rule must be skipped entirely.
         let clp = transduce_source("head(A, B) :- cond(A).");
-        assert!(clp.contains("?A"));
-        // B is unbound — appears as literal string in the closing segment
-        assert!(clp.contains(",B)\""));
+        assert!(clp.is_empty(), "expected no defrule when a head variable is unbound, got:\n{clp}");
     }
 
     #[test]
@@ -903,14 +917,16 @@ mod tests {
 
     #[test]
     fn transduce_assertz_is_skipped() {
+        // All head variables (Who, Group) are bound by the member_of trigger.
+        // assertz is a meta-predicate and must not generate its own defrule.
         let clp = transduce_source(
-            "prejudiced(Who,Whom,Group) :- member_of(Who,Group), assertz(dislikes(Who,Whom)).",
+            "prejudiced(Who,Group) :- member_of(Who,Group), assertz(criminal(Who)).",
         );
         // assertz is a meta-predicate — skip it entirely, do NOT generate a rule for it
         assert!(!clp.contains("on-assertz-"));
         assert!(!clp.contains("(assertz"));
-        // No CLIPS fact pattern for dislikes (it may appear in the comment line)
-        assert!(!clp.contains("\n    (dislikes"));
+        // No CLIPS fact pattern for criminal (it may appear in the comment line)
+        assert!(!clp.contains("\n    (criminal"));
         // Only member_of triggers a defrule
         assert!(clp.contains("transduced-prejudiced-on-member_of-0"));
         assert_eq!(clp.matches("(defrule").count(), 1);
