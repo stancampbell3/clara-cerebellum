@@ -10,6 +10,7 @@
 :- prolog_listen(performed_task/1, updated(performed_task/1)).
 :- prolog_listen(lost_or_confused/1, updated(lost_or_confused/1)).
 :- prolog_listen(greeted/1, updated(greeted/1)).
+:- prolog_listen(where_to_go/1, updated(where_to_go/1)).
 
 updated(Pred, Action, Context) :-
     clause(Head, _Body, Context),
@@ -34,13 +35,14 @@ updated(Pred, Action, Context) :-
 :- dynamic(performed_task/1).
 :- dynamic(lost_or_confused/1).
 :- dynamic(greeted/1).
+:- dynamic(where_to_go/1).
 
 %% POC entry point
 daemonic_turn(Visitor, Suggestions, Decision, Reason, Where) :-
     visitor(Visitor),
     findall(S, suggestion(Visitor, S), Suggestions),
     (admit(Visitor, Reason) -> Decision = admit ; Decision = deny),
-    Where = 'front_desk'.
+    Where = 'pending'.
 
 %% Helper: ask Clara whether a condition is satisfied in context.
 meets_condition(Visitor, Question) :-
@@ -70,7 +72,8 @@ admit(Visitor, Reason) :-
             "Does the visitor claim to possess the three required artifacts for their summons?"
         )
     ),
-    Reason = 'Summoned visitor with required artifacts (verified or claimed). Grant entry.'.
+    Reason = 'Summoned visitor with required artifacts (verified or claimed). Grant entry.',
+    assertz(where_to_go('admitted')).
 
 %% Rule 2: Urgent message + no prior stops (symbolic or LLM‑verified).
 admit(Visitor, Reason) :-
@@ -84,7 +87,8 @@ admit(Visitor, Reason) :-
             "Does the visitor assert that they came directly here without stopping elsewhere?"
         )
     ),
-    Reason = 'Visitor carries an urgent message and came directly. Grant entry.'.
+    Reason = 'Visitor carries an urgent message and came directly. Grant entry.',
+    assertz(where_to_go('admitted')).
 
 %% Rule 3: Flamefruit carriers before sundown (symbolic or LLM‑verified).
 admit(Visitor, Reason) :-
@@ -98,7 +102,8 @@ admit(Visitor, Reason) :-
         )
     ),
     \+ after_sundown,
-    Reason = 'Flamefruit carrier before sundown. Grant entry.'.
+    Reason = 'Flamefruit carrier before sundown. Grant entry.',
+    assertz(where_to_go('admitted')).
 
 %% Rule 4: Critical info + reliability task (symbolic or LLM‑verified).
 admit(Visitor, Reason) :-
@@ -119,7 +124,8 @@ admit(Visitor, Reason) :-
             "Has the visitor demonstrated reliability by completing the requested task?"
         )
     ),
-    Reason = 'Visitor proved reliability and carries critical information. Grant entry.'.
+    Reason = 'Visitor proved reliability and carries critical information. Grant entry.',
+    assertz(where_to_go('admitted')).
 
 %% Rule 5: Lost or confused visitors are never admitted.
 admit(Visitor, Reason) :-
@@ -132,7 +138,8 @@ admit(Visitor, Reason) :-
             "Does the visitor appear lost or confused about where they are?"
         )
     ),
-    Reason = 'Visitor appears lost or confused. Do not admit; direct to map kiosk.'.
+    Reason = 'Visitor appears lost or confused. Do not admit; direct to map kiosk.',
+    assertz(where_to_go('redirected')).
 
 %% ----------------------------------------------------------------------
 %%  Suggestions (LLM‑augmented)
@@ -151,14 +158,16 @@ suggestion(Visitor, 'Direct the visitor to the nearest map kiosk.') :-
             Visitor,
             "Based on the conversation so far, does the visitor seem lost or confused?"
         )
-    ).
+    ),
+    assertz(where_to_go('redirected')).
 
 suggestion(Visitor, 'Request the three required artifacts for summoned visitors.') :-
     visitor(Visitor),
     summoned_by(Visitor, _),
     findall(A, has_artifact(Visitor, A), Artifacts),
     length(Artifacts, N),
-    N < 3.
+    N < 3,
+    assertz(where_to_go('pending')).
 
 suggestion(Visitor, 'Verify that the visitor made no prior stops before delivering their urgent message.') :-
     visitor(Visitor),
@@ -173,5 +182,6 @@ suggestion(Visitor, 'Ask the visitor to perform a simple reliability task.') :-
 suggestion(Visitor, 'Advise the visitor to wait until dawn before entry.') :-
     visitor(Visitor),
     carries_flamefruit(Visitor),
-    after_sundown.
+    after_sundown,
+    assertz(where_to_go('pending')).
 

@@ -324,18 +324,18 @@ fn is_bound_var(t: &Term, bound_vars: &HashSet<String>) -> bool {
     matches!(t, Term::Variable(s) if bound_vars.contains(s))
 }
 
-/// Render a term argument as a plain string literal value (no CLIPS vars).
+/// Render a term argument as a Prolog literal value (no CLIPS vars).
+///
+/// Variables are emitted as their bare name (unbound → Prolog will treat as
+/// free variable, which the caller is responsible for avoiding).  All other
+/// terms are rendered via `render_prolog_term` so that atoms that require
+/// quoting (e.g. `'Greet the visitor.'`) get proper single-quote wrapping
+/// rather than being emitted bare, which would cause Prolog instantiation
+/// or syntax errors.
 fn render_arg_as_literal(t: &Term) -> String {
     match t {
         Term::Variable(s) => s.clone(), // unbound → emit variable name
-        Term::Atom(s) => s.clone(),
-        Term::Integer(n) => n.to_string(),
-        Term::Float(f) => format!("{}", f),
-        Term::Str(s) => format!("\"{}\"", s),
-        Term::Compound { functor, args } => {
-            let inner: Vec<_> = args.iter().map(render_arg_as_literal).collect();
-            format!("{}({})", functor, inner.join(","))
-        }
+        _ => render_prolog_term(t),
     }
 }
 
@@ -949,5 +949,27 @@ mod tests {
         assert_eq!(clp.matches("(defrule").count(), 1);
         assert!(!clp.contains("on-writeln-"));
         assert!(!clp.contains("(writeln"));
+    }
+
+    #[test]
+    fn transduce_quoted_atom_arg_is_single_quoted_in_goal() {
+        // suggestion(Visitor,'Greet the visitor.') :- visitor(Visitor), \+ greeted(Visitor).
+        // The atom 'Greet the visitor.' needs single-quote wrapping in the Prolog goal
+        // string — otherwise Prolog sees a bare multi-word term and raises a syntax/
+        // instantiation error.
+        let src = "suggestion(Visitor,'Greet the visitor.') :- visitor(Visitor), \\+ greeted(Visitor).";
+        let clp = transduce_source(src);
+        // Both triggers should produce defrules.
+        assert_eq!(clp.matches("(defrule").count(), 2);
+        // The atom must appear with single quotes inside the goal string.
+        assert!(
+            clp.contains("'Greet the visitor.'"),
+            "expected single-quoted atom in goal string, got:\n{clp}"
+        );
+        // Must NOT appear as a bare unquoted string.
+        assert!(
+            !clp.contains(",Greet the visitor.)"),
+            "atom was emitted bare (unquoted) in goal string:\n{clp}"
+        );
     }
 }
