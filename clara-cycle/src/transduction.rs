@@ -391,6 +391,173 @@ fn is_meta_predicate(name: &str) -> bool {
     )
 }
 
+// ── DOT graph generation ──────────────────────────────────────────────────────
+
+/// Generate a Graphviz DOT graph from parsed Prolog rules.
+///
+/// Node types:
+/// - **Fact nodes** (green ellipse): bare facts with empty bodies.
+/// - **Rule head nodes** (blue box): head of rules with at least one body goal.
+/// - **Condition nodes** (amber dashed ellipse): each body goal in a rule.
+///
+/// Edge types:
+/// - `requires`: rule head → condition (within the rule's cluster).
+/// - `chains-to`: condition → the rule head whose functor/arity it matches
+///   (forward-chaining path across rules).
+/// - `satisfies`: fact node → condition whose functor/arity matches the fact.
+pub fn generate_dot(rules: &[PrologRule]) -> String {
+    let mut out = String::new();
+    out.push_str("digraph Clara {\n");
+    out.push_str("    rankdir=LR\n");
+    out.push_str("    fontname=\"Helvetica\"\n");
+    out.push_str("    node [fontname=\"Helvetica\" fontsize=11]\n");
+    out.push_str("    edge [fontsize=9]\n\n");
+
+    let facts: Vec<(usize, &PrologRule)> = rules.iter().enumerate()
+        .filter(|(_, r)| r.body.is_empty())
+        .collect();
+    let rule_list: Vec<(usize, &PrologRule)> = rules.iter().enumerate()
+        .filter(|(_, r)| !r.body.is_empty())
+        .collect();
+
+    // ── Fact nodes ────────────────────────────────────────────────────────────
+    let mut fact_ids: Vec<(String, String, usize)> = Vec::new(); // (node_id, functor, arity)
+    for (orig_i, rule) in &facts {
+        let (f, a) = term_functor_arity(&rule.head);
+        let node_id = format!("fact_{}_{}_{}", dot_id(f), a, orig_i);
+        let label = render_prolog_term(&rule.head);
+        out.push_str(&format!(
+            "    {} [label=\"{}\" shape=ellipse style=filled fillcolor=\"#d4edda\"]\n",
+            node_id, escape_dot_label(&label)
+        ));
+        fact_ids.push((node_id, f.to_string(), a));
+    }
+    if !facts.is_empty() {
+        out.push('\n');
+    }
+
+    // ── Rule subgraphs ────────────────────────────────────────────────────────
+    // Collect head node ids and condition info for cross-edge emission later.
+    let mut rule_head_ids: Vec<String> = Vec::new();
+    let mut all_cond_ids: Vec<Vec<(String, String, usize)>> = Vec::new(); // per-rule: (node_id, functor, arity)
+
+    for (cluster_i, (_orig_i, rule)) in rule_list.iter().enumerate() {
+        let (hf, ha) = term_functor_arity(&rule.head);
+        let head_id = format!("rule_{}_{}_{}", dot_id(hf), ha, cluster_i);
+        let head_label = render_prolog_term(&rule.head);
+        let cluster_label = format_rule_comment(rule);
+
+        out.push_str(&format!("    subgraph cluster_rule_{} {{\n", cluster_i));
+        out.push_str(&format!("        label=\"{}\"\n", escape_dot_label(&cluster_label)));
+        out.push_str("        style=rounded\n");
+        out.push_str(&format!(
+            "        {} [label=\"{}\" shape=box style=filled fillcolor=\"#cce5ff\" penwidth=2]\n",
+            head_id, escape_dot_label(&head_label)
+        ));
+
+        let mut cond_ids: Vec<(String, String, usize)> = Vec::new();
+        for (ci, goal) in rule.body.iter().enumerate() {
+            let (term, is_neg) = match goal {
+                BodyGoal::Positive(t) => (t, false),
+                BodyGoal::Negative(t) => (t, true),
+            };
+            let cond_id = format!("cond_{}_{}", cluster_i, ci);
+            let cond_label = if is_neg {
+                format!("\\\\+ {}", render_prolog_term(term))
+            } else {
+                render_prolog_term(term)
+            };
+            let (cf, ca) = term_functor_arity(term);
+
+            out.push_str(&format!(
+                "        {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"#fff3cd\"]\n",
+                cond_id, escape_dot_label(&cond_label)
+            ));
+            out.push_str(&format!(
+                "        {} -> {} [label=\"requires\"]\n",
+                head_id, cond_id
+            ));
+            cond_ids.push((cond_id, cf.to_string(), ca));
+        }
+        out.push_str("    }\n\n");
+
+        rule_head_ids.push(head_id);
+        all_cond_ids.push(cond_ids);
+    }
+
+    // ── chains-to edges ───────────────────────────────────────────────────────
+    // Build (functor, arity) → head node id lookup from rules-with-bodies.
+    let head_by_fa: std::collections::HashMap<(String, usize), &str> = rule_list.iter()
+        .enumerate()
+        .map(|(ci, (_orig_i, rule))| {
+            let (f, a) = term_functor_arity(&rule.head);
+            ((f.to_string(), a), rule_head_ids[ci].as_str())
+        })
+        .collect();
+
+    let mut emitted_chain = false;
+    for cond_ids in &all_cond_ids {
+        for (cond_id, functor, arity) in cond_ids {
+            if let Some(target) = head_by_fa.get(&(functor.clone(), *arity)) {
+                out.push_str(&format!(
+                    "    {} -> {} [label=\"chains-to\" style=dashed color=\"#1a73e8\"]\n",
+                    cond_id, target
+                ));
+                emitted_chain = true;
+            }
+        }
+    }
+    if emitted_chain {
+        out.push('\n');
+    }
+
+    // ── satisfies edges ───────────────────────────────────────────────────────
+    // For each fact, find all conditions with matching functor/arity.
+    let mut emitted_satisfies = false;
+    for (fact_node_id, fact_f, fact_a) in &fact_ids {
+        for cond_ids in &all_cond_ids {
+            for (cond_id, cond_f, cond_a) in cond_ids {
+                if fact_f == cond_f && fact_a == cond_a {
+                    out.push_str(&format!(
+                        "    {} -> {} [label=\"satisfies\" style=dashed color=\"#555555\"]\n",
+                        fact_node_id, cond_id
+                    ));
+                    emitted_satisfies = true;
+                }
+            }
+        }
+    }
+    if emitted_satisfies {
+        out.push('\n');
+    }
+
+    out.push_str("}\n");
+    out
+}
+
+/// Extract functor name and arity from a term.
+fn term_functor_arity(t: &Term) -> (&str, usize) {
+    match t {
+        Term::Atom(s) => (s.as_str(), 0),
+        Term::Compound { functor, args } => (functor.as_str(), args.len()),
+        Term::Variable(s) => (s.as_str(), 0),
+        _ => ("_", 0),
+    }
+}
+
+/// Sanitize a string for use as a DOT node identifier (alphanumeric + underscores).
+fn dot_id(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Escape a string for use inside a DOT double-quoted label.
+fn escape_dot_label(s: &str) -> String {
+    s.replace('\\', "\\\\")
+     .replace('"', "\\\"")
+}
+
 fn format_rule_comment(rule: &PrologRule) -> String {
     let head = render_prolog_term(&rule.head);
     if rule.body.is_empty() {

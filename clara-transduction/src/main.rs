@@ -1,42 +1,38 @@
-//! Prolog → CLIPS transduction CLI.
+//! Prolog → CLIPS + DOT transduction CLI.
 //!
-//! Usage: transduction [--decorate] <input.pl> [output.clp]
+//! Usage: transduction <input.pl>
 //!
-//! Without `--decorate`:
-//!   Reads Prolog source from `<input.pl>`, generates CLIPS defrules, and writes
-//!   the result to `<output.clp>` (or stdout if omitted).
+//! Parses `<input.pl>` and writes three output files derived from the input
+//! stem (e.g. `rules.pl` → `rules_clara.pl`, `rules_clara.clp`, `rules_clara.dot`):
 //!
-//! With `--decorate`:
-//!   Parses `<input.pl>` once, then writes two output files derived from the
-//!   input stem (e.g. `rules.pl` → `rules_clara.pl` + `rules_clara.clp`):
-//!     - `<stem>_clara.pl`  — Original Prolog source prepended with:
-//!         - `:- prolog_listen(...)` directives for every `dynamic` predicate
-//!         - The `updated/3` relay rule (publishes asserted facts to CLIPS)
-//!         - Comment delimiters marking the generated block
-//!     - `<stem>_clara.clp` — CLIPS defrules for speculative forward chaining
-//!   Stdout is not used when `--decorate` is active.
+//!   - `<stem>_clara.pl`  — Original Prolog source prepended with:
+//!       - `:- prolog_listen(...)` directives for every `dynamic` predicate
+//!       - The `updated/3` relay rule (publishes asserted facts to CLIPS)
+//!       - Comment delimiters marking the generated block
+//!   - `<stem>_clara.clp` — CLIPS defrules for speculative forward chaining
+//!   - `<stem>_clara.dot` — Graphviz DOT graph showing facts, rule heads,
+//!       conditions, and their chaining relationships
 //!
-//! Exits with code 1 on any I/O or argument error.
+//! Stdout is not used. Exits with code 1 on any I/O or argument error.
 
 use std::path::Path;
 use std::process;
 
-use clara_cycle::transduction::{decorate_source, parse_prolog_rules, transduce};
+use clara_cycle::transduction::{decorate_source, generate_dot, parse_prolog_rules, transduce};
 
 fn main() {
     let raw: Vec<String> = std::env::args().collect();
 
-    let decorate = raw.iter().skip(1).any(|a| a == "--decorate");
     let positional: Vec<&str> = raw.iter().skip(1)
         .filter(|a| !a.starts_with("--"))
         .map(|a| a.as_str())
         .collect();
 
     if positional.is_empty() {
-        eprintln!("Usage: transduction [--decorate] <input.pl> [output.clp]");
+        eprintln!("Usage: transduction <input.pl>");
         eprintln!();
-        eprintln!("  --decorate  Write decorated Prolog and CLIPS as <stem>_clara.{{pl,clp}}");
-        eprintln!("              Output files go beside the input file; stdout is not used.");
+        eprintln!("  Writes <stem>_clara.pl, <stem>_clara.clp, and <stem>_clara.dot");
+        eprintln!("  beside the input file.");
         process::exit(1);
     }
 
@@ -49,32 +45,25 @@ fn main() {
         }
     };
 
-    if decorate {
-        let path = Path::new(input_path);
-        let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let stem = path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
+    let path = Path::new(input_path);
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
 
-        let pl_out  = dir.join(format!("{}_clara.pl",  stem));
-        let clp_out = dir.join(format!("{}_clara.clp", stem));
+    let pl_out  = dir.join(format!("{}_clara.pl",  stem));
+    let clp_out = dir.join(format!("{}_clara.clp", stem));
+    let dot_out = dir.join(format!("{}_clara.dot", stem));
 
-        // Single parse pass shared by both outputs.
-        let rules = parse_prolog_rules(&source);
-        let decorated_pl = decorate_source(&source);
-        let clp = transduce(&rules);
+    // Single parse pass shared by all outputs.
+    let rules = parse_prolog_rules(&source);
+    let decorated_pl = decorate_source(&source);
+    let clp = transduce(&rules);
+    let dot = generate_dot(&rules);
 
-        write_file(&pl_out.to_string_lossy(), &decorated_pl);
-        write_file(&clp_out.to_string_lossy(), &clp);
-    } else {
-        let clp = clara_cycle::transduction::transduce_source(&source);
-
-        if positional.len() >= 2 {
-            write_file(positional[1], &clp);
-        } else {
-            print!("{}", clp);
-        }
-    }
+    write_file(&pl_out.to_string_lossy(), &decorated_pl);
+    write_file(&clp_out.to_string_lossy(), &clp);
+    write_file(&dot_out.to_string_lossy(), &dot);
 }
 
 fn write_file(path: &str, content: &str) {
