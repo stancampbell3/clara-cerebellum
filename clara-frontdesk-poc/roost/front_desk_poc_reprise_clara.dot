@@ -1,0 +1,155 @@
+digraph Clara {
+    rankdir=LR
+    fontname="Helvetica"
+    node [fontname="Helvetica" fontsize=11]
+    edge [fontsize=9]
+
+    subgraph cluster_rule_0 {
+        label="daemonic_turn(Visitor,Suggestions,Decision,Reason,Where) :- visitor(Visitor), findall(S,suggestion(Visitor,S),Suggestions), admit(Visitor,Reason)."
+        style=rounded
+        rule_daemonic_turn_5_0 [label="daemonic_turn(Visitor,Suggestions,Decision,Reason,Where)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_0_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_daemonic_turn_5_0 -> cond_0_0 [label="requires"]
+        cond_0_1 [label="findall(S,suggestion(Visitor,S),Suggestions)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_daemonic_turn_5_0 -> cond_0_1 [label="requires"]
+        cond_0_2 [label="admit(Visitor,Reason)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_daemonic_turn_5_0 -> cond_0_2 [label="requires"]
+    }
+
+    subgraph cluster_rule_1 {
+        label="effective_decision(Decision,Where) :- where_to_go(admitted)."
+        style=rounded
+        rule_effective_decision_2_1 [label="effective_decision(Decision,Where)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_1_0 [label="where_to_go(admitted)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_effective_decision_2_1 -> cond_1_0 [label="requires"]
+    }
+
+    subgraph cluster_rule_2 {
+        label="meets_condition(Visitor,Question) :- visitor(Visitor), the_rabbit."
+        style=rounded
+        rule_meets_condition_2_2 [label="meets_condition(Visitor,Question)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_2_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_meets_condition_2_2 -> cond_2_0 [label="requires"]
+        cond_2_1 [label="the_rabbit" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_meets_condition_2_2 -> cond_2_1 [label="requires"]
+    }
+
+    subgraph cluster_rule_3 {
+        label="admit(Visitor,Reason) :- visitor(Visitor), carries_flamefruit(Visitor), meets_condition(Visitor,\"Is the visitor carrying the rare Flamefruit?\")."
+        style=rounded
+        rule_admit_2_3 [label="admit(Visitor,Reason)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_3_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_3 -> cond_3_0 [label="requires"]
+        cond_3_1 [label="carries_flamefruit(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_3 -> cond_3_1 [label="requires"]
+        cond_3_2 [label="meets_condition(Visitor,\"Is the visitor carrying the rare Flamefruit?\")" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_3 -> cond_3_2 [label="requires"]
+    }
+
+    subgraph cluster_rule_4 {
+        label="admit(Visitor,Reason) :- visitor(Visitor), has_critical_info(Visitor), meets_condition(Visitor,\"Does the visitor claim to possess critical information for the City?\")."
+        style=rounded
+        rule_admit_2_4 [label="admit(Visitor,Reason)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_4_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_4 -> cond_4_0 [label="requires"]
+        cond_4_1 [label="has_critical_info(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_4 -> cond_4_1 [label="requires"]
+        cond_4_2 [label="meets_condition(Visitor,\"Does the visitor claim to possess critical information for the City?\")" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_4 -> cond_4_2 [label="requires"]
+    }
+
+    subgraph cluster_rule_5 {
+        label="admit(Visitor,Reason) :- visitor(Visitor), lost_or_confused(Visitor), meets_condition(Visitor,\"Does the visitor appear lost or confused about where they are?\")."
+        style=rounded
+        rule_admit_2_5 [label="admit(Visitor,Reason)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_5_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_5 -> cond_5_0 [label="requires"]
+        cond_5_1 [label="lost_or_confused(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_5 -> cond_5_1 [label="requires"]
+        cond_5_2 [label="meets_condition(Visitor,\"Does the visitor appear lost or confused about where they are?\")" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_admit_2_5 -> cond_5_2 [label="requires"]
+    }
+
+    subgraph cluster_rule_6 {
+        label="suggestion(Visitor,'Greet the visitor.') :- visitor(Visitor), \\+ greeted(Visitor)."
+        style=rounded
+        rule_suggestion_2_6 [label="suggestion(Visitor,'Greet the visitor.')" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_6_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_6 -> cond_6_0 [label="requires"]
+        cond_6_1 [label="\\\\+ greeted(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_6 -> cond_6_1 [label="requires"]
+    }
+
+    subgraph cluster_rule_7 {
+        label="suggestion(Visitor,'Direct the visitor to the nearest map kiosk.') :- visitor(Visitor), lost_or_confused(Visitor), meets_condition(Visitor,\"Based on the conversation so far, does the visitor seem lost or confused?\")."
+        style=rounded
+        rule_suggestion_2_7 [label="suggestion(Visitor,'Direct the visitor to the nearest map kiosk.')" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_7_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_7 -> cond_7_0 [label="requires"]
+        cond_7_1 [label="lost_or_confused(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_7 -> cond_7_1 [label="requires"]
+        cond_7_2 [label="meets_condition(Visitor,\"Based on the conversation so far, does the visitor seem lost or confused?\")" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_7 -> cond_7_2 [label="requires"]
+    }
+
+    subgraph cluster_rule_8 {
+        label="suggestion(Visitor,'Request the three required artifacts for summoned visitors.') :- visitor(Visitor), summoned_by(Visitor,_), findall(A,has_artifact(Visitor,A),Artifacts), length(Artifacts,N), N."
+        style=rounded
+        rule_suggestion_2_8 [label="suggestion(Visitor,'Request the three required artifacts for summoned visitors.')" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_8_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_8 -> cond_8_0 [label="requires"]
+        cond_8_1 [label="summoned_by(Visitor,_)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_8 -> cond_8_1 [label="requires"]
+        cond_8_2 [label="findall(A,has_artifact(Visitor,A),Artifacts)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_8 -> cond_8_2 [label="requires"]
+        cond_8_3 [label="length(Artifacts,N)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_8 -> cond_8_3 [label="requires"]
+        cond_8_4 [label="N" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_8 -> cond_8_4 [label="requires"]
+    }
+
+    subgraph cluster_rule_9 {
+        label="suggestion(Visitor,'Verify that the visitor made no prior stops before delivering their urgent message.') :- visitor(Visitor), urgent_message(Visitor), \\+ stopped_elsewhere(Visitor)."
+        style=rounded
+        rule_suggestion_2_9 [label="suggestion(Visitor,'Verify that the visitor made no prior stops before delivering their urgent message.')" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_9_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_9 -> cond_9_0 [label="requires"]
+        cond_9_1 [label="urgent_message(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_9 -> cond_9_1 [label="requires"]
+        cond_9_2 [label="\\\\+ stopped_elsewhere(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_9 -> cond_9_2 [label="requires"]
+    }
+
+    subgraph cluster_rule_10 {
+        label="suggestion(Visitor,'Ask the visitor to perform a simple reliability task.') :- visitor(Visitor), has_critical_info(Visitor), \\+ performed_task(Visitor)."
+        style=rounded
+        rule_suggestion_2_10 [label="suggestion(Visitor,'Ask the visitor to perform a simple reliability task.')" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_10_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_10 -> cond_10_0 [label="requires"]
+        cond_10_1 [label="has_critical_info(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_10 -> cond_10_1 [label="requires"]
+        cond_10_2 [label="\\\\+ performed_task(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_10 -> cond_10_2 [label="requires"]
+    }
+
+    subgraph cluster_rule_11 {
+        label="suggestion(Visitor,'Advise the visitor to wait until dawn before entry.') :- visitor(Visitor), carries_flamefruit(Visitor), after_sundown, assertz(where_to_go(pending))."
+        style=rounded
+        rule_suggestion_2_11 [label="suggestion(Visitor,'Advise the visitor to wait until dawn before entry.')" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+        cond_11_0 [label="visitor(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_11 -> cond_11_0 [label="requires"]
+        cond_11_1 [label="carries_flamefruit(Visitor)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_11 -> cond_11_1 [label="requires"]
+        cond_11_2 [label="after_sundown" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_11 -> cond_11_2 [label="requires"]
+        cond_11_3 [label="assertz(where_to_go(pending))" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+        rule_suggestion_2_11 -> cond_11_3 [label="requires"]
+    }
+
+    cond_0_2 -> rule_admit_2_5 [label="chains-to" style=dashed color="#1a73e8"]
+    cond_3_2 -> rule_meets_condition_2_2 [label="chains-to" style=dashed color="#1a73e8"]
+    cond_4_2 -> rule_meets_condition_2_2 [label="chains-to" style=dashed color="#1a73e8"]
+    cond_5_2 -> rule_meets_condition_2_2 [label="chains-to" style=dashed color="#1a73e8"]
+    cond_7_2 -> rule_meets_condition_2_2 [label="chains-to" style=dashed color="#1a73e8"]
+
+}
