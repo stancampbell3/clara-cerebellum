@@ -35,9 +35,10 @@
 //!     (coire-publish-goal (str-cat "lemonade(" ?Drink ")")))
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::transpile::{render_clips_fact, render_clips_field, render_prolog_term, Term};
+use clara_dagda::TruthValue;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -393,19 +394,50 @@ fn is_meta_predicate(name: &str) -> bool {
 
 // ── DOT graph generation ──────────────────────────────────────────────────────
 
+/// Options controlling DOT graph generation.
+pub struct DotOptions {
+    /// When true, emit a dashed gray undirected edge between condition nodes
+    /// that share the same functor, arity, and arguments across different rules
+    /// (e.g. two `turn(left)` nodes in separate rule bodies).
+    pub link_shared_conditions: bool,
+}
+
+impl Default for DotOptions {
+    fn default() -> Self {
+        Self { link_shared_conditions: false }
+    }
+}
+
+/// Per-node truth-value override for colored deduction snapshots.
+///
+/// Keys are predicate functor names (e.g. `"unlocked"`, `"tumbler_1"`).
+/// When a node's functor is present, its fill color is overridden by the
+/// truth-value palette instead of the structural default.
+pub struct NodeColoring {
+    pub values: HashMap<String, TruthValue>,
+}
+
 /// Generate a Graphviz DOT graph from parsed Prolog rules.
+///
+/// Layout: `rankdir=LR` — rule heads appear to the left of their conditions.
 ///
 /// Node types:
 /// - **Fact nodes** (green ellipse): bare facts with empty bodies.
-/// - **Rule head nodes** (blue box): head of rules with at least one body goal.
-/// - **Condition nodes** (amber dashed ellipse): each body goal in a rule.
+/// - **Rule head nodes** (blue box): heads of rules with at least one body goal.
+/// - **Condition nodes** (amber dashed ellipse): leaf body goals — those not
+///   bridged to another rule head via assert or direct functor match.
 ///
 /// Edge types:
-/// - `requires`: rule head → condition (within the rule's cluster).
-/// - `chains-to`: condition → the rule head whose functor/arity it matches
-///   (forward-chaining path across rules).
-/// - `satisfies`: fact node → condition whose functor/arity matches the fact.
-pub fn generate_dot(rules: &[PrologRule]) -> String {
+/// - `requires` (black): rule head → leaf condition.
+/// - assert-bridge (solid blue, no label): rule head A → rule head B, emitted
+///   when A has a condition whose functor/arity is asserted by B.
+///   Assert-bridge takes precedence over `chains-to` for the same condition.
+/// - `chains-to` (dashed blue): condition node → rule head whose functor/arity
+///   it directly matches. Emitted as secondary when a condition is also assert-bridged.
+/// - `satisfies` (dashed gray): fact node → condition whose functor/arity it matches.
+/// - shared-condition (dashed gray, undirected): between condition nodes sharing
+///   the same label across rules, when `opts.link_shared_conditions` is true.
+pub fn generate_dot(rules: &[PrologRule], coloring: Option<&NodeColoring>, opts: &DotOptions) -> String {
     let mut out = String::new();
     out.push_str("digraph Clara {\n");
     out.push_str("    rankdir=LR\n");
@@ -426,9 +458,10 @@ pub fn generate_dot(rules: &[PrologRule]) -> String {
         let (f, a) = term_functor_arity(&rule.head);
         let node_id = format!("fact_{}_{}_{}", dot_id(f), a, orig_i);
         let label = render_prolog_term(&rule.head);
+        let fill = node_fill_color(f, coloring, "#d4edda");
         out.push_str(&format!(
-            "    {} [label=\"{}\" shape=ellipse style=filled fillcolor=\"#d4edda\"]\n",
-            node_id, escape_dot_label(&label)
+            "    {} [label=\"{}\" shape=ellipse style=filled fillcolor=\"{}\"]\n",
+            node_id, escape_dot_label(&label), fill
         ));
         fact_ids.push((node_id, f.to_string(), a));
     }
@@ -436,87 +469,152 @@ pub fn generate_dot(rules: &[PrologRule]) -> String {
         out.push('\n');
     }
 
-    // ── Rule subgraphs ────────────────────────────────────────────────────────
-    // Collect head node ids and condition info for cross-edge emission later.
-    let mut rule_head_ids: Vec<String> = Vec::new();
-    let mut all_cond_ids: Vec<Vec<(String, String, usize)>> = Vec::new(); // per-rule: (node_id, functor, arity)
+    // ── Build "produces" index ────────────────────────────────────────────────
+    // Maps the rendered label of each asserted term → cluster indices of the rules
+    // that assert it. Keyed by full term label (not just functor/arity) so that
+    // `assert(tumbler(1,set))` only matches the condition `tumbler(1,set)`, not
+    // every `tumbler/2` condition.
+    let mut produces: HashMap<String, Vec<usize>> = HashMap::new();
+    for (cluster_i, (_orig_i, rule)) in rule_list.iter().enumerate() {
+        for goal in &rule.body {
+            if let Some(asserted) = extract_asserted_term(goal) {
+                let key = render_prolog_term(asserted);
+                produces.entry(key).or_default().push(cluster_i);
+            }
+        }
+    }
+
+    // ── Pre-compute rule head node ids ────────────────────────────────────────
+    let rule_head_ids: Vec<String> = rule_list.iter().enumerate()
+        .map(|(ci, (_orig_i, rule))| {
+            let (hf, ha) = term_functor_arity(&rule.head);
+            format!("rule_{}_{}_{}", dot_id(hf), ha, ci)
+        })
+        .collect();
+
+    // Direct head lookup: (functor, arity) → cluster index
+    let head_by_fa: HashMap<(String, usize), usize> = rule_list.iter()
+        .enumerate()
+        .map(|(ci, (_orig_i, rule))| {
+            let (f, a) = term_functor_arity(&rule.head);
+            ((f.to_string(), a), ci)
+        })
+        .collect();
+
+    // ── Rule head nodes ───────────────────────────────────────────────────────
+    for (cluster_i, (_orig_i, rule)) in rule_list.iter().enumerate() {
+        let (hf, _ha) = term_functor_arity(&rule.head);
+        let head_id = &rule_head_ids[cluster_i];
+        let head_label = render_prolog_term(&rule.head);
+        let fill = node_fill_color(hf, coloring, "#cce5ff");
+        out.push_str(&format!(
+            "    {} [label=\"{}\" shape=box style=filled fillcolor=\"{}\" penwidth=2]\n",
+            head_id, escape_dot_label(&head_label), fill
+        ));
+    }
+    out.push('\n');
+
+    // ── Condition nodes, requires edges, and deferred edge collection ─────────
+    // all_cond_ids[cluster_i] = Vec<(node_id, functor, arity, label)>
+    let mut all_cond_ids: Vec<Vec<(String, String, usize, String)>> = Vec::new();
+    let mut assert_bridge_edges: Vec<(String, String)> = Vec::new();
+    let mut chains_to_edges: Vec<(String, String)> = Vec::new();
 
     for (cluster_i, (_orig_i, rule)) in rule_list.iter().enumerate() {
-        let (hf, ha) = term_functor_arity(&rule.head);
-        let head_id = format!("rule_{}_{}_{}", dot_id(hf), ha, cluster_i);
-        let head_label = render_prolog_term(&rule.head);
-        let cluster_label = format_rule_comment(rule);
+        let head_id = &rule_head_ids[cluster_i];
+        let mut cond_ids: Vec<(String, String, usize, String)> = Vec::new();
 
-        out.push_str(&format!("    subgraph cluster_rule_{} {{\n", cluster_i));
-        out.push_str(&format!("        label=\"{}\"\n", escape_dot_label(&cluster_label)));
-        out.push_str("        style=rounded\n");
-        out.push_str(&format!(
-            "        {} [label=\"{}\" shape=box style=filled fillcolor=\"#cce5ff\" penwidth=2]\n",
-            head_id, escape_dot_label(&head_label)
-        ));
-
-        let mut cond_ids: Vec<(String, String, usize)> = Vec::new();
         for (ci, goal) in rule.body.iter().enumerate() {
             let (term, is_neg) = match goal {
                 BodyGoal::Positive(t) => (t, false),
                 BodyGoal::Negative(t) => (t, true),
             };
+
+            // Skip meta-predicates (assert, retract, format, etc.) — they are used
+            // to build cross-rule links, not rendered as condition nodes.
+            if is_meta_predicate(term_functor_name(term)) {
+                continue;
+            }
+
+            let (cf, ca) = term_functor_arity(term);
             let cond_id = format!("cond_{}_{}", cluster_i, ci);
             let cond_label = if is_neg {
                 format!("\\\\+ {}", render_prolog_term(term))
             } else {
                 render_prolog_term(term)
             };
-            let (cf, ca) = term_functor_arity(term);
+            let fill = node_fill_color(cf, coloring, "#fff3cd");
 
-            out.push_str(&format!(
-                "        {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"#fff3cd\"]\n",
-                cond_id, escape_dot_label(&cond_label)
-            ));
-            out.push_str(&format!(
-                "        {} -> {} [label=\"requires\"]\n",
-                head_id, cond_id
-            ));
-            cond_ids.push((cond_id, cf.to_string(), ca));
-        }
-        out.push_str("    }\n\n");
+            // Assert-bridge lookup uses the full rendered term for exact matching;
+            // chains-to lookup uses functor/arity for structural matching.
+            let assert_producers = produces.get(&cond_label);
+            let chain_target = head_by_fa.get(&(cf.to_string(), ca)).copied();
 
-        rule_head_ids.push(head_id);
-        all_cond_ids.push(cond_ids);
-    }
-
-    // ── chains-to edges ───────────────────────────────────────────────────────
-    // Build (functor, arity) → head node id lookup from rules-with-bodies.
-    let head_by_fa: std::collections::HashMap<(String, usize), &str> = rule_list.iter()
-        .enumerate()
-        .map(|(ci, (_orig_i, rule))| {
-            let (f, a) = term_functor_arity(&rule.head);
-            ((f.to_string(), a), rule_head_ids[ci].as_str())
-        })
-        .collect();
-
-    let mut emitted_chain = false;
-    for cond_ids in &all_cond_ids {
-        for (cond_id, functor, arity) in cond_ids {
-            if let Some(target) = head_by_fa.get(&(functor.clone(), *arity)) {
+            if let Some(producers) = assert_producers {
+                // Assert-bridge takes precedence: emit rule-head → rule-head edges.
+                // Direction: this head requires what the producing rule asserts.
+                // No condition node emitted for this goal.
+                // TODO: consider per-edge term labels or tooltips in a future sprint.
+                for &prod_ci in producers {
+                    assert_bridge_edges.push((head_id.clone(), rule_head_ids[prod_ci].clone()));
+                }
+                // Secondary chains-to if condition also directly matches a rule head.
+                if let Some(chain_ci) = chain_target {
+                    out.push_str(&format!(
+                        "    {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"{}\"]\n",
+                        cond_id, escape_dot_label(&cond_label), fill
+                    ));
+                    out.push_str(&format!("    {} -> {} [label=\"requires\"]\n", head_id, cond_id));
+                    chains_to_edges.push((cond_id.clone(), rule_head_ids[chain_ci].clone()));
+                    cond_ids.push((cond_id, cf.to_string(), ca, cond_label));
+                }
+            } else if let Some(chain_ci) = chain_target {
+                // Chain-bridged: condition visible, chains-to edge deferred.
                 out.push_str(&format!(
-                    "    {} -> {} [label=\"chains-to\" style=dashed color=\"#1a73e8\"]\n",
-                    cond_id, target
+                    "    {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"{}\"]\n",
+                    cond_id, escape_dot_label(&cond_label), fill
                 ));
-                emitted_chain = true;
+                out.push_str(&format!("    {} -> {} [label=\"requires\"]\n", head_id, cond_id));
+                chains_to_edges.push((cond_id.clone(), rule_head_ids[chain_ci].clone()));
+                cond_ids.push((cond_id, cf.to_string(), ca, cond_label));
+            } else {
+                // Leaf condition: not produced by any rule, no direct head match.
+                out.push_str(&format!(
+                    "    {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"{}\"]\n",
+                    cond_id, escape_dot_label(&cond_label), fill
+                ));
+                out.push_str(&format!("    {} -> {} [label=\"requires\"]\n", head_id, cond_id));
+                cond_ids.push((cond_id, cf.to_string(), ca, cond_label));
             }
         }
+        all_cond_ids.push(cond_ids);
     }
-    if emitted_chain {
+    out.push('\n');
+
+    // ── Assert-bridge edges ───────────────────────────────────────────────────
+    if !assert_bridge_edges.is_empty() {
+        for (from, to) in &assert_bridge_edges {
+            out.push_str(&format!("    {} -> {} [color=\"#1a73e8\"]\n", from, to));
+        }
         out.push('\n');
     }
 
-    // ── satisfies edges ───────────────────────────────────────────────────────
-    // For each fact, find all conditions with matching functor/arity.
+    // ── Chains-to edges ───────────────────────────────────────────────────────
+    if !chains_to_edges.is_empty() {
+        for (cond_id, target) in &chains_to_edges {
+            out.push_str(&format!(
+                "    {} -> {} [label=\"chains-to\" style=dashed color=\"#1a73e8\"]\n",
+                cond_id, target
+            ));
+        }
+        out.push('\n');
+    }
+
+    // ── Satisfies edges ───────────────────────────────────────────────────────
     let mut emitted_satisfies = false;
     for (fact_node_id, fact_f, fact_a) in &fact_ids {
         for cond_ids in &all_cond_ids {
-            for (cond_id, cond_f, cond_a) in cond_ids {
+            for (cond_id, cond_f, cond_a, _) in cond_ids {
                 if fact_f == cond_f && fact_a == cond_a {
                     out.push_str(&format!(
                         "    {} -> {} [label=\"satisfies\" style=dashed color=\"#555555\"]\n",
@@ -529,6 +627,31 @@ pub fn generate_dot(rules: &[PrologRule]) -> String {
     }
     if emitted_satisfies {
         out.push('\n');
+    }
+
+    // ── Shared condition links ────────────────────────────────────────────────
+    if opts.link_shared_conditions {
+        let mut by_label: HashMap<String, Vec<String>> = HashMap::new();
+        for cond_ids in &all_cond_ids {
+            for (cond_id, _, _, label) in cond_ids {
+                by_label.entry(label.clone()).or_default().push(cond_id.clone());
+            }
+        }
+        let mut emitted_shared = false;
+        for ids in by_label.values() {
+            if ids.len() > 1 {
+                for i in 0..ids.len() - 1 {
+                    out.push_str(&format!(
+                        "    {} -> {} [style=dashed color=\"#aaaaaa\" dir=none]\n",
+                        ids[i], ids[i + 1]
+                    ));
+                    emitted_shared = true;
+                }
+            }
+        }
+        if emitted_shared {
+            out.push('\n');
+        }
     }
 
     out.push_str("}\n");
@@ -556,6 +679,34 @@ fn dot_id(s: &str) -> String {
 fn escape_dot_label(s: &str) -> String {
     s.replace('\\', "\\\\")
      .replace('"', "\\\"")
+}
+
+/// Extract the inner asserted term from `assert(X)`, `assertz(X)`, or `asserta(X)`.
+fn extract_asserted_term(goal: &BodyGoal) -> Option<&Term> {
+    if let BodyGoal::Positive(Term::Compound { functor, args }) = goal {
+        if (functor == "assert" || functor == "assertz" || functor == "asserta") && args.len() == 1 {
+            return Some(&args[0]);
+        }
+    }
+    None
+}
+
+/// Map a `TruthValue` to its DOT fill color hex string.
+fn truth_fill_color(tv: &TruthValue) -> &'static str {
+    match tv {
+        TruthValue::KnownTrue       => "#28a745",
+        TruthValue::KnownFalse      => "#dc3545",
+        TruthValue::KnownUnresolved => "#ffc107",
+        TruthValue::Unknown         => "#adb5bd",
+    }
+}
+
+/// Return the fill color for a node: truth-value override if present, else `default`.
+fn node_fill_color(functor: &str, coloring: Option<&NodeColoring>, default: &'static str) -> &'static str {
+    coloring
+        .and_then(|c| c.values.get(functor))
+        .map(truth_fill_color)
+        .unwrap_or(default)
 }
 
 fn format_rule_comment(rule: &PrologRule) -> String {

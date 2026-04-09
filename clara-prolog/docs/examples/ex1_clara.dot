@@ -4,52 +4,26 @@ digraph Clara {
     node [fontname="Helvetica" fontsize=11]
     edge [fontsize=9]
 
-    subgraph cluster_rule_0 {
-        label="unlocked :- tumbler(1,set), tumbler(2,set), tumbler(3,set)."
-        style=rounded
-        rule_unlocked_0_0 [label="unlocked" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
-        cond_0_0 [label="tumbler(1,set)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_unlocked_0_0 -> cond_0_0 [label="requires"]
-        cond_0_1 [label="tumbler(2,set)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_unlocked_0_0 -> cond_0_1 [label="requires"]
-        cond_0_2 [label="tumbler(3,set)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_unlocked_0_0 -> cond_0_2 [label="requires"]
-    }
+    rule_unlocked_0_0 [label="unlocked" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_tumbler_1_0_1 [label="tumbler_1" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_tumbler_2_0_2 [label="tumbler_2" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_tumbler_3_0_3 [label="tumbler_3" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
 
-    subgraph cluster_rule_1 {
-        label="tumbler_1 :- pick_position(3), turn(left), assert(tumbler(1,set))."
-        style=rounded
-        rule_tumbler_1_0_1 [label="tumbler_1" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
-        cond_1_0 [label="pick_position(3)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_1_0_1 -> cond_1_0 [label="requires"]
-        cond_1_1 [label="turn(left)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_1_0_1 -> cond_1_1 [label="requires"]
-        cond_1_2 [label="assert(tumbler(1,set))" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_1_0_1 -> cond_1_2 [label="requires"]
-    }
+    cond_1_0 [label="pick_position(3)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_1_0_1 -> cond_1_0 [label="requires"]
+    cond_1_1 [label="turn(left)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_1_0_1 -> cond_1_1 [label="requires"]
+    cond_2_0 [label="pick_position(1)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_2_0_2 -> cond_2_0 [label="requires"]
+    cond_2_1 [label="turn(right)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_2_0_2 -> cond_2_1 [label="requires"]
+    cond_3_0 [label="pick_position(2)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_3_0_3 -> cond_3_0 [label="requires"]
+    cond_3_1 [label="turn(left)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_3_0_3 -> cond_3_1 [label="requires"]
 
-    subgraph cluster_rule_2 {
-        label="tumbler_2 :- pick_position(1), turn(right), assert(tumbler(2,set))."
-        style=rounded
-        rule_tumbler_2_0_2 [label="tumbler_2" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
-        cond_2_0 [label="pick_position(1)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_2_0_2 -> cond_2_0 [label="requires"]
-        cond_2_1 [label="turn(right)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_2_0_2 -> cond_2_1 [label="requires"]
-        cond_2_2 [label="assert(tumbler(2,set))" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_2_0_2 -> cond_2_2 [label="requires"]
-    }
-
-    subgraph cluster_rule_3 {
-        label="tumbler_3 :- pick_position(2), turn(left), assert(tumbler(3,set))."
-        style=rounded
-        rule_tumbler_3_0_3 [label="tumbler_3" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
-        cond_3_0 [label="pick_position(2)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_3_0_3 -> cond_3_0 [label="requires"]
-        cond_3_1 [label="turn(left)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_3_0_3 -> cond_3_1 [label="requires"]
-        cond_3_2 [label="assert(tumbler(3,set))" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
-        rule_tumbler_3_0_3 -> cond_3_2 [label="requires"]
-    }
+    rule_unlocked_0_0 -> rule_tumbler_1_0_1 [color="#1a73e8"]
+    rule_unlocked_0_0 -> rule_tumbler_2_0_2 [color="#1a73e8"]
+    rule_unlocked_0_0 -> rule_tumbler_3_0_3 [color="#1a73e8"]
 
 }

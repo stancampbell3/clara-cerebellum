@@ -18,7 +18,7 @@
 use std::path::Path;
 use std::process;
 
-use clara_cycle::transduction::{decorate_source, generate_dot, parse_prolog_rules, transduce};
+use clara_cycle::transduction::{decorate_source, generate_dot, parse_prolog_rules, transduce, DotOptions};
 
 fn main() {
     let raw: Vec<String> = std::env::args().collect();
@@ -59,7 +59,7 @@ fn main() {
     let rules = parse_prolog_rules(&source);
     let decorated_pl = decorate_source(&source);
     let clp = transduce(&rules);
-    let dot = generate_dot(&rules);
+    let dot = generate_dot(&rules, None, &DotOptions::default());
 
     write_file(&pl_out.to_string_lossy(), &decorated_pl);
     write_file(&clp_out.to_string_lossy(), &clp);
