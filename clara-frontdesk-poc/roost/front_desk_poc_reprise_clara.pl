@@ -16,6 +16,14 @@ updated(Pred, Action, Context) :-
     clause(Head, _Body, Context),
     coire_publish_assert(Head),
     format('Updated ~w with action ~w in context ~p~n', [Pred, Action, Head]).
+
+% ── Clara synthetic groups (multi-clause predicates) ─────────────────────────
+% Declared dynamic so that assertz'd results trigger forward-chaining
+% notification. Mirrored as umbrella nodes in the DOT graph.
+:- dynamic(admit/2).
+:- prolog_listen(admit/2, updated(admit/2)).
+:- dynamic(suggestion/2).
+:- prolog_listen(suggestion/2, updated(suggestion/2)).
 % ── End Clara integration ───────────────────────────────────────────────────
 
 %% City of Dis Front Desk Logic (source for Clara transducer)

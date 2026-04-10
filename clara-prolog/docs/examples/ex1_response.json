@@ -1,0 +1,93 @@
+{
+  "deduction_id": "3ea20c03-c1ed-412d-b685-3ee8e8748f94",
+  "status": "converged",
+  "result": {
+    "clips_session_id": "376ed296-9d5f-406c-93e2-eaa34197586b",
+    "cycles": 3,
+    "prolog_session_id": "34fb5a67-0a96-48d6-a323-a783c6dadf62",
+    "prolog_solutions": [],
+    "status": "Converged",
+    "tableau": [
+      {
+        "args": [
+          "'/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex1_clara.pl'"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "4cdd2009-c5ff-4d71-b213-8fd3208aed52",
+        "functor": "consult",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "34fb5a67-0a96-48d6-a323-a783c6dadf62",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775851129431
+      },
+      {
+        "args": [],
+        "arity": 0,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "f1d14586-b979-43a7-b086-0ae75568ef7c",
+        "functor": "unlocked.",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "34fb5a67-0a96-48d6-a323-a783c6dadf62",
+        "source": null,
+        "truth_value": "known_false",
+        "updated_at_ms": 1775851129569
+      },
+      {
+        "args": [
+          "3"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "946b2e3e-23cd-466d-adf1-dc5c37506f3e",
+        "functor": "pick_position",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "34fb5a67-0a96-48d6-a323-a783c6dadf62",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775851129602
+      },
+      {
+        "args": [
+          "left"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "e3090586-f310-4ce2-9b25-f2c38050d9b9",
+        "functor": "turn",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "34fb5a67-0a96-48d6-a323-a783c6dadf62",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775851129679
+      },
+      {
+        "args": [
+          "1",
+          "set"
+        ],
+        "arity": 2,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "a03d2860-63a4-428f-96b2-ef7a99f50c3e",
+        "functor": "tumbler",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "34fb5a67-0a96-48d6-a323-a783c6dadf62",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775851130146
+      }
+    ]
+  },
+  "cycles": 3
+}

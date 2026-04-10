@@ -1,0 +1,40 @@
+digraph Clara {
+    rankdir=LR
+    fontname="Helvetica"
+    node [fontname="Helvetica" fontsize=11]
+    edge [fontsize=9]
+
+    rule_it_rained_0_0 [label="it_rained" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_wet_surface_0_1 [label="wet_surface" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_wet_surface_0_2 [label="wet_surface" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_not_sprinklers_0_3 [label="not_sprinklers" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_not_sprinklers_0_4 [label="not_sprinklers" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+
+    synth_not_sprinklers_0 [label="not_sprinklers/0" shape=box style=filled fillcolor="#7ba7d4" penwidth=3]
+    synth_not_sprinklers_0 -> rule_not_sprinklers_0_3 [label="clause" style=dotted color="#555555"]
+    synth_not_sprinklers_0 -> rule_not_sprinklers_0_4 [label="clause" style=dotted color="#555555"]
+    synth_wet_surface_0 [label="wet_surface/0" shape=box style=filled fillcolor="#7ba7d4" penwidth=3]
+    synth_wet_surface_0 -> rule_wet_surface_0_1 [label="clause" style=dotted color="#555555"]
+    synth_wet_surface_0 -> rule_wet_surface_0_2 [label="clause" style=dotted color="#555555"]
+
+    cond_0_0 [label="wet_surface" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_it_rained_0_0 -> cond_0_0 [label="requires"]
+    cond_0_1 [label="not_sprinklers" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_it_rained_0_0 -> cond_0_1 [label="requires"]
+    cond_1_0 [label="wet(ground)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_wet_surface_0_1 -> cond_1_0 [label="requires"]
+    cond_2_0 [label="wet(sidewalk)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_wet_surface_0_2 -> cond_2_0 [label="requires"]
+    cond_3_0 [label="wet(_)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_not_sprinklers_0_3 -> cond_3_0 [label="requires"]
+    cond_3_1 [label="day_of_week(saturday)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_not_sprinklers_0_3 -> cond_3_1 [label="requires"]
+    cond_4_0 [label="wet(_)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_not_sprinklers_0_4 -> cond_4_0 [label="requires"]
+    cond_4_1 [label="day_of_week(sunday)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_not_sprinklers_0_4 -> cond_4_1 [label="requires"]
+
+    cond_0_0 -> synth_wet_surface_0 [label="chains-to" style=dashed color="#1a73e8"]
+    cond_0_1 -> synth_not_sprinklers_0 [label="chains-to" style=dashed color="#1a73e8"]
+
+}

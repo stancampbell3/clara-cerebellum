@@ -187,8 +187,31 @@ pub fn transduce_source(prolog_source: &str) -> String {
 /// The original source is appended unchanged after the preamble.
 pub fn decorate_source(prolog_source: &str) -> String {
     let indicators = extract_dynamic_indicators(prolog_source);
-    let preamble = generate_listen_preamble(&indicators);
+    let rules = parse_prolog_rules(prolog_source);
+    let synthetic_groups = detect_multi_clause_groups(&rules, &indicators);
+    let preamble = generate_listen_preamble(&indicators, &synthetic_groups);
     format!("{}\n{}", preamble, prolog_source)
+}
+
+/// Detect predicates defined with 2+ rule clauses that are not already declared dynamic.
+///
+/// These are candidates for synthetic group treatment: declaring them dynamic makes
+/// their results available for forward-chaining notification when assertz'd by callers.
+fn detect_multi_clause_groups(rules: &[PrologRule], existing_dynamic: &[String]) -> Vec<String> {
+    let existing: HashSet<&str> = existing_dynamic.iter().map(|s| s.as_str()).collect();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for rule in rules {
+        if !rule.body.is_empty() {
+            let (f, a) = term_functor_arity(&rule.head);
+            *counts.entry(format!("{}/{}", f, a)).or_default() += 1;
+        }
+    }
+    let mut groups: Vec<String> = counts.into_iter()
+        .filter(|(k, count)| *count >= 2 && !existing.contains(k.as_str()))
+        .map(|(k, _)| k)
+        .collect();
+    groups.sort();
+    groups
 }
 
 /// Extract `Functor/Arity` indicator strings from `:- dynamic(...)` directives.
@@ -216,8 +239,9 @@ fn extract_dynamic_indicators(source: &str) -> Vec<String> {
     indicators
 }
 
-/// Build the Clara integration preamble for a set of dynamic predicate indicators.
-fn generate_listen_preamble(indicators: &[String]) -> String {
+/// Build the Clara integration preamble for a set of dynamic predicate indicators
+/// and synthetic group predicates (multi-clause predicates not already declared dynamic).
+fn generate_listen_preamble(indicators: &[String], synthetic_groups: &[String]) -> String {
     let mut out = String::new();
     out.push_str("% ── Clara integration (auto-generated) ──────────────────────────────────────\n");
     for ind in indicators {
@@ -230,6 +254,16 @@ fn generate_listen_preamble(indicators: &[String]) -> String {
     out.push_str("    clause(Head, _Body, Context),\n");
     out.push_str("    coire_publish_assert(Head),\n");
     out.push_str("    format('Updated ~w with action ~w in context ~p~n', [Pred, Action, Head]).\n");
+    if !synthetic_groups.is_empty() {
+        out.push('\n');
+        out.push_str("% ── Clara synthetic groups (multi-clause predicates) ─────────────────────────\n");
+        out.push_str("% Declared dynamic so that assertz'd results trigger forward-chaining\n");
+        out.push_str("% notification. Mirrored as umbrella nodes in the DOT graph.\n");
+        for grp in synthetic_groups {
+            out.push_str(&format!(":- dynamic({}).\n", grp));
+            out.push_str(&format!(":- prolog_listen({}, updated({})).\n", grp, grp));
+        }
+    }
     out.push_str("% ── End Clara integration ───────────────────────────────────────────────────\n");
     out
 }
@@ -492,14 +526,13 @@ pub fn generate_dot(rules: &[PrologRule], coloring: Option<&NodeColoring>, opts:
         })
         .collect();
 
-    // Direct head lookup: (functor, arity) → cluster index
-    let head_by_fa: HashMap<(String, usize), usize> = rule_list.iter()
-        .enumerate()
-        .map(|(ci, (_orig_i, rule))| {
-            let (f, a) = term_functor_arity(&rule.head);
-            ((f.to_string(), a), ci)
-        })
-        .collect();
+    // Multi-target head lookup: (functor, arity) → Vec of cluster indices.
+    // Vec because multiple rules can share the same head functor/arity (e.g. admit/2).
+    let mut head_by_fa: HashMap<(String, usize), Vec<usize>> = HashMap::new();
+    for (ci, (_orig_i, rule)) in rule_list.iter().enumerate() {
+        let (f, a) = term_functor_arity(&rule.head);
+        head_by_fa.entry((f.to_string(), a)).or_default().push(ci);
+    }
 
     // ── Rule head nodes ───────────────────────────────────────────────────────
     for (cluster_i, (_orig_i, rule)) in rule_list.iter().enumerate() {
@@ -513,6 +546,35 @@ pub fn generate_dot(rules: &[PrologRule], coloring: Option<&NodeColoring>, opts:
         ));
     }
     out.push('\n');
+
+    // ── Synthetic umbrella nodes for multi-clause predicates ──────────────────
+    // When 2+ rules share the same functor/arity head, emit a single "group" node
+    // (darker blue, heavier border) that chains-to edges point to, fanning out via
+    // "clause" edges to the concrete rule clause nodes.
+    let mut synth_ids: HashMap<(String, usize), String> = HashMap::new();
+    {
+        let mut multi: Vec<_> = head_by_fa.iter().filter(|(_, v)| v.len() > 1).collect();
+        multi.sort_by_key(|(k, _)| k.clone());
+        let mut emitted = false;
+        for ((f, a), indices) in &multi {
+            let synth_id = format!("synth_{}_{}", dot_id(f), a);
+            let first_label = format!("{}/{}", f, a);
+            let fill = node_fill_color(f, coloring, "#7ba7d4");
+            out.push_str(&format!(
+                "    {} [label=\"{}\" shape=box style=filled fillcolor=\"{}\" penwidth=3]\n",
+                synth_id, escape_dot_label(&first_label), fill
+            ));
+            for &ci in *indices {
+                out.push_str(&format!(
+                    "    {} -> {} [label=\"clause\" style=dotted color=\"#555555\"]\n",
+                    synth_id, rule_head_ids[ci]
+                ));
+            }
+            synth_ids.insert((f.to_string(), *a), synth_id);
+            emitted = true;
+        }
+        if emitted { out.push('\n'); }
+    }
 
     // ── Condition nodes, requires edges, and deferred edge collection ─────────
     // all_cond_ids[cluster_i] = Vec<(node_id, functor, arity, label)>
@@ -529,6 +591,36 @@ pub fn generate_dot(rules: &[PrologRule], coloring: Option<&NodeColoring>, opts:
                 BodyGoal::Positive(t) => (t, false),
                 BodyGoal::Negative(t) => (t, true),
             };
+
+            // Special case: findall/3 — extract the Goal arg (args[1]) as a visible
+            // condition node so that callers of findall are linked to the collected
+            // predicate's rule(s) in the graph.
+            if !is_neg {
+                if let Term::Compound { functor, args } = term {
+                    if functor == "findall" && args.len() == 3 {
+                        let inner = &args[1];
+                        let (if_, ia) = term_functor_arity(inner);
+                        if !is_meta_predicate(if_) {
+                            let inner_label = render_prolog_term(inner);
+                            let inner_cond_id = format!("cond_{}_{}c", cluster_i, ci);
+                            let fill = node_fill_color(if_, coloring, "#fff3cd");
+                            out.push_str(&format!(
+                                "    {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"{}\"]\n",
+                                inner_cond_id, escape_dot_label(&inner_label), fill
+                            ));
+                            out.push_str(&format!(
+                                "    {} -> {} [label=\"collects\"]\n",
+                                head_id, inner_cond_id
+                            ));
+                            if let Some(target) = resolve_chain_target(if_, ia, &head_by_fa, &rule_head_ids, &synth_ids) {
+                                chains_to_edges.push((inner_cond_id.clone(), target));
+                            }
+                            cond_ids.push((inner_cond_id, if_.to_string(), ia, inner_label));
+                        }
+                        continue;
+                    }
+                }
+            }
 
             // Skip meta-predicates (assert, retract, format, etc.) — they are used
             // to build cross-rule links, not rendered as condition nodes.
@@ -548,7 +640,7 @@ pub fn generate_dot(rules: &[PrologRule], coloring: Option<&NodeColoring>, opts:
             // Assert-bridge lookup uses the full rendered term for exact matching;
             // chains-to lookup uses functor/arity for structural matching.
             let assert_producers = produces.get(&cond_label);
-            let chain_target = head_by_fa.get(&(cf.to_string(), ca)).copied();
+            let chain_target = resolve_chain_target(cf, ca, &head_by_fa, &rule_head_ids, &synth_ids);
 
             if let Some(producers) = assert_producers {
                 // Assert-bridge takes precedence: emit rule-head → rule-head edges.
@@ -559,23 +651,23 @@ pub fn generate_dot(rules: &[PrologRule], coloring: Option<&NodeColoring>, opts:
                     assert_bridge_edges.push((head_id.clone(), rule_head_ids[prod_ci].clone()));
                 }
                 // Secondary chains-to if condition also directly matches a rule head.
-                if let Some(chain_ci) = chain_target {
+                if let Some(target) = chain_target {
                     out.push_str(&format!(
                         "    {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"{}\"]\n",
                         cond_id, escape_dot_label(&cond_label), fill
                     ));
                     out.push_str(&format!("    {} -> {} [label=\"requires\"]\n", head_id, cond_id));
-                    chains_to_edges.push((cond_id.clone(), rule_head_ids[chain_ci].clone()));
+                    chains_to_edges.push((cond_id.clone(), target));
                     cond_ids.push((cond_id, cf.to_string(), ca, cond_label));
                 }
-            } else if let Some(chain_ci) = chain_target {
+            } else if let Some(target) = chain_target {
                 // Chain-bridged: condition visible, chains-to edge deferred.
                 out.push_str(&format!(
                     "    {} [label=\"{}\" shape=ellipse style=\"filled,dashed\" fillcolor=\"{}\"]\n",
                     cond_id, escape_dot_label(&cond_label), fill
                 ));
                 out.push_str(&format!("    {} -> {} [label=\"requires\"]\n", head_id, cond_id));
-                chains_to_edges.push((cond_id.clone(), rule_head_ids[chain_ci].clone()));
+                chains_to_edges.push((cond_id.clone(), target));
                 cond_ids.push((cond_id, cf.to_string(), ca, cond_label));
             } else {
                 // Leaf condition: not produced by any rule, no direct head match.
@@ -679,6 +771,29 @@ fn dot_id(s: &str) -> String {
 fn escape_dot_label(s: &str) -> String {
     s.replace('\\', "\\\\")
      .replace('"', "\\\"")
+}
+
+/// Resolve the chains-to target node id for a condition with functor `f` / arity `a`.
+///
+/// Returns the synth umbrella node id when 2+ rules share that head functor/arity,
+/// or the single concrete rule head node id when only one rule matches.
+/// Returns `None` if no rule head matches.
+fn resolve_chain_target(
+    f: &str,
+    a: usize,
+    head_by_fa: &HashMap<(String, usize), Vec<usize>>,
+    rule_head_ids: &[String],
+    synth_ids: &HashMap<(String, usize), String>,
+) -> Option<String> {
+    head_by_fa.get(&(f.to_string(), a)).map(|indices| {
+        if indices.len() == 1 {
+            rule_head_ids[indices[0]].clone()
+        } else {
+            synth_ids.get(&(f.to_string(), a))
+                .cloned()
+                .unwrap_or_else(|| rule_head_ids[indices[0]].clone())
+        }
+    })
 }
 
 /// Extract the inner asserted term from `assert(X)`, `assertz(X)`, or `asserta(X)`.
