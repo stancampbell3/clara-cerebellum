@@ -28,7 +28,9 @@
 
 // ── Shared AST ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Term {
     Atom(String),
     Variable(String),

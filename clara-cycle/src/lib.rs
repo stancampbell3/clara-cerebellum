@@ -34,8 +34,8 @@ pub mod transduction;
 
 pub use controller::CycleController;
 pub use error::CycleError;
-pub use result::{CoireSnapshot, CycleStatus, DeductionResult};
+pub use result::{CoireSnapshot, CycleStatus, DeductionResult, InMemoryTraceEntry};
 pub use session::DeductionSession;
 pub use clara_coire::CoireStore;
 pub use clara_dagda::{Binding, Dagda, Kind, PredicateEntry, TruthValue};
-pub use transduction::{DotOptions, NodeColoring};
+pub use transduction::{coloring_from_entries, generate_dot, DotOptions, NodeColoring, PrologRule, parse_prolog_rules};

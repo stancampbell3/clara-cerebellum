@@ -217,6 +217,16 @@ impl CarrionPicker {
             cache_evicted += n;
         }
 
+        // ── Pass 4: source registry + artifact GC ────────────────────────────
+        match self.store.sources.sweep_expired(now_ms) {
+            Ok(n) if n > 0 => log::debug!(
+                "CarrionPicker: swept {} expired source/artifact row(s)",
+                n
+            ),
+            Ok(_) => {}
+            Err(e) => log::warn!("CarrionPicker: source sweep failed: {}", e),
+        }
+
         (snaps_deleted, events_deleted, cache_evicted)
     }
 }
@@ -368,6 +378,9 @@ mod tests {
             expires_at_ms:     now_ms - 1,
             context:           vec![],
             tableau_entries:   serde_json::json!([]),
+            prolog_source_id:  None,
+            clips_source_id:   None,
+            dot_artifact_id:   None,
         };
         store.save_snapshot(&snap).unwrap();
 
@@ -443,6 +456,9 @@ mod tests {
             expires_at_ms:     now_ms - 1,   // already expired
             context:           vec![],
             tableau_entries:   serde_json::json!([]),
+            prolog_source_id:  None,
+            clips_source_id:   None,
+            dot_artifact_id:   None,
         };
         store.save_snapshot(&snap).unwrap();
 

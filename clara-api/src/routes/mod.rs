@@ -5,6 +5,8 @@ pub mod eval;
 pub mod devils;
 pub mod deduce;
 pub mod coire;
+pub mod trace;
+pub mod source;
 
 use actix_web::web;
 
@@ -44,6 +46,15 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/deduce/{id}",                 web::delete().to(deduce::interrupt_deduce))
             .route("/deduce/{id}/snapshot",        web::get().to(deduce::get_snapshot))
             .route("/deduce/{id}/snapshot",        web::delete().to(deduce::delete_snapshot))
+            // Trace visualization — literal sub-paths before parameterised ones
+            .route("/deduce/{id}/trace",                              web::get().to(trace::list_trace))
+            .route("/deduce/{id}/trace/{change_id}/dot",              web::get().to(trace::trace_dot))
+            .route("/deduce/{id}/trace/{change_id}/entries",          web::get().to(trace::trace_entries))
+            // Source registry
+            .route("/source",                                         web::post().to(source::register_source))
+            .route("/source/{id}",                                    web::get().to(source::get_source))
+            .route("/source/{id}/artifact/{type}",                    web::get().to(source::get_source_artifact))
+            .route("/source/{id}",                                    web::delete().to(source::delete_source))
             // Coire observability / push hooks
             .route("/cycle/coire/snapshot", web::get().to(coire::snapshot))
             .route("/cycle/coire/push",     web::post().to(coire::push))

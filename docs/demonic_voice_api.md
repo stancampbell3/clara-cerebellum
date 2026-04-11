@@ -415,12 +415,15 @@ Start an asynchronous deduction run. Returns `202 Accepted` immediately.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `prolog_clauses` | `string[]` | `[]` | Prolog facts and rules to seed the Prolog engine |
-| `clips_constructs` | `string[]` | `[]` | CLIPS constructs to seed the CLIPS engine |
-| `clips_file` | `string\|null` | `null` | Server-side path to a `.clp` file loaded before `clips_constructs` |
+| `prolog_clauses` | `string[]` | `[]` | Prolog facts and rules to seed the Prolog engine. Ignored when `prolog_source_id` is set. |
+| `clips_constructs` | `string[]` | `[]` | CLIPS constructs to seed the CLIPS engine. Ignored when `clips_source_id` is set. |
+| `clips_file` | `string\|null` | `null` | Server-side path to a `.clp` file loaded before `clips_constructs`. Ignored when `clips_source_id` is set. |
+| `prolog_source_id` | `uuid\|null` | `null` | Pre-registered Prolog source from `POST /source`. Supersedes `prolog_clauses`. Enables artifact caching for trace DOT generation. |
+| `clips_source_id` | `uuid\|null` | `null` | Pre-registered CLIPS source from `POST /source`. Supersedes `clips_file` and `clips_constructs`. |
 | `initial_goal` | `string\|null` | `null` | Prolog goal executed on the first cycle |
 | `max_cycles` | `uint\|null` | `100` | Maximum Prolog↔CLIPS cycles before aborting |
 | `persist` | `bool` | `false` | Save a `DeductionSnapshot` at completion (requires Coire store) |
+| `trace` | `bool` | `false` | Record a Dagda tableau snapshot after each relay phase. With a store, written to `tableau_changes` and queryable via `GET /deduce/{id}/trace`. Without a store, returned inline in `DeductionResult.trace`. |
 | `context` | `object[]` | `[]` | Conversational context injected into the session; available to Prolog via `current_context/1` and forwarded to LLM evaluate calls |
 
 **Response `202`:**
@@ -503,6 +506,7 @@ run.
 | `deduction_id` | UUID | required | `deduction_id` from the original run's response |
 | `max_cycles` | `uint\|null` | snapshot value | Override the cycle budget for the resumed run |
 | `persist` | `bool` | `false` | Save a new snapshot at completion to allow further chained resumes |
+| `trace` | `bool` | `false` | Enable per-phase tableau recording for this resumed run |
 | `context` | `object[]\|null` | snapshot value | Override the conversational context; uses the snapshot's context if omitted |
 
 **Response `202`:**
@@ -542,6 +546,220 @@ Explicitly delete a persisted snapshot and its associated Coire events.
   "status":       "deleted"
 }
 ```
+
+---
+
+## Trace Visualization
+
+When a deduction is run with `trace: true` and persistence is configured,
+the Dagda tableau state is recorded after each relay phase. These endpoints
+expose the recorded phases and produce colorized DOT graphs for step-by-step
+reasoning visualization.
+
+All trace endpoints require the Coire store to be configured; they return
+`503 Service Unavailable` if not.
+
+### GET /deduce/{id}/trace
+
+List all recorded tableau phases for a deduction run, ordered by cycle number
+and recording time. Returns metadata only — use the sub-endpoints for data.
+
+**Response `200`:**
+```json
+{
+  "trace": [
+    {
+      "change_id":      "c1d2e3f4-...",
+      "deduction_id":   "f7a3e2b1-...",
+      "cycle_num":      0,
+      "phase":          "initial",
+      "event_origin":   null,
+      "event_type":     null,
+      "recorded_at_ms": 1744286400000
+    },
+    {
+      "change_id":      "d2e3f4a5-...",
+      "deduction_id":   "f7a3e2b1-...",
+      "cycle_num":      0,
+      "phase":          "prolog_to_clips",
+      "event_origin":   "prolog",
+      "event_type":     "assert",
+      "recorded_at_ms": 1744286400050
+    }
+  ]
+}
+```
+
+| Phase | When recorded |
+|-------|---------------|
+| `initial` | Before the first cycle |
+| `prolog_to_clips` | After each Prolog → CLIPS relay |
+| `clips_to_prolog` | After each CLIPS → Prolog relay |
+| `final_converged` | At convergence |
+| `final_interrupted` | When interrupted |
+| `final_max_cycles` | When the cycle budget is exhausted |
+
+---
+
+### GET /deduce/{id}/trace/{change_id}/dot
+
+Return a colorized Graphviz DOT graph for one recorded phase. Node fill colors
+reflect the Dagda truth values at that phase. Requires `prolog_source_id` to be
+set on the deduction's snapshot.
+
+**Response `200`:** `text/plain; charset=utf-8` — raw DOT source.
+
+**Response `422`** if no `prolog_source_id` is on the snapshot.
+**Response `404`** if the `change_id` is unknown or belongs to a different deduction.
+
+Truth-value fill colors:
+
+| Color | Truth value |
+|-------|-------------|
+| `#28a745` (green) | `KnownTrue` |
+| `#dc3545` (red) | `KnownFalse` |
+| `#ffc107` (amber) | `KnownUnresolved` — mixed entries for the same functor |
+| `#adb5bd` (gray) | `Unknown` |
+
+---
+
+### GET /deduce/{id}/trace/{change_id}/entries
+
+Return the raw `PredicateEntry` slice recorded at one phase.
+
+**Response `200`:**
+```json
+{
+  "change_id":      "c1d2e3f4-...",
+  "deduction_id":   "f7a3e2b1-...",
+  "cycle_num":      0,
+  "phase":          "prolog_to_clips",
+  "recorded_at_ms": 1744286400050,
+  "entries": [
+    {
+      "entry_id":    "a1b2c3d4-...",
+      "session_id":  "f7a3e2b1-...",
+      "kind":        "Predicate",
+      "functor":     "eligible",
+      "arity":       1,
+      "source":      "prolog",
+      "bound_vars":  ["X"],
+      "bindings":    [{"var": "X", "val": "alice"}],
+      "truth_value": "KnownTrue",
+      "parent_id":   null
+    }
+  ]
+}
+```
+
+**Response `404`** if the `change_id` is unknown or belongs to a different deduction.
+
+---
+
+## Source Registry
+
+The source registry is a content-addressed store for Prolog and CLIPS source
+files and their derived artifacts (DOT graphs, parsed rule JSON). Sources are
+deduplicated by `(SHA-256 of content, source_type)` — uploading the same
+content twice returns the existing `source_id` without creating a new row.
+
+Registering sources before running a deduction enables:
+
+- `prolog_source_id` / `clips_source_id` fields in `POST /deduce`, avoiding
+  redundant re-upload of known sources.
+- Cached `"parsed_rules"` artifacts for fast DOT generation during trace
+  playback.
+- Pre-generated uncolored DOT via `GET /source/{id}/artifact/dot`.
+
+All source endpoints require the Coire store to be configured; they return
+`503 Service Unavailable` if not.
+
+---
+
+### POST /source
+
+Register a Prolog or CLIPS source file.
+
+**Request:**
+```json
+{
+  "source_type": "prolog",
+  "label":       "fire_alarm",
+  "content":     "fire(Where) :- smoke(Where).\nalarm(Place) :- fire(Place).",
+  "ttl_ms":      null
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `source_type` | `string` | required | `"prolog"` or `"clips"` |
+| `label` | `string\|null` | `null` | Optional human-readable label |
+| `content` | `string` | required | Raw source text |
+| `ttl_ms` | `int\|null` | `null` | Milliseconds from now until expiry; `null` = no expiry |
+
+**Response `201 Created`** — new source registered:
+```json
+{ "source_id": "3fa85f64-...", "is_new": true }
+```
+
+**Response `200 OK`** — identical content already registered:
+```json
+{ "source_id": "3fa85f64-...", "is_new": false }
+```
+
+---
+
+### GET /source/{id}
+
+Retrieve a registered source by ID, including its full content.
+
+**Response `200`:**
+```json
+{
+  "source_id":     "3fa85f64-...",
+  "content_hash":  "sha256hex...",
+  "source_type":   "prolog",
+  "label":         "fire_alarm",
+  "content":       "fire(Where) :- smoke(Where).\n...",
+  "created_at_ms": 1744286400000,
+  "expires_at_ms": null
+}
+```
+
+**Response `404`** if the source ID is unknown.
+
+---
+
+### GET /source/{id}/artifact/{type}
+
+Retrieve (or lazily generate) a derived artifact for a source.
+
+Supported `type` values:
+
+| Type | Content-Type | Description |
+|------|-------------|-------------|
+| `parsed_rules` | `application/json` | JSON-serialized `Vec<PrologRule>` (Prolog sources only) |
+| `dot` | `text/plain` | Uncolored DOT graph (Prolog sources only) |
+
+The generator runs at most once per `(source_id, type)` pair and the result is
+cached. Returns `400 Bad Request` for unsupported types.
+
+**Response `200`:** artifact content in the appropriate `Content-Type`.
+
+**Response `404`** if the source ID is unknown.
+
+---
+
+### DELETE /source/{id}
+
+Delete a registered source and cascade-delete all its cached artifacts.
+
+**Response `200`:**
+```json
+{ "source_id": "3fa85f64-...", "status": "deleted" }
+```
+
+**Response `404`** if the source ID is unknown.
 
 ---
 

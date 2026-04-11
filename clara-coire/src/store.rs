@@ -48,6 +48,18 @@ pub struct DeductionSnapshot {
     /// Empty array for snapshots created before this field existed.
     #[serde(default)]
     pub tableau_entries:   serde_json::Value,
+    /// FK into `source_registry` for the Prolog source used in this run.
+    /// Present when the deduce request was made with a `prolog_source_id` or
+    /// when inline clauses were auto-registered.
+    #[serde(default)]
+    pub prolog_source_id:  Option<Uuid>,
+    /// FK into `source_registry` for the CLIPS source.
+    #[serde(default)]
+    pub clips_source_id:   Option<Uuid>,
+    /// FK into `source_artifacts` for the pre-generated base DOT (uncolored).
+    /// Populated on the first trace request if not set at deduction time.
+    #[serde(default)]
+    pub dot_artifact_id:   Option<Uuid>,
 }
 
 /// A single row from the `tableau_changes` table — one snapshot of the
@@ -82,6 +94,8 @@ pub struct TableauChange {
 #[derive(Clone)]
 pub struct CoireStore {
     conn: Arc<Mutex<Connection>>,
+    /// Content-addressed source registry sharing the same DB connection.
+    pub sources: crate::source::SourceRegistry,
 }
 
 impl CoireStore {
@@ -133,14 +147,40 @@ impl CoireStore {
             CREATE INDEX IF NOT EXISTS idx_tableau_changes_deduction
                 ON tableau_changes (deduction_id);
             CREATE INDEX IF NOT EXISTS idx_tableau_changes_deduction_cycle
-                ON tableau_changes (deduction_id, cycle_num);",
+                ON tableau_changes (deduction_id, cycle_num);
+
+            CREATE TABLE IF NOT EXISTS source_registry (
+                source_id     VARCHAR NOT NULL PRIMARY KEY,
+                content_hash  VARCHAR NOT NULL,
+                source_type   VARCHAR NOT NULL,
+                label         VARCHAR,
+                content       VARCHAR NOT NULL,
+                created_at_ms BIGINT  NOT NULL,
+                expires_at_ms BIGINT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_source_hash_type
+                ON source_registry (content_hash, source_type);
+
+            CREATE TABLE IF NOT EXISTS source_artifacts (
+                artifact_id      VARCHAR NOT NULL PRIMARY KEY,
+                source_id        VARCHAR NOT NULL,
+                artifact_type    VARCHAR NOT NULL,
+                content          VARCHAR NOT NULL,
+                generated_at_ms  BIGINT  NOT NULL,
+                expires_at_ms    BIGINT
+            );
+            CREATE INDEX IF NOT EXISTS idx_artifact_source_type
+                ON source_artifacts (source_id, artifact_type);",
         )?;
         // Migrations: add columns to stores created before these fields existed.
         // We check information_schema first because some DuckDB versions silently
         // ignore ADD COLUMN IF NOT EXISTS with NOT NULL DEFAULT on existing tables.
         for (col, definition) in [
-            ("context",         "context         VARCHAR NOT NULL DEFAULT '[]'"),
-            ("tableau_entries", "tableau_entries  VARCHAR NOT NULL DEFAULT '[]'"),
+            ("context",          "context          VARCHAR NOT NULL DEFAULT '[]'"),
+            ("tableau_entries",  "tableau_entries  VARCHAR NOT NULL DEFAULT '[]'"),
+            ("prolog_source_id", "prolog_source_id VARCHAR"),
+            ("clips_source_id",  "clips_source_id  VARCHAR"),
+            ("dot_artifact_id",  "dot_artifact_id  VARCHAR"),
         ] {
             let exists: bool = conn
                 .query_row(
@@ -165,8 +205,10 @@ impl CoireStore {
                 }
             }
         }
+        let conn = Arc::new(Mutex::new(conn));
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            sources: crate::source::SourceRegistry::new(conn.clone()),
+            conn,
         })
     }
 
@@ -342,8 +384,9 @@ impl CoireStore {
                 (deduction_id, prolog_clauses, clips_constructs, clips_file,
                  initial_goal, max_cycles, status, cycles_run,
                  prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
-                 context, tableau_entries)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 context, tableau_entries,
+                 prolog_source_id, clips_source_id, dot_artifact_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (deduction_id) DO UPDATE SET
                 prolog_clauses    = excluded.prolog_clauses,
                 clips_constructs  = excluded.clips_constructs,
@@ -357,7 +400,10 @@ impl CoireStore {
                 created_at_ms     = excluded.created_at_ms,
                 expires_at_ms     = excluded.expires_at_ms,
                 context           = excluded.context,
-                tableau_entries   = excluded.tableau_entries",
+                tableau_entries   = excluded.tableau_entries,
+                prolog_source_id  = excluded.prolog_source_id,
+                clips_source_id   = excluded.clips_source_id,
+                dot_artifact_id   = excluded.dot_artifact_id",
             duckdb::params![
                 snap.deduction_id.to_string(),
                 clauses,
@@ -373,6 +419,9 @@ impl CoireStore {
                 snap.expires_at_ms,
                 context,
                 tableau_entries,
+                snap.prolog_source_id.map(|u| u.to_string()),
+                snap.clips_source_id.map(|u| u.to_string()),
+                snap.dot_artifact_id.map(|u| u.to_string()),
             ],
         )?;
         log::info!("CoireStore: saved snapshot {}", snap.deduction_id);
@@ -387,7 +436,8 @@ impl CoireStore {
             "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
                     initial_goal, max_cycles, status, cycles_run,
                     prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
-                    context, tableau_entries
+                    context, tableau_entries,
+                    prolog_source_id, clips_source_id, dot_artifact_id
              FROM deduction_snapshots
              WHERE deduction_id = ?",
         )?;
@@ -407,6 +457,9 @@ impl CoireStore {
                 row.get::<_, i64>(11)?,
                 row.get::<_, String>(12)?,
                 row.get::<_, String>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         })?;
         match rows.next() {
@@ -414,7 +467,8 @@ impl CoireStore {
             Some(row) => {
                 let (did, clauses_s, constructs_s, clips_file, initial_goal,
                      max_cycles, status, cycles_run, prolog_sid, clips_sid,
-                     created_at_ms, expires_at_ms, context_s, tableau_s) = row?;
+                     created_at_ms, expires_at_ms, context_s, tableau_s,
+                     prolog_source_id_s, clips_source_id_s, dot_artifact_id_s) = row?;
                 Ok(Some(DeductionSnapshot {
                     deduction_id:      Uuid::parse_str(&did).unwrap(),
                     prolog_clauses:    serde_json::from_str(&clauses_s)?,
@@ -430,6 +484,9 @@ impl CoireStore {
                     expires_at_ms,
                     context:           serde_json::from_str(&context_s).unwrap_or_default(),
                     tableau_entries:   serde_json::from_str(&tableau_s).unwrap_or_default(),
+                    prolog_source_id:  prolog_source_id_s.and_then(|s| s.parse().ok()),
+                    clips_source_id:   clips_source_id_s.and_then(|s| s.parse().ok()),
+                    dot_artifact_id:   dot_artifact_id_s.and_then(|s| s.parse().ok()),
                 }))
             }
         }
@@ -541,6 +598,9 @@ impl CoireStore {
                 expires_at_ms,
                 context:           serde_json::from_str(&context_s).unwrap_or_default(),
                 tableau_entries:   serde_json::json!([]),
+                prolog_source_id:  None,
+                clips_source_id:   None,
+                dot_artifact_id:   None,
             });
         }
         Ok(snaps)
@@ -594,6 +654,50 @@ impl CoireStore {
             deduction_id, cycle_num, phase
         );
         Ok(())
+    }
+
+    /// Return a single `TableauChange` row by its `change_id`. Returns `None`
+    /// if the row does not exist.
+    pub fn get_tableau_change(&self, change_id: Uuid) -> CoireResult<Option<TableauChange>> {
+        let conn = self.conn.lock().unwrap();
+        let cid  = change_id.to_string();
+        let result = conn.query_row(
+            "SELECT change_id, deduction_id, cycle_num, phase,
+                    event_origin, event_type, event_data, entries_json, recorded_at_ms
+             FROM tableau_changes WHERE change_id = ?",
+            duckdb::params![cid],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        );
+        match result {
+            Ok((change_id_s, did_s, cycle_num, phase, event_origin,
+                event_type, event_data, entries_json, recorded_at_ms)) => {
+                Ok(Some(TableauChange {
+                    change_id:     Uuid::parse_str(&change_id_s).unwrap(),
+                    deduction_id:  Uuid::parse_str(&did_s).unwrap(),
+                    cycle_num:     cycle_num as u32,
+                    phase,
+                    event_origin,
+                    event_type,
+                    event_data,
+                    entries_json,
+                    recorded_at_ms,
+                }))
+            }
+            Err(duckdb::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Return all recorded tableau changes for a deduction run, ordered by
@@ -843,6 +947,9 @@ mod tests {
             expires_at_ms,
             context:           vec![],
             tableau_entries:   serde_json::json!([]),
+            prolog_source_id:  None,
+            clips_source_id:   None,
+            dot_artifact_id:   None,
         };
         store.save_snapshot(&snap).unwrap();
         (snap, prolog_id, clips_id)

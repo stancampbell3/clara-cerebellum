@@ -6,6 +6,10 @@ whenever any body condition is asserted as a CLIPS fact. The result is
 **agenda-driven, partial-information reasoning**: Prolog is asked to prove a
 goal even when only one of its preconditions is currently known.
 
+The same parsed rule representation also drives **DOT graph visualization** —
+a static dependency diagram of the rule set that can be colorized with live
+truth values from the Dagda tableau during trace playback.
+
 ---
 
 ## Concept
@@ -21,18 +25,21 @@ evaluation.
 Prolog source (.pl)
       │
       ▼  parse_prolog_rules()
-  PrologRule { head, body: [BodyGoal::Positive, ...] }
+  Vec<PrologRule> { head: Term, body: Vec<BodyGoal> }
       │
-      ▼  transduce()
-  CLIPS defrule source (.clp)
+      ├──▶  transduce()
+      │         CLIPS defrule source (.clp)
+      │         loaded by clara-cycle before CLIPS constructs at runtime
       │
-      │  loaded by clara-cycle before CLIPS constructs at runtime
+      │         assert(smoke(kitchen)) → relay → (smoke kitchen) in CLIPS
+      │           ↳ transduced-fire-on-smoke-0 fires
+      │           ↳ (coire-publish-goal "fire(kitchen)")
+      │           ↳ relay forwards goal event → Prolog
+      │           ↳ consume_coire_events() calls fire(kitchen)
       │
-      │  assert(smoke(kitchen)) → relay → (smoke kitchen) in CLIPS
-      │    ↳ transduced-fire-on-smoke-0 fires
-      │    ↳ (coire-publish-goal "fire(kitchen)")
-      │    ↳ relay forwards goal event → Prolog
-      │    ↳ consume_coire_events() calls fire(kitchen)
+      └──▶  generate_dot(rules, coloring?, opts)
+                DOT graph — node fill colors reflect Dagda truth values
+                cached as "dot" / "parsed_rules" artifacts in source_registry
 ```
 
 ---
@@ -128,6 +135,62 @@ Bare facts (`mortal(stan).`) have no body and produce no defrules.
 
 ---
 
+## DOT Graph Generation
+
+`generate_dot(rules, coloring, opts)` converts a `Vec<PrologRule>` into a
+Graphviz DOT string that visualizes the rule/fact dependency graph.
+
+### Node types
+
+| Shape | Default fill | Meaning |
+|-------|-------------|---------|
+| Ellipse | `#d4edda` (green) | Bare fact — no body goals |
+| Box | `#cfe2ff` (blue) | Rule head with at least one body goal |
+| Dashed ellipse | `#fff3cd` (amber) | Leaf condition — not bridged to another head |
+
+### Edge types
+
+| Style | Color | Label | Meaning |
+|-------|-------|-------|---------|
+| Solid | Black | `requires` | Rule head → leaf condition |
+| Solid | Blue | *(none)* | Assert-bridge: head A → head B when A's condition is asserted by B |
+| Dashed | Blue | `chains-to` | Condition → rule head whose functor/arity it directly matches |
+| Dashed | Gray | `satisfies` | Fact → condition whose functor/arity it matches |
+| Dashed | Gray | *(undirected)* | Shared-condition link, when `DotOptions.link_shared_conditions = true` |
+
+### Truth-value coloring
+
+When a `NodeColoring` is supplied (built from a Dagda tableau snapshot via
+`coloring_from_entries`), structural fill colors are replaced by:
+
+| Color | Truth value |
+|-------|-------------|
+| `#28a745` (green) | `KnownTrue` |
+| `#dc3545` (red) | `KnownFalse` |
+| `#ffc107` (amber) | `KnownUnresolved` — mixed or conflicting entries for the same functor |
+| `#adb5bd` (gray) | `Unknown` |
+
+Nodes absent from the tableau keep their structural defaults.
+
+### `coloring_from_entries`
+
+Builds a `NodeColoring` from a `&[PredicateEntry]` tableau snapshot.
+
+Each entry contributes its functor → truth value. When multiple entries share
+the same functor (e.g. `tumbler/2` with different concrete arguments), values
+are merged:
+
+- All entries agree → use that value.
+- Any disagreement (including `KnownTrue` + `KnownFalse`) → `KnownUnresolved` (amber).
+
+### `DotOptions`
+
+| Field | Default | Effect |
+|-------|---------|--------|
+| `link_shared_conditions` | `false` | When `true`, adds dashed gray undirected edges between condition nodes that share the same label across rules. Useful for identifying shared sub-goals. |
+
+---
+
 ## CLI Usage
 
 ```
@@ -194,45 +257,110 @@ lemonade(Drink) :- sour(Drink), sweet(Drink), coire_publish_assert(lemonade(Drin
     (coire-publish-goal (str-cat "lemonade(" ?Drink ")")))
 ```
 
-The decorated `.pl` is the file you load into SWI-Prolog. The `.clp` is referenced
-in the `clips_file` field of the deduce request (see **Integration** below).
+The decorated `.pl` is the file you load into SWI-Prolog. The `.clp` is passed
+as `clips_file` in the deduce request, or registered as a CLIPS source via
+`POST /source` and referenced by `clips_source_id`.
 
 > **Note:** Feed `--decorate` plain (undecorated) Prolog rules. If a rule already
 > contains `coire_publish_assert` in its body it will be treated as a regular goal
-> and an additional decoration will be appended — exactly like any other predicate.
-> `test4.pl` shows what the decorated output is meant to look like, not a valid input.
+> and an additional decoration will be appended. `test4.pl` shows what the
+> decorated output is meant to look like, not a valid input.
 
 ---
 
 ## Integration with clara-cycle / Deduce API
 
-The transduced `.clp` file is passed to a deduce request via the `clips_file`
-option. Clara-cycle loads it before any `clips_constructs` so the defrules are
-in place when the relay begins asserting facts.
+### Using `clips_file` (server-side path)
 
-Example deduce request body:
+The transduced `.clp` file can be passed to a deduce request via `clips_file`.
+Clara-cycle loads it before any `clips_constructs` so the defrules are in place
+when the relay begins asserting facts.
 
 ```json
 {
-  "clauses": [
+  "prolog_clauses": [
     "fire(Where) :- smoke(Where).",
     "alarm(Where) :- smoke(Where)."
   ],
-  "goal": "fire(kitchen)",
-  "clips_file": "/path/to/fire_alarm_transduced.clp",
-  "clips_constructs": [],
-  "max_cycles": 50
+  "initial_goal": "fire(kitchen)",
+  "clips_file":   "/path/to/fire_alarm_transduced.clp",
+  "max_cycles":   50
 }
 ```
 
-The typical workflow:
+### Using registered sources (preferred for trace visualization)
 
-1. Author Prolog rules in a `.pl` file.
-2. Run `transduction rules.pl rules.clp` to generate the CLIPS defrules.
-3. Place `rules.clp` where the server can read it.
-4. Reference it in the `clips_file` field of the deduce request.
-5. At runtime, when Prolog asserts a fact that matches a rule body, CLIPS fires
-   the corresponding defrule and pushes the head goal back to Prolog.
+Register both the Prolog and CLIPS sources via `POST /source` and supply their
+IDs in the deduce request. This enables:
+
+- **Content-addressed dedup** — the same source uploaded twice returns the
+  same ID without duplicating storage.
+- **Artifact caching** — the first `GET /deduce/{id}/trace/{change_id}/dot`
+  call parses the Prolog source and caches the result as a `"parsed_rules"`
+  artifact. Subsequent calls deserialize the cached JSON instead of re-parsing.
+- **Colorized DOT graphs** — truth values from the Dagda tableau are overlaid
+  on the cached rule graph at each recorded phase.
+
+```bash
+# Register Prolog source
+PROLOG_SRC=$(curl -s -X POST http://localhost:8080/source \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "source_type": "prolog",
+    "label":       "fire_alarm",
+    "content":     "fire(Where) :- smoke(Where).\nalarm(Place) :- fire(Place)."
+  }' | jq -r .source_id)
+
+# Register CLIPS source
+CLIPS_SRC=$(curl -s -X POST http://localhost:8080/source \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "source_type": "clips",
+    "label":       "fire_alarm_transduced",
+    "content":     "(defrule transduced-fire-on-smoke-0 ...)"
+  }' | jq -r .source_id)
+
+# Run a traced deduction
+curl -s -X POST http://localhost:8080/deduce \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"prolog_source_id\": \"$PROLOG_SRC\",
+    \"clips_source_id\":  \"$CLIPS_SRC\",
+    \"initial_goal\":     \"fire(kitchen)\",
+    \"trace\":            true,
+    \"persist\":          true
+  }"
+```
+
+### Trace playback workflow
+
+```
+POST /source          →  register Prolog source, get source_id
+POST /deduce          →  prolog_source_id + trace: true + persist: true
+GET  /deduce/{id}     →  poll until converged
+GET  /deduce/{id}/trace               →  list phases
+GET  /deduce/{id}/trace/{cid}/dot     →  colorized DOT (text/plain)
+GET  /deduce/{id}/trace/{cid}/entries →  raw PredicateEntry slice
+```
+
+The DOT endpoint calls `coloring_from_entries` on the stored entries, applies
+the resulting `NodeColoring` to the cached `Vec<PrologRule>`, and calls
+`generate_dot`. Feed the output to Graphviz or `@viz-js/viz` in the browser.
+
+---
+
+## Serialization
+
+`PrologRule`, `BodyGoal`, and `Term` all derive `serde::Serialize` /
+`serde::Deserialize`. This enables JSON round-trips used by the source artifact
+cache:
+
+1. First trace request for a deduction → `parse_prolog_rules(source_content)` runs.
+2. Result serialized to JSON, stored in `source_artifacts` as type `"parsed_rules"`.
+3. Subsequent requests → deserialize from cache, skip re-parsing.
+
+The same JSON representation is also returned by
+`GET /source/{id}/artifact/parsed_rules` for offline inspection.
 
 ---
 
@@ -243,7 +371,7 @@ The rule parser handles:
 | Construct | Supported |
 |-----------|-----------|
 | `head :- body.` | Yes |
-| `head.` (bare fact) | Yes (skipped in output) |
+| `head.` (bare fact) | Yes (skipped in transduction output; included in DOT as fact node) |
 | `,` conjunctions | Yes — each goal is an independent trigger |
 | `;` disjunctions | Yes — flattened, same as conjunction |
 | `\+` negation | Yes — skipped as trigger, comment emitted |
@@ -283,7 +411,10 @@ pre-process each file with a unique prefix).
 
 | File | Purpose |
 |------|---------|
-| `clara-cycle/src/transduction.rs` | Parser, code generator, public API |
-| `clara-cycle/src/transpile.rs` | `Term` AST, `render_clips_fact`, `render_prolog_term` (shared) |
+| `clara-cycle/src/transduction.rs` | Parser, CLIPS code generator, DOT generator, `NodeColoring`, `coloring_from_entries`, public API |
+| `clara-cycle/src/transpile.rs` | `Term` AST (with `Serialize`/`Deserialize`), `render_clips_fact`, `render_prolog_term` (shared) |
 | `clara-transduction/src/main.rs` | CLI entry point |
 | `clara-transduction/Cargo.toml` | Binary crate manifest |
+| `clara-coire/src/source.rs` | `SourceRegistry` — `get_or_create_artifact` for `"parsed_rules"` and `"dot"` caching |
+| `clara-api/src/handlers/trace_handler.rs` | `list_trace`, `trace_dot`, `trace_entries` HTTP handlers |
+| `clara-api/src/handlers/source_handler.rs` | `register_source`, `get_source`, `get_source_artifact`, `delete_source` HTTP handlers |

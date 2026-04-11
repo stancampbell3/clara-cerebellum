@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::error::CycleError;
 use crate::relay::{relay_clips_to_prolog, relay_prolog_to_clips, RelayRecorder};
-use crate::result::{CoireSnapshot, CycleStatus, DeductionResult};
+use crate::result::{CoireSnapshot, CycleStatus, DeductionResult, InMemoryTraceEntry};
 use crate::session::DeductionSession;
 
 // ---------------------------------------------------------------------------
@@ -93,6 +93,13 @@ pub struct CycleController {
     /// succeeds on a later cycle (after forward-chaining).  Overrides the
     /// cycle-0 `initial_solutions` in the final `DeductionResult`.
     final_solutions: Option<serde_json::Value>,
+    /// When `true`, tableau snapshots are recorded at each cycle phase.
+    /// If a store is configured they go to `tableau_changes`; otherwise they
+    /// accumulate in `trace_log` and are returned in `DeductionResult.trace`.
+    trace_mode: bool,
+    /// In-memory trace accumulator used when `trace_mode = true` and no
+    /// store is configured.
+    trace_log: Vec<InMemoryTraceEntry>,
 }
 
 impl CycleController {
@@ -102,13 +109,33 @@ impl CycleController {
         initial_goal: Option<String>,
         interrupt:    Arc<AtomicBool>,
     ) -> Self {
-        Self { deduction_id: Uuid::new_v4(), session, max_cycles, initial_goal, interrupt, store: None, final_solutions: None }
+        Self {
+            deduction_id: Uuid::new_v4(),
+            session,
+            max_cycles,
+            initial_goal,
+            interrupt,
+            store: None,
+            final_solutions: None,
+            trace_mode: false,
+            trace_log: Vec::new(),
+        }
     }
 
     /// Attach a persistent [`CoireStore`]. Both mailboxes will be saved
     /// automatically on every exit from [`run()`].
     pub fn with_store(mut self, store: clara_coire::CoireStore) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Enable per-phase tableau recording for trace visualization.
+    ///
+    /// When a store is attached, snapshots go to `tableau_changes`.
+    /// When no store is configured, snapshots accumulate in memory and are
+    /// returned in [`DeductionResult::trace`].
+    pub fn with_trace(mut self, enabled: bool) -> Self {
+        self.trace_mode = enabled;
         self
     }
 
@@ -219,6 +246,7 @@ impl CycleController {
                     goal_bindings,
                     tableau:           Some(tableau),
                     explanation:       None,
+                    trace:             self.take_trace_log(),
                 });
             } else {
                 log::debug!("... not converged yet");
@@ -244,6 +272,7 @@ impl CycleController {
                     goal_bindings,
                     tableau:           Some(tableau),
                     explanation:       None,
+                    trace:             self.take_trace_log(),
                 });
             } else {
                 log::debug!("... no interrupt signal");
@@ -265,9 +294,10 @@ impl CycleController {
     // -------------------------------------------------------------------------
 
     /// Build a [`RelayRecorder`] for the given `cycle`.
-    /// Returns `None` when no store is attached.
+    /// Returns `None` when no store is attached or trace is disabled.
     /// The store is cloned cheaply via its internal `Arc`.
     fn make_recorder(&self, cycle: u32) -> Option<RelayRecorder> {
+        if !self.trace_mode { return None; }
         self.store.as_ref().map(|store| RelayRecorder {
             store: store.clone(),
             deduction_id: self.deduction_id,
@@ -275,22 +305,50 @@ impl CycleController {
         })
     }
 
-    /// Record a full tableau snapshot to the on-file store at a bookend phase
-    /// (`"initial"`, `"final_converged"`, etc.). Errors are logged, not propagated.
-    fn record_tableau(&self, phase: &str, cycle: u32) {
-        let Some(store) = &self.store else { return };
+    /// Drain the in-memory trace log for inclusion in `DeductionResult`.
+    ///
+    /// Returns `Some(log)` only when `trace_mode` is set AND no store is
+    /// configured (store-backed traces are queryable via the API separately).
+    fn take_trace_log(&mut self) -> Option<Vec<InMemoryTraceEntry>> {
+        if self.trace_mode && self.store.is_none() && !self.trace_log.is_empty() {
+            Some(std::mem::take(&mut self.trace_log))
+        } else {
+            None
+        }
+    }
+
+    /// Record a full tableau snapshot at a bookend phase.
+    ///
+    /// Does nothing when `trace_mode` is `false`.
+    /// When a store is attached, writes to `tableau_changes`.
+    /// Otherwise appends to `self.trace_log` for in-memory tracing.
+    fn record_tableau(&mut self, phase: &str, cycle: u32) {
+        if !self.trace_mode { return; }
         match self.session.tableau.export_session(self.session.prolog_id) {
             Ok(entries) => {
-                if let Err(e) = store.record_tableau_change(
-                    self.deduction_id,
-                    cycle,
-                    phase,
-                    None,
-                    None,
-                    None,
-                    &entries,
-                ) {
-                    log::warn!("CycleController: failed to record tableau ({}): {}", phase, e);
+                if let Some(store) = &self.store {
+                    if let Err(e) = store.record_tableau_change(
+                        self.deduction_id,
+                        cycle,
+                        phase,
+                        None,
+                        None,
+                        None,
+                        &entries,
+                    ) {
+                        log::warn!("CycleController: failed to record tableau ({}): {}", phase, e);
+                    }
+                } else {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64;
+                    self.trace_log.push(InMemoryTraceEntry {
+                        cycle_num: cycle,
+                        phase: phase.to_string(),
+                        recorded_at_ms: now_ms,
+                        entries,
+                    });
                 }
             }
             Err(e) => log::warn!("CycleController: failed to export tableau ({}): {}", phase, e),

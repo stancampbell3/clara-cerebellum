@@ -6,7 +6,7 @@ pub use error::{ApiError, ApiErrorResponse};
 pub use request::{
     CreateSessionRequest, EvalRequest, LoadRequest, SaveSessionRequest, ReloadRequest,
     LoadRulesRequest, LoadFactsRequest, RunRequest, PrologQueryRequest, PrologConsultRequest,
-    DeduceRequest, DeduceResumeRequest, CoirePushRequest,
+    DeduceRequest, DeduceResumeRequest, CoirePushRequest, RegisterSourceRequest,
 };
 pub use response::{
     SessionResponse, EvalResponse, LoadResponse, SaveResponse, ReloadResponse, StatusResponse,

@@ -4,6 +4,8 @@ pub mod error_handler;
 pub mod devils_handler;
 pub mod deduce_handler;
 pub mod coire_handler;
+pub mod trace_handler;
+pub mod source_handler;
 
 pub use session_handler::{create_session, get_session, list_user_sessions,
                           terminate_session, save_session, AppState};

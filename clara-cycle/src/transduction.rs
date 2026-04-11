@@ -1,4 +1,7 @@
-//! Prolog → CLIPS transduction: speculative forward-chaining rule generation.
+//! Prolog → CLIPS transduction: speculative forward-chaining rule generation,
+//! DOT graph visualization, and per-phase tableau coloring.
+//!
+//! # Transduction
 //!
 //! For each body goal in a Prolog rule, emits a CLIPS `defrule` that fires
 //! when the corresponding fact is asserted into CLIPS and publishes the head
@@ -9,7 +12,7 @@
 //! a positive CLIPS fact representing a constructively-determined negation
 //! relayed from Prolog.
 //!
-//! # Example
+//! ## Example
 //!
 //! Prolog source:
 //! ```prolog
@@ -34,8 +37,75 @@
 //!     =>
 //!     (coire-publish-goal (str-cat "lemonade(" ?Drink ")")))
 //! ```
+//!
+//! # DOT graph generation
+//!
+//! [`generate_dot`] converts a parsed `&[PrologRule]` into a Graphviz DOT
+//! string that visualizes the rule/fact dependency graph.  It accepts an
+//! optional [`NodeColoring`] to overlay per-node truth values from a Dagda
+//! tableau snapshot, enabling step-by-step trace visualization.
+//!
+//! Layout: `rankdir=LR` — rule heads appear to the left of their conditions.
+//!
+//! ## Node types
+//!
+//! | Shape | Fill (default) | Meaning |
+//! |-------|---------------|---------|
+//! | Ellipse | `#d4edda` (green) | Bare fact — no body goals |
+//! | Box | `#cfe2ff` (blue) | Rule head with at least one body goal |
+//! | Dashed ellipse | `#fff3cd` (amber) | Leaf condition — not bridged to another head |
+//!
+//! ## Edge types
+//!
+//! | Style | Color | Label | Meaning |
+//! |-------|-------|-------|---------|
+//! | Solid | Black | `requires` | Rule head → leaf condition |
+//! | Solid | Blue | *(none)* | Assert-bridge: head A → head B when A's condition is asserted by B |
+//! | Dashed | Blue | `chains-to` | Condition → rule head whose functor/arity it matches |
+//! | Dashed | Gray | `satisfies` | Fact → condition whose functor/arity it matches |
+//! | Dashed | Gray | *(none, undirected)* | Shared-condition link (when `opts.link_shared_conditions = true`) |
+//!
+//! ## Truth-value color palette
+//!
+//! When a [`NodeColoring`] is supplied (derived from a tableau via
+//! [`coloring_from_entries`]), structural fill colors are replaced by:
+//!
+//! | Truth value | Fill |
+//! |-------------|------|
+//! | `KnownTrue` | `#28a745` (green) |
+//! | `KnownFalse` | `#dc3545` (red) |
+//! | `KnownUnresolved` | `#ffc107` (amber — mixed or conflict) |
+//! | `Unknown` | `#adb5bd` (gray) |
+//!
+//! Nodes absent from the tableau keep their structural defaults.
+//!
+//! # Trace visualization pipeline
+//!
+//! The intended usage for per-phase reasoning traces:
+//!
+//! 1. **Register** Prolog source via `POST /source`.
+//! 2. **Run** a deduction with `trace: true` — each phase records a
+//!    `tableau_changes` row in the Coire store.
+//! 3. **List** phases via `GET /deduce/{id}/trace`.
+//! 4. **Fetch DOT** for a phase via `GET /deduce/{id}/trace/{change_id}/dot`.
+//!    The handler calls [`coloring_from_entries`] on the stored
+//!    [`PredicateEntry`] slice and passes the resulting [`NodeColoring`] to
+//!    [`generate_dot`].  The `"parsed_rules"` artifact (JSON-serialized
+//!    `Vec<PrologRule>`) is cached in `source_artifacts` after the first call —
+//!    subsequent requests skip re-parsing.
+//! 5. **Render** the DOT string with `@viz-js/viz` (Cobbler GUI) or any
+//!    Graphviz-compatible renderer.
+//!
+//! # Serialization
+//!
+//! [`PrologRule`] and its constituent types ([`BodyGoal`], [`Term`]) derive
+//! `serde::Serialize` / `serde::Deserialize`, enabling JSON round-trips for the
+//! `"parsed_rules"` source artifact cache.  The cache avoids re-parsing source
+//! text on every trace request.
 
 use std::collections::{HashMap, HashSet};
+
+use serde::{Deserialize, Serialize};
 
 use crate::transpile::{render_clips_fact, render_clips_field, render_prolog_term, Term};
 use clara_dagda::TruthValue;
@@ -43,7 +113,7 @@ use clara_dagda::TruthValue;
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// A single goal in a Prolog rule body.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BodyGoal {
     /// A positive condition — can trigger a CLIPS defrule.
     Positive(Term),
@@ -54,7 +124,7 @@ pub enum BodyGoal {
 }
 
 /// A parsed Prolog rule: `head :- body.` or a bare fact `head.`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrologRule {
     pub head: Term,
     pub body: Vec<BodyGoal>,
@@ -428,11 +498,14 @@ fn is_meta_predicate(name: &str) -> bool {
 
 // ── DOT graph generation ──────────────────────────────────────────────────────
 
-/// Options controlling DOT graph generation.
+/// Options controlling [`generate_dot`] output.
 pub struct DotOptions {
-    /// When true, emit a dashed gray undirected edge between condition nodes
+    /// When `true`, emit a dashed gray undirected edge between condition nodes
     /// that share the same functor, arity, and arguments across different rules
     /// (e.g. two `turn(left)` nodes in separate rule bodies).
+    ///
+    /// Useful for identifying shared sub-goals that appear in multiple rules.
+    /// Defaults to `false` to keep graphs uncluttered.
     pub link_shared_conditions: bool,
 }
 
@@ -442,13 +515,51 @@ impl Default for DotOptions {
     }
 }
 
-/// Per-node truth-value override for colored deduction snapshots.
+/// Per-node truth-value coloring for deduction-phase DOT graphs.
 ///
 /// Keys are predicate functor names (e.g. `"unlocked"`, `"tumbler_1"`).
-/// When a node's functor is present, its fill color is overridden by the
+/// When a node's functor appears in `values`, its fill color is drawn from the
 /// truth-value palette instead of the structural default.
+///
+/// Build from a Dagda tableau snapshot with [`coloring_from_entries`], then
+/// pass to [`generate_dot`].
 pub struct NodeColoring {
     pub values: HashMap<String, TruthValue>,
+}
+
+/// Build a [`NodeColoring`] from a tableau snapshot.
+///
+/// Each [`PredicateEntry`] contributes its functor name → truth value.  When
+/// multiple entries share the same functor (e.g. `tumbler/2` with different
+/// concrete arguments) the values are merged using the following strategy:
+///
+/// - All entries for a functor have the **same** truth value → use it.
+/// - Entries are a mix of any truth values → `KnownUnresolved` (amber).
+///   This includes the `KnownTrue` + `KnownFalse` conflict case, which is
+///   rendered as amber ("partially resolved") rather than a hard false.
+///
+/// Nodes absent from the tableau are left uncolored (structural defaults apply).
+pub fn coloring_from_entries(entries: &[clara_dagda::PredicateEntry]) -> NodeColoring {
+    // Group truth values by functor name.
+    let mut by_functor: HashMap<String, Vec<TruthValue>> = HashMap::new();
+    for entry in entries {
+        by_functor
+            .entry(entry.functor.trim_end_matches('.').to_string())
+            .or_default()
+            .push(entry.truth_value.clone());
+    }
+
+    let mut values = HashMap::new();
+    for (functor, tvs) in by_functor {
+        let first = tvs[0].clone();
+        let merged = if tvs.iter().all(|tv| tv == &first) {
+            first
+        } else {
+            TruthValue::KnownUnresolved
+        };
+        values.insert(functor, merged);
+    }
+    NodeColoring { values }
 }
 
 /// Generate a Graphviz DOT graph from parsed Prolog rules.

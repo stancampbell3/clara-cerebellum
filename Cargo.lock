@@ -1032,10 +1032,12 @@ version = "0.1.0"
 dependencies = [
  "clara-dagda",
  "duckdb",
+ "hex",
  "libc",
  "log",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",

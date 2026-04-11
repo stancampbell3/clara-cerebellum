@@ -3,6 +3,7 @@ pub mod carrion_picker;
 pub mod coire;
 pub mod error;
 pub mod event;
+pub mod source;
 pub mod store;
 
 #[cfg(feature = "ffi")]
@@ -13,6 +14,7 @@ pub use carrion_picker::CarrionPicker;
 pub use coire::Coire;
 pub use error::{CoireError, CoireResult};
 pub use event::{ClaraEvent, EventStatus};
+pub use source::{ArtifactEntry, SourceEntry, SourceRegistry};
 pub use store::{CoireStore, DeductionSnapshot, TableauChange};
 
 use std::sync::OnceLock;

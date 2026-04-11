@@ -34,13 +34,16 @@ pub async fn start_deduce(
     state: web::Data<AppState>,
     req:   web::Json<DeduceRequest>,
 ) -> HttpResponse {
-    let clauses      = req.prolog_clauses.clone();
-    let constructs   = req.clips_constructs.clone();
-    let clips_file   = req.clips_file.clone();
-    let initial_goal = req.initial_goal.clone();
-    let max_cycles   = req.max_cycles.unwrap_or(100);
-    let persist      = req.persist;
-    let context      = req.context.clone();
+    let clauses           = req.prolog_clauses.clone();
+    let constructs        = req.clips_constructs.clone();
+    let clips_file        = req.clips_file.clone();
+    let initial_goal      = req.initial_goal.clone();
+    let max_cycles        = req.max_cycles.unwrap_or(100);
+    let persist           = req.persist;
+    let trace             = req.trace;
+    let context           = req.context.clone();
+    let req_prolog_src_id = req.prolog_source_id;
+    let req_clips_src_id  = req.clips_source_id;
 
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
@@ -78,22 +81,34 @@ pub async fn start_deduce(
         let clips_file_bg   = clips_file.clone();
         let initial_goal_bg = initial_goal.clone();
         let context_bg      = context.clone();
+        let snapshot_ttl_ms_bg = state_bg.snapshot_ttl_ms;
 
         let bg_handle = tokio::task::spawn_blocking(move || {
+            // ── Source resolution ─────────────────────────────────────────────
+            // Priority: prolog_source_id → inline clauses (auto-register if store).
+            let (effective_clauses, resolved_prolog_src_id) =
+                resolve_prolog_source(req_prolog_src_id, &clauses_bg, store_bg.as_ref(), snapshot_ttl_ms_bg);
+
+            let (effective_clips_file, effective_constructs, resolved_clips_src_id) =
+                resolve_clips_source(req_clips_src_id, clips_file_bg, &constructs_bg, store_bg.as_ref(), snapshot_ttl_ms_bg);
+
             let mut session = DeductionSession::new()?;
-            session.seed_prolog(&clauses_bg)?;
-            if let Some(ref path) = clips_file_bg {
+            session.seed_prolog(&effective_clauses)?;
+            if let Some(ref path) = effective_clips_file {
                 session.seed_clips_file(path)?;
             }
-            session.seed_clips(&constructs_bg)?;
+            session.seed_clips(&effective_constructs)?;
             session.seed_context(&context_bg)?;
             // Notify the async context of the session IDs before blocking in run().
             let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = {
                 let c = CycleController::new(session, max_cycles, initial_goal_bg, interrupt_bg);
-                if let Some(store) = store_bg { c.with_store(store) } else { c }
+                let c = if let Some(store) = store_bg { c.with_store(store) } else { c };
+                c.with_trace(trace)
             };
-            controller.run()
+            let result = controller.run();
+            // Pass resolved source IDs back alongside the result.
+            result.map(|r| (r, resolved_prolog_src_id, resolved_clips_src_id))
         });
 
         // Track session IDs so the carrion-picker won't delete live mailboxes.
@@ -124,33 +139,35 @@ pub async fn start_deduce(
         }
 
         // Update the deduction entry with the final result.
-        let (final_status, final_cycles, final_tableau) = {
+        // bg_result is now Ok(Ok((DeductionResult, prolog_src_id, clips_src_id)))
+        let (final_status, final_cycles, final_tableau, final_prolog_src_id, final_clips_src_id) = {
             let mut deductions = state_bg.deductions.write().unwrap();
             if let Some(entry) = deductions.get_mut(&deduction_id) {
-                let tableau = match bg_result {
-                    Ok(Ok(ref deduction_result)) => {
+                let (tableau, prolog_src, clips_src) = match bg_result {
+                    Ok(Ok(ref triple)) => {
+                        let (deduction_result, p_src, c_src) = triple;
                         entry.cycles = deduction_result.cycles;
                         entry.status = deduction_result.status.clone();
                         let t = deduction_result.tableau.clone();
                         entry.result = Some(deduction_result.clone());
-                        t
+                        (t, *p_src, *c_src)
                     }
                     Ok(Err(ref e)) => {
                         if let clara_cycle::CycleError::MaxCyclesExceeded(n) = e {
                             entry.cycles = *n;
                         }
                         entry.status = CycleStatus::Error(e.to_string());
-                        None
+                        (None, None, None)
                     }
                     Err(ref join_err) => {
                         entry.status =
                             CycleStatus::Error(format!("spawn_blocking panicked: {}", join_err));
-                        None
+                        (None, None, None)
                     }
                 };
-                (entry.status.to_string(), entry.cycles, tableau)
+                (entry.status.to_string(), entry.cycles, tableau, prolog_src, clips_src)
             } else {
-                (CycleStatus::Error("entry missing".into()).to_string(), 0, None)
+                (CycleStatus::Error("entry missing".into()).to_string(), 0, None, None, None)
             }
         };
 
@@ -179,6 +196,9 @@ pub async fn start_deduce(
                         expires_at_ms:     created + snapshot_ttl_ms,
                         context,
                         tableau_entries:   tableau_json,
+                        prolog_source_id:  final_prolog_src_id,
+                        clips_source_id:   final_clips_src_id,
+                        dot_artifact_id:   None,
                     };
                     if let Err(e) = store.save_snapshot(&snap) {
                         log::warn!("deduce {}: failed to save snapshot: {}", deduction_id, e);
@@ -243,8 +263,12 @@ pub async fn resume_deduce(
 
     let max_cycles   = req.max_cycles.unwrap_or(snap.max_cycles);
     let persist      = req.persist;
+    let trace        = req.trace;
     // Caller may override the context; otherwise reuse the snapshot's stored context.
     let context      = req.context.clone().unwrap_or_else(|| snap.context.clone());
+    // Inherit source IDs from the snapshot being resumed.
+    let snap_prolog_src_id = snap.prolog_source_id;
+    let snap_clips_src_id  = snap.clips_source_id;
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
     let interrupt_bg  = interrupt.clone();
@@ -299,7 +323,8 @@ pub async fn resume_deduce(
             session.seed_context(&context_bg)?;
             let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = CycleController::new(session, max_cycles, None, interrupt_bg)
-                .with_store(store_bg.clone());
+                .with_store(store_bg.clone())
+                .with_trace(trace);
             controller.restore_from(&store_bg, prev_prolog_id, prev_clips_id, &prev_tableau)?;
             controller.run()
         });
@@ -382,6 +407,9 @@ pub async fn resume_deduce(
                     expires_at_ms:     created + snapshot_ttl_ms,
                     context,
                     tableau_entries:   tableau_json,
+                    prolog_source_id:  snap_prolog_src_id,
+                    clips_source_id:   snap_clips_src_id,
+                    dot_artifact_id:   None,
                 };
                 if let Err(e) = store.save_snapshot(&new_snap) {
                     log::warn!("resume {}: failed to save snapshot: {}", deduction_id, e);
@@ -523,4 +551,126 @@ pub async fn interrupt_deduce(
             })
         }
     }
+}
+
+// ── Source resolution helpers ─────────────────────────────────────────────────
+
+/// Resolve the Prolog source to use for a deduction.
+///
+/// Priority:
+/// 1. `source_id` given → load content from registry (panics gracefully to inline)
+/// 2. Inline `clauses` → auto-register in registry with snapshot TTL; return source_id
+/// 3. No source → empty clauses
+///
+/// Returns `(effective_clauses, Option<source_id>)`.
+fn resolve_prolog_source(
+    source_id:    Option<Uuid>,
+    clauses:      &[String],
+    store:        Option<&clara_coire::CoireStore>,
+    ttl_ms:       i64,
+) -> (Vec<String>, Option<Uuid>) {
+    // Case 1: caller supplied a pre-registered source_id.
+    if let Some(sid) = source_id {
+        if let Some(s) = store {
+            match s.sources.get(sid) {
+                Ok(Some(entry)) => {
+                    // Split stored content back into individual clauses.
+                    let loaded: Vec<String> = entry.content
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    return (loaded, Some(sid));
+                }
+                Ok(None) => log::warn!("prolog_source_id {} not found; falling back to inline clauses", sid),
+                Err(e)   => log::warn!("prolog_source_id {} lookup failed: {}; using inline clauses", sid, e),
+            }
+        }
+    }
+
+    // Case 2: auto-register inline clauses.
+    if !clauses.is_empty() {
+        if let Some(s) = store {
+            let content = clauses.join("\n");
+            let expires = ttl_ms.checked_add(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64,
+            );
+            match s.sources.register("prolog", None, &content, expires) {
+                Ok((sid, _)) => return (clauses.to_vec(), Some(sid)),
+                Err(e) => log::warn!("failed to auto-register prolog source: {}", e),
+            }
+        }
+    }
+
+    (clauses.to_vec(), None)
+}
+
+/// Resolve the CLIPS source to use for a deduction.
+///
+/// Priority:
+/// 1. `source_id` given → load content from registry as a tempfile path
+/// 2. Inline `clips_file` / `constructs` → auto-register content in registry
+///
+/// Returns `(effective_clips_file, effective_constructs, Option<source_id>)`.
+fn resolve_clips_source(
+    source_id:   Option<Uuid>,
+    clips_file:  Option<String>,
+    constructs:  &[String],
+    store:       Option<&clara_coire::CoireStore>,
+    ttl_ms:      i64,
+) -> (Option<String>, Vec<String>, Option<Uuid>) {
+    // Case 1: caller supplied a pre-registered clips source_id.
+    // For CLIPS we register for identity/dedup only — no artifact generation.
+    // The content is returned as inline constructs rather than a file path.
+    if let Some(sid) = source_id {
+        if let Some(s) = store {
+            match s.sources.get(sid) {
+                Ok(Some(entry)) => {
+                    let loaded: Vec<String> = entry.content
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    return (None, loaded, Some(sid));
+                }
+                Ok(None) => log::warn!("clips_source_id {} not found; falling back", sid),
+                Err(e)   => log::warn!("clips_source_id {} lookup failed: {}; falling back", sid, e),
+            }
+        }
+    }
+
+    // Case 2: auto-register clips_file content (read from disk) or inline constructs.
+    let (content_opt, is_file) = if let Some(ref path) = clips_file {
+        (std::fs::read_to_string(path).ok(), true)
+    } else if !constructs.is_empty() {
+        (Some(constructs.join("\n")), false)
+    } else {
+        (None, false)
+    };
+
+    if let (Some(content), Some(s)) = (&content_opt, store) {
+        let expires = ttl_ms.checked_add(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64,
+        );
+        match s.sources.register("clips", None, content, expires) {
+            Ok((sid, _)) => {
+                if is_file {
+                    return (clips_file, constructs.to_vec(), Some(sid));
+                } else {
+                    return (None, constructs.to_vec(), Some(sid));
+                }
+            }
+            Err(e) => log::warn!("failed to auto-register clips source: {}", e),
+        }
+    }
+
+    (clips_file, constructs.to_vec(), None)
 }
