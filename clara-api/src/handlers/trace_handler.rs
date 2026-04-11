@@ -11,6 +11,7 @@
 //! | `GET`  | `/deduce/{id}/trace` | Ordered list of recorded tableau phases |
 //! | `GET`  | `/deduce/{id}/trace/{change_id}/dot` | Colorized DOT for one phase |
 //! | `GET`  | `/deduce/{id}/trace/{change_id}/entries` | Raw predicate entries for one phase |
+//! | `GET`  | `/deduce/{id}/trace/export` | Full `Vec<TableauChange>` export for offline replay |
 
 use actix_web::{web, HttpResponse};
 use clara_cycle::{coloring_from_entries, generate_dot, parse_prolog_rules, DotOptions, PredicateEntry, PrologRule};
@@ -235,4 +236,34 @@ pub async fn trace_entries(
         "recorded_at_ms": change.recorded_at_ms,
         "entries":        entries,
     }))
+}
+
+// ── GET /deduce/{id}/trace/export ──────────────────────────────────────────────
+
+/// Export all recorded tableau changes for a deduction as a JSON array.
+///
+/// Returns the full `Vec<TableauChange>` including `entries_json` payloads,
+/// ordered by cycle number and recording time. Intended for offline replay
+/// with `baloroptik replay`.
+///
+/// Requires persistence (Coire store) to be configured. Returns `503` if not.
+pub async fn export_trace(
+    state: web::Data<AppState>,
+    path:  web::Path<Uuid>,
+) -> HttpResponse {
+    let deduction_id = path.into_inner();
+
+    let store = match &state.coire_store {
+        Some(s) => s.clone(),
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(json!({ "error": "persistence not enabled" }));
+        }
+    };
+
+    match store.query_tableau_changes(deduction_id) {
+        Ok(changes) => HttpResponse::Ok().json(changes),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(json!({ "error": e.to_string() })),
+    }
 }

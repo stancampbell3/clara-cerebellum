@@ -129,6 +129,17 @@ impl CycleController {
         self
     }
 
+    /// Override the deduction ID used to key `tableau_changes` rows.
+    ///
+    /// By default `CycleController::new` generates a fresh UUID.  Call this
+    /// so the controller's internal ID matches the one already registered in
+    /// `deduction_snapshots` — otherwise trace queries on the snapshot UUID
+    /// will find no results.
+    pub fn with_deduction_id(mut self, id: Uuid) -> Self {
+        self.deduction_id = id;
+        self
+    }
+
     /// Enable per-phase tableau recording for trace visualization.
     ///
     /// When a store is attached, snapshots go to `tableau_changes`.

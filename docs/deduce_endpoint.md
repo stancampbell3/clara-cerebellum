@@ -128,6 +128,42 @@ no-op tick and do not contribute to `prolog_solutions`.
 > include the header `Content-Type: application/json`. Without it actix-web's
 > JSON extractor will reject the request with `400 Bad Request`.
 
+### `GET /deduce` — list persisted deductions
+
+Returns a summary of recent deduction runs, newest first. Useful for discovering
+UUIDs to inspect with the trace endpoints or `baloroptik`.
+
+Accepts an optional `?limit=N` query parameter (default 50, server cap 500).
+
+Requires persistence (Coire store) to be configured. Returns `503` if not.
+
+**Response** `200 OK`
+
+```json
+{
+  "deductions": [
+    {
+      "deduction_id":  "550e8400-e29b-41d4-a716-446655440000",
+      "status":        "converged",
+      "cycles_run":    3,
+      "initial_goal":  "mortal(X)",
+      "created_at_ms": 1744286400000
+    },
+    {
+      "deduction_id":  "7cf5e9cf-1052-4435-b8fa-0c7c7e6cd371",
+      "status":        "converged",
+      "cycles_run":    3,
+      "initial_goal":  "omelette(bob, X).",
+      "created_at_ms": 1744283600000
+    }
+  ]
+}
+```
+
+**Response** `503 Service Unavailable` — persistence not enabled.
+
+---
+
 ### `POST /deduce` — start a deduction run
 
 Returns `202 Accepted` immediately. The cycle executes in the background.
@@ -437,6 +473,59 @@ Returns the full `PredicateEntry` slice recorded at a specific phase.
 ```
 
 **Response** `404 Not Found` — unknown `change_id` or deduction.
+**Response** `503 Service Unavailable` — persistence not enabled.
+
+---
+
+### `GET /deduce/{id}/trace/export` — full tableau changes export
+
+Returns the complete ordered `Vec<TableauChange>` for a deduction run,
+including the full `entries_json` payload for each phase. Intended for offline
+replay with `baloroptik replay` — save the response to a file and use it with
+a snapshot JSON to reconstruct the trace without a running server.
+
+Requires persistence (Coire store) to be configured. Returns `503` if not.
+
+**Response** `200 OK` — JSON array
+
+```json
+[
+  {
+    "change_id":      "c1d2e3f4-...",
+    "deduction_id":   "550e8400-...",
+    "cycle_num":      0,
+    "phase":          "initial",
+    "event_origin":   null,
+    "event_type":     null,
+    "event_data":     null,
+    "entries_json":   "[{\"functor\":\"mortal\",...}]",
+    "recorded_at_ms": 1744286400000
+  },
+  {
+    "change_id":      "d2e3f4a5-...",
+    "deduction_id":   "550e8400-...",
+    "cycle_num":      0,
+    "phase":          "prolog_to_clips",
+    "event_origin":   "prolog",
+    "event_type":     "assert",
+    "event_data":     "{...}",
+    "entries_json":   "[{\"functor\":\"mortal\",...},{\"functor\":\"man\",...}]",
+    "recorded_at_ms": 1744286400050
+  }
+]
+```
+
+**Typical usage with `baloroptik replay`:**
+
+```bash
+# Export (server must be running)
+curl -s http://localhost:8080/deduce/550e8400-.../trace/export > changes.json
+
+# Replay offline
+baloroptik replay snapshot.json changes.json --out-dir ./eye --format html
+```
+
+**Response** `404 Not Found` — unknown `deduction_id`.
 **Response** `503 Service Unavailable` — persistence not enabled.
 
 ---

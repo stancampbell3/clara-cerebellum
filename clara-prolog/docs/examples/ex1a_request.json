@@ -1,6 +1,6 @@
 {
     "clips_constructs": [],
-    "clips_file": "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex1_clara.clp",
+    "clips_file": "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex1a_clara.clp",
     "context": [
         {
             "content": "You are a little demon.",
@@ -8,11 +8,11 @@
         }
     ],
     "initial_goal": "unlocked.",
-    "max_cycles": 5,
+    "max_cycles": 20,
     "persist": true,
     "trace": true,
     "prolog_clauses": [
-        "consult('/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex1_clara.pl').",
+        "consult('/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex1a_clara.pl').",
         "pick_position(3).", 
         "turn(left)."
     ]

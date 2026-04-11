@@ -1,0 +1,13 @@
+digraph Clara {
+    rankdir=LR
+    fontname="Helvetica"
+    node [fontname="Helvetica" fontsize=11]
+    edge [fontsize=9]
+
+    fact_consult_1_0 [label="consult('/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex1_clara.pl')" shape=ellipse style=filled fillcolor="#28a745"]
+    fact_pick_position_1_1 [label="pick_position(3)" shape=ellipse style=filled fillcolor="#28a745"]
+    fact_turn_1_2 [label="turn(left)" shape=ellipse style=filled fillcolor="#28a745"]
+
+
+
+}

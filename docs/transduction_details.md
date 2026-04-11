@@ -27,8 +27,12 @@ Prolog source (.pl)
       ▼  parse_prolog_rules()
   Vec<PrologRule> { head: Term, body: Vec<BodyGoal> }
       │
+      ├──▶  decorate_source()
+      │         <stem>_clara.pl — original source + prolog_listen directives
+      │         + updated/3 relay rule (publishes asserted facts to CLIPS)
+      │
       ├──▶  transduce()
-      │         CLIPS defrule source (.clp)
+      │         <stem>_clara.clp — CLIPS defrule source
       │         loaded by clara-cycle before CLIPS constructs at runtime
       │
       │         assert(smoke(kitchen)) → relay → (smoke kitchen) in CLIPS
@@ -38,8 +42,9 @@ Prolog source (.pl)
       │           ↳ consume_coire_events() calls fire(kitchen)
       │
       └──▶  generate_dot(rules, coloring?, opts)
-                DOT graph — node fill colors reflect Dagda truth values
-                cached as "dot" / "parsed_rules" artifacts in source_registry
+                <stem>_clara.dot — static dependency diagram
+                (also cached as "dot" / "parsed_rules" artifacts in source_registry
+                 with truth-value coloring during trace playback)
 ```
 
 ---
@@ -191,52 +196,36 @@ are merged:
 
 ---
 
-## CLI Usage
+## CLI Tools
+
+Two CLI binaries work together: `transduction` prepares rule sources, and
+`baloroptik` visualizes the deduction traces those sources produce.
+
+### `transduction` — rule preparation
 
 ```
-transduction [--decorate] <input.pl> [output.clp]
+transduction <input.pl>
 ```
 
-### Without `--decorate` (CLIPS only)
-
-- Reads Prolog source from `<input.pl>`
-- Writes CLIPS defrules to `<output.clp>`, or to stdout if omitted
-- Exits with code 1 on any I/O error
-
-```bash
-# Print CLIPS to stdout
-transduction rules.pl
-
-# Write CLIPS to file
-transduction rules.pl rules.clp
-```
-
-### With `--decorate` (decorated pair)
-
-Parses the input once, then writes **two files** beside the input:
+Parses `<input.pl>` once and writes **three files** beside the input:
 
 | File | Contents |
 |------|----------|
-| `<stem>_clara.pl` | Prolog rules with `coire_publish_assert(Head)` appended to each rule body |
+| `<stem>_clara.pl` | Original Prolog source prepended with `:- prolog_listen(...)` directives for every `dynamic` predicate and the `updated/3` relay rule that publishes asserted facts to CLIPS |
 | `<stem>_clara.clp` | CLIPS defrules for speculative forward chaining |
+| `<stem>_clara.dot` | Graphviz DOT graph showing facts, rule heads, conditions, and their chaining relationships |
 
-Stdout is not used when `--decorate` is active.
+Stdout is not used. Exits with code 1 on any I/O or argument error.
 
 ```bash
-transduction --decorate fire_alarm.pl
-# Writes: fire_alarm_clara.pl  fire_alarm_clara.clp
+transduction fire_alarm.pl
+# Writes: fire_alarm_clara.pl  fire_alarm_clara.clp  fire_alarm_clara.dot
 ```
 
 **Input** (`fire_alarm.pl`):
 ```prolog
 fire(Where) :- smoke(Where).
 lemonade(Drink) :- sour(Drink), sweet(Drink).
-```
-
-**Output** (`fire_alarm_clara.pl`):
-```prolog
-fire(Where) :- smoke(Where), coire_publish_assert(fire(Where)).
-lemonade(Drink) :- sour(Drink), sweet(Drink), coire_publish_assert(lemonade(Drink)).
 ```
 
 **Output** (`fire_alarm_clara.clp`):
@@ -257,14 +246,143 @@ lemonade(Drink) :- sour(Drink), sweet(Drink), coire_publish_assert(lemonade(Drin
     (coire-publish-goal (str-cat "lemonade(" ?Drink ")")))
 ```
 
-The decorated `.pl` is the file you load into SWI-Prolog. The `.clp` is passed
+The `_clara.pl` is the file you load into SWI-Prolog. The `_clara.clp` is passed
 as `clips_file` in the deduce request, or registered as a CLIPS source via
-`POST /source` and referenced by `clips_source_id`.
+`POST /source` and referenced by `clips_source_id`. The `_clara.dot` can be
+rendered with Graphviz for a static dependency overview of the rule set.
 
-> **Note:** Feed `--decorate` plain (undecorated) Prolog rules. If a rule already
-> contains `coire_publish_assert` in its body it will be treated as a regular goal
-> and an additional decoration will be appended. `test4.pl` shows what the
-> decorated output is meant to look like, not a valid input.
+> **Note:** Feed plain (undecorated) Prolog rules as input. The tool prepends
+> the relay scaffolding; do not pre-decorate the source yourself.
+
+---
+
+### `baloroptik` — trace visualization
+
+`baloroptik` ("eye of Balor") reads persisted deduction state and emits a
+sequence of colored DOT graphs representing the reasoning trace. Five subcommands
+cover offline, online, streaming, and replay scenarios.
+
+#### `baloroptik file <SNAPSHOT>` — offline, final state
+
+Reads a deduction snapshot JSON file and generates **one** DOT graph colorized
+with the final Dagda tableau truth values. No running server required.
+
+```bash
+baloroptik file deduction_snapshots.json --out-dir ./eye
+# Writes: ./eye/7cf5e9cf_final.dot
+
+baloroptik file deduction_snapshots.json --format html --out-dir ./eye
+# Writes: ./eye/7cf5e9cf_final.html  (viz.js browser viewer)
+```
+
+Output filename: `<first-8-chars-of-deduction-id>_final.<ext>`.
+
+```
+Deduction: 7cf5e9cf-1052-4435-b8fa-0c7c7e6cd371
+Status:    converged (3 cycles)
+Goal:      omelette(bob, X).
+Tableau:   6 entries  (T:5 F:1 U:0 ?:0)
+
+Wrote: ./eye/7cf5e9cf_final.dot
+```
+
+#### `baloroptik trace <DEDUCTION_ID>` — online, full sequence
+
+Queries a running `clara-api` instance and downloads the pre-colorized DOT for
+each recorded trace phase. Requires `trace: true` on the original run.
+
+```bash
+baloroptik trace 550e8400-e29b-41d4-a716-446655440000 \
+    --api http://localhost:8080 \
+    --out-dir ./eye \
+    --format html
+# Writes: ./eye/550e8400_trace.html  (step-through browser viewer)
+```
+
+For non-HTML formats, output files are named `<stem>_<i:03>_<phase>.<ext>`:
+
+```
+550e8400_000_initial.dot
+550e8400_001_prolog_to_clips.dot
+550e8400_002_clips_to_prolog.dot
+550e8400_003_prolog_to_clips.dot
+550e8400_004_final_converged.dot
+```
+
+The DOT string for each phase is fetched from
+`GET /deduce/{id}/trace/{change_id}/dot` — the API applies
+`coloring_from_entries` server-side, so no local re-parsing is needed.
+
+#### `baloroptik list` — enumerate persisted deductions
+
+Lists recent deductions from a running `clara-api` instance, newest first.
+Useful for discovering UUIDs to pass to `trace`, `watch`, or the API directly.
+
+```bash
+baloroptik list --api http://localhost:8080 --limit 20
+```
+
+```
+  Deduction ID                           Status          Cycles  Goal                         Created (UTC)
+  ──────────────────────────────────────  ────────────    ──────  ──────────────────────────   ───────────────────────
+  550e8400-e29b-41d4-a716-446655440000   converged            3   mortal(X)                   2026-04-10 14:32:00Z
+  7cf5e9cf-1052-4435-b8fa-0c7c7e6cd371  converged            3   omelette(bob, X).           2026-04-10 13:55:00Z
+```
+
+Calls `GET /deduce?limit=N`. Requires persistence to be enabled on the server.
+
+#### `baloroptik watch <DEDUCTION_ID>` — live stream
+
+Polls a running deduction and writes DOT files to disk as each trace phase is
+recorded. Exits automatically once the deduction reaches a terminal status.
+
+```bash
+baloroptik watch 550e8400-... \
+    --api http://localhost:8080 \
+    --out-dir ./eye \
+    --poll-ms 500
+```
+
+Files arrive with the same `<stem>_<i:03>_<phase>.dot` naming as `trace`.
+`--format html` is not supported in watch mode (HTML output requires all phases
+at once); a warning is printed and the format falls back to `dot`.
+
+#### `baloroptik replay <SNAPSHOT> <CHANGES>` — offline, full sequence
+
+Replays a complete trace entirely offline — no running server. Takes a snapshot
+JSON file and a `tableau_changes` export (obtained via
+`GET /deduce/{id}/trace/export`), re-generates DOTs locally using
+`coloring_from_entries` + `generate_dot`.
+
+```bash
+# Export the changes first
+curl http://localhost:8080/deduce/<UUID>/trace/export > changes.json
+
+# Replay offline (server can be down)
+baloroptik replay deduction_snapshots.json changes.json \
+    --out-dir ./eye \
+    --format html
+# Writes: ./eye/<stem>_replay.html
+```
+
+#### Common options
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `--out-dir <DIR>` | `.` | Directory for output files (created if absent) |
+| `--format dot\|svg\|both\|html` | `dot` | Output format; `html` generates a self-contained viz.js step-through viewer |
+| `--link-shared` | off | Add shared-condition edges (`DotOptions.link_shared_conditions`) |
+| `--api <URL>` | `http://localhost:8080` | clara-api base URL (online subcommands) |
+| `--limit <N>` | `50` | Max results for `list` (server caps at 500) |
+| `--poll-ms <MS>` | `500` | Polling interval in ms for `watch` |
+
+SVG rendering requires Graphviz (`dot` in PATH); if not found a warning is
+printed and only the `.dot` file is written.
+
+The HTML viewer (`--format html`) is self-contained: viz.js is loaded from
+CDN, DOT sources are embedded as JS strings, and the file works offline once
+loaded. Navigation: Prev/Next buttons or arrow keys; a phase strip at the
+bottom allows direct tab jumps.
 
 ---
 
@@ -335,17 +453,23 @@ curl -s -X POST http://localhost:8080/deduce \
 ### Trace playback workflow
 
 ```
-POST /source          →  register Prolog source, get source_id
-POST /deduce          →  prolog_source_id + trace: true + persist: true
-GET  /deduce/{id}     →  poll until converged
-GET  /deduce/{id}/trace               →  list phases
-GET  /deduce/{id}/trace/{cid}/dot     →  colorized DOT (text/plain)
-GET  /deduce/{id}/trace/{cid}/entries →  raw PredicateEntry slice
+GET  /deduce                           →  list persisted deductions (pick a UUID)
+POST /source                           →  register Prolog source, get source_id
+POST /deduce                           →  prolog_source_id + trace: true + persist: true
+GET  /deduce/{id}                      →  poll until converged
+GET  /deduce/{id}/trace                →  list phases (change_id per phase)
+GET  /deduce/{id}/trace/{cid}/dot      →  colorized DOT (text/plain)
+GET  /deduce/{id}/trace/{cid}/entries  →  raw PredicateEntry slice
+GET  /deduce/{id}/trace/export         →  full Vec<TableauChange> for offline replay
 ```
 
 The DOT endpoint calls `coloring_from_entries` on the stored entries, applies
 the resulting `NodeColoring` to the cached `Vec<PrologRule>`, and calls
 `generate_dot`. Feed the output to Graphviz or `@viz-js/viz` in the browser.
+
+`baloroptik` automates the last four steps: `baloroptik trace` fetches all
+phase DOTs in one command; `baloroptik replay` replays a previously exported
+trace entirely offline.
 
 ---
 
@@ -409,12 +533,29 @@ pre-process each file with a unique prefix).
 
 ## Relevant Source Files
 
+### Library / API
+
 | File | Purpose |
 |------|---------|
 | `clara-cycle/src/transduction.rs` | Parser, CLIPS code generator, DOT generator, `NodeColoring`, `coloring_from_entries`, public API |
 | `clara-cycle/src/transpile.rs` | `Term` AST (with `Serialize`/`Deserialize`), `render_clips_fact`, `render_prolog_term` (shared) |
-| `clara-transduction/src/main.rs` | CLI entry point |
-| `clara-transduction/Cargo.toml` | Binary crate manifest |
 | `clara-coire/src/source.rs` | `SourceRegistry` — `get_or_create_artifact` for `"parsed_rules"` and `"dot"` caching |
-| `clara-api/src/handlers/trace_handler.rs` | `list_trace`, `trace_dot`, `trace_entries` HTTP handlers |
+| `clara-coire/src/store.rs` | `CoireStore::list_snapshots` — list persisted deductions newest-first |
+| `clara-api/src/handlers/deduce_handler.rs` | `list_deductions` handler (`GET /deduce`) |
+| `clara-api/src/handlers/trace_handler.rs` | `list_trace`, `trace_dot`, `trace_entries`, `export_trace` HTTP handlers |
 | `clara-api/src/handlers/source_handler.rs` | `register_source`, `get_source`, `get_source_artifact`, `delete_source` HTTP handlers |
+
+### CLI binaries
+
+| File | Purpose |
+|------|---------|
+| `clara-transduction/src/main.rs` | `transduction` CLI — parses `.pl`, writes `_clara.pl`, `_clara.clp`, `_clara.dot` |
+| `clara-transduction/Cargo.toml` | `transduction` binary crate manifest |
+| `clara-baloroptik/src/main.rs` | `baloroptik` CLI — clap entry point, all five subcommands |
+| `clara-baloroptik/src/file_mode.rs` | `baloroptik file` — offline snapshot → single colorized DOT or HTML |
+| `clara-baloroptik/src/trace_mode.rs` | `baloroptik trace` — fetches phase DOTs from clara-api, writes sequenced files or HTML |
+| `clara-baloroptik/src/list_mode.rs` | `baloroptik list` — prints summary table of persisted deductions |
+| `clara-baloroptik/src/watch_mode.rs` | `baloroptik watch` — polls live deduction, streams DOT files as phases arrive |
+| `clara-baloroptik/src/replay_mode.rs` | `baloroptik replay` — offline trace replay from snapshot + `tableau_changes` export |
+| `clara-baloroptik/src/render.rs` | Shared output utilities: `write_dot`, `render_svg`, `write_html` (viz.js viewer), summary printers |
+| `clara-baloroptik/Cargo.toml` | `baloroptik` binary crate manifest |

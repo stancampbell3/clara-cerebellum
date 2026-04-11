@@ -1,0 +1,125 @@
+{
+  "deduction_id": "5456ec26-178c-4b45-8ea1-ddbe0fe5461e",
+  "status": "converged",
+  "result": {
+    "clips_session_id": "a1a722bd-349a-4bef-9e48-0ba55785c51b",
+    "cycles": 3,
+    "prolog_session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+    "prolog_solutions": [],
+    "status": "Converged",
+    "tableau": [
+      {
+        "args": [
+          "'/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex1a_clara.pl'"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "b9487a2a-1e8f-48a8-a4b4-85d1a089e65e",
+        "functor": "consult",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775931082345
+      },
+      {
+        "args": [],
+        "arity": 0,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "56ddb40a-f6fd-4372-8ae0-1d8c417a3608",
+        "functor": "unlocked.",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+        "source": null,
+        "truth_value": "known_false",
+        "updated_at_ms": 1775931082488
+      },
+      {
+        "args": [
+          "_3522"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "e7092742-2e6b-409d-8ab2-eb09435a4073",
+        "functor": "suggest",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775931082535
+      },
+      {
+        "args": [
+          "_8736"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "1141b8f0-2dca-4290-ba93-4246cb926c4c",
+        "functor": "suggest",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775931082603
+      },
+      {
+        "args": [
+          "3"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "297603cb-1f0f-4cb0-9147-d9248f755ca2",
+        "functor": "pick_position",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775931082668
+      },
+      {
+        "args": [
+          "left"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "32655c60-1603-44dd-a5e5-dc50d59d82f5",
+        "functor": "turn",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775931082735
+      },
+      {
+        "args": [
+          "1",
+          "set"
+        ],
+        "arity": 2,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "c1f18cc7-5df7-4131-9833-1ee2534ca05d",
+        "functor": "tumbler",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "53271b54-da06-411e-8df3-fce586cbe676",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775931083120
+      }
+    ]
+  },
+  "cycles": 3
+}

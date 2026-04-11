@@ -1,0 +1,99 @@
+{
+  "deduction_id": "e9f9a728-0843-41c5-bafb-e1de83454805",
+  "status": "converged",
+  "result": {
+    "clips_session_id": "85a5df5b-7c8c-4f77-9c02-bcf17aad6edd",
+    "cycles": 2,
+    "prolog_session_id": "c38094a8-6d31-4556-b79f-52ee4f83cdd3",
+    "prolog_solutions": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "status": "Converged",
+    "tableau": [
+      {
+        "args": [
+          "'/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-prolog/docs/examples/ex2_clara.pl'"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "6263bcc1-e1c1-4695-8f1b-ba64ad77ce80",
+        "functor": "consult",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "c38094a8-6d31-4556-b79f-52ee4f83cdd3",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775939375844
+      },
+      {
+        "args": [],
+        "arity": 0,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "50870097-0051-41a0-bfeb-4679fdc7cf05",
+        "functor": "it_rained.",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "c38094a8-6d31-4556-b79f-52ee4f83cdd3",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775939375970
+      },
+      {
+        "args": [
+          "saturday"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "2d793a93-ed8f-4a3b-bf6e-8a0ef8b438d4",
+        "functor": "day_of_week",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "c38094a8-6d31-4556-b79f-52ee4f83cdd3",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775939376091
+      },
+      {
+        "args": [
+          "sidewalk"
+        ],
+        "arity": 1,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "e2225eae-a366-4290-babb-02ee52910109",
+        "functor": "wet",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "c38094a8-6d31-4556-b79f-52ee4f83cdd3",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775939376241
+      },
+      {
+        "args": [],
+        "arity": 0,
+        "bindings": [],
+        "bound_vars": [],
+        "entry_id": "ad9ba92d-db81-400c-a9b5-cbd5d9ec42de",
+        "functor": "it_rained",
+        "kind": "predicate",
+        "parent_id": null,
+        "session_id": "c38094a8-6d31-4556-b79f-52ee4f83cdd3",
+        "source": null,
+        "truth_value": "known_true",
+        "updated_at_ms": 1775939376689
+      }
+    ]
+  },
+  "cycles": 2
+}

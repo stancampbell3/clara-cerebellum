@@ -40,6 +40,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/devils/sessions/{session_id}/query", web::post().to(devils::query_prolog))
             .route("/devils/sessions/{session_id}/consult", web::post().to(devils::consult_prolog))
             // Deduction cycle routes — literal paths before parameterised ones
+            .route("/deduce",                      web::get().to(deduce::list_deductions))
             .route("/deduce",                      web::post().to(deduce::start_deduce))
             .route("/deduce/resume",               web::post().to(deduce::resume_deduce))
             .route("/deduce/{id}",                 web::get().to(deduce::poll_deduce))
@@ -48,6 +49,7 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/deduce/{id}/snapshot",        web::delete().to(deduce::delete_snapshot))
             // Trace visualization — literal sub-paths before parameterised ones
             .route("/deduce/{id}/trace",                              web::get().to(trace::list_trace))
+            .route("/deduce/{id}/trace/export",                       web::get().to(trace::export_trace))
             .route("/deduce/{id}/trace/{change_id}/dot",              web::get().to(trace::trace_dot))
             .route("/deduce/{id}/trace/{change_id}/entries",          web::get().to(trace::trace_entries))
             // Source registry

@@ -102,7 +102,8 @@ pub async fn start_deduce(
             // Notify the async context of the session IDs before blocking in run().
             let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = {
-                let c = CycleController::new(session, max_cycles, initial_goal_bg, interrupt_bg);
+                let c = CycleController::new(session, max_cycles, initial_goal_bg, interrupt_bg)
+                    .with_deduction_id(deduction_id);
                 let c = if let Some(store) = store_bg { c.with_store(store) } else { c };
                 c.with_trace(trace)
             };
@@ -323,6 +324,7 @@ pub async fn resume_deduce(
             session.seed_context(&context_bg)?;
             let _ = ids_tx.send((session.prolog_id, session.clips_id));
             let mut controller = CycleController::new(session, max_cycles, None, interrupt_bg)
+                .with_deduction_id(deduction_id)
                 .with_store(store_bg.clone())
                 .with_trace(trace);
             controller.restore_from(&store_bg, prev_prolog_id, prev_clips_id, &prev_tableau)?;
@@ -673,4 +675,51 @@ fn resolve_clips_source(
     }
 
     (clips_file, constructs.to_vec(), None)
+}
+
+// ── GET /deduce ───────────────────────────────────────────────────────────────
+
+/// List persisted deductions, newest first.
+///
+/// Accepts an optional `?limit=N` query parameter (default 50, max 500).
+/// Returns a JSON array of summary objects — each with the fields most useful
+/// for picking a deduction to inspect further with `GET /deduce/{id}/trace`.
+///
+/// Requires persistence (Coire store) to be configured. Returns `503` if not.
+pub async fn list_deductions(
+    state: web::Data<AppState>,
+    query: web::Query<ListDeductionsQuery>,
+) -> HttpResponse {
+    let store = match &state.coire_store {
+        Some(s) => s.clone(),
+        None => {
+            return HttpResponse::ServiceUnavailable()
+                .json(json!({ "error": "persistence not enabled" }));
+        }
+    };
+
+    let limit = query.limit.unwrap_or(50).min(500);
+
+    match store.list_snapshots(Some(limit)) {
+        Ok(snaps) => {
+            let items: Vec<_> = snaps
+                .iter()
+                .map(|s| json!({
+                    "deduction_id":  s.deduction_id,
+                    "status":        s.status,
+                    "cycles_run":    s.cycles_run,
+                    "initial_goal":  s.initial_goal,
+                    "created_at_ms": s.created_at_ms,
+                }))
+                .collect();
+            HttpResponse::Ok().json(json!({ "deductions": items }))
+        }
+        Err(e) => HttpResponse::InternalServerError()
+            .json(json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ListDeductionsQuery {
+    pub limit: Option<u32>,
 }

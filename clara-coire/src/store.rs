@@ -492,6 +492,85 @@ impl CoireStore {
         }
     }
 
+    /// Return the most recent deduction snapshots, ordered newest-first.
+    ///
+    /// `limit` caps the number of rows returned. Pass `None` for no cap (use
+    /// with care on large stores). Each snapshot includes all persisted fields;
+    /// callers may project down to a summary subset.
+    pub fn list_snapshots(&self, limit: Option<u32>) -> CoireResult<Vec<DeductionSnapshot>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = match limit {
+            Some(_) => "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
+                                initial_goal, max_cycles, status, cycles_run,
+                                prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
+                                context, tableau_entries,
+                                prolog_source_id, clips_source_id, dot_artifact_id
+                         FROM deduction_snapshots
+                         ORDER BY created_at_ms DESC
+                         LIMIT ?",
+            None    => "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
+                                initial_goal, max_cycles, status, cycles_run,
+                                prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
+                                context, tableau_entries,
+                                prolog_source_id, clips_source_id, dot_artifact_id
+                         FROM deduction_snapshots
+                         ORDER BY created_at_ms DESC",
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let map_row = |row: &duckdb::Row<'_>| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, i64>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, String>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
+            ))
+        };
+        let rows = match limit {
+            Some(n) => stmt.query_map(duckdb::params![n as i64], map_row)?,
+            None    => stmt.query_map([], map_row)?,
+        };
+        let mut snaps = Vec::new();
+        for row in rows {
+            let (did, clauses_s, constructs_s, clips_file, initial_goal,
+                 max_cycles, status, cycles_run, prolog_sid, clips_sid,
+                 created_at_ms, expires_at_ms, context_s, tableau_s,
+                 prolog_source_id_s, clips_source_id_s, dot_artifact_id_s) = row?;
+            snaps.push(DeductionSnapshot {
+                deduction_id:      Uuid::parse_str(&did).unwrap(),
+                prolog_clauses:    serde_json::from_str(&clauses_s)?,
+                clips_constructs:  serde_json::from_str(&constructs_s)?,
+                clips_file,
+                initial_goal,
+                max_cycles:        max_cycles as u32,
+                status,
+                cycles_run:        cycles_run as u32,
+                prolog_session_id: Uuid::parse_str(&prolog_sid).unwrap(),
+                clips_session_id:  Uuid::parse_str(&clips_sid).unwrap(),
+                created_at_ms,
+                expires_at_ms,
+                context:           serde_json::from_str(&context_s).unwrap_or_default(),
+                tableau_entries:   serde_json::from_str(&tableau_s).unwrap_or_default(),
+                prolog_source_id:  prolog_source_id_s.and_then(|s| s.parse().ok()),
+                clips_source_id:   clips_source_id_s.and_then(|s| s.parse().ok()),
+                dot_artifact_id:   dot_artifact_id_s.and_then(|s| s.parse().ok()),
+            });
+        }
+        Ok(snaps)
+    }
+
     /// Delete a snapshot and all associated Coire events (both engine mailboxes).
     ///
     /// Returns the number of Coire event rows deleted. Returns `0` if no

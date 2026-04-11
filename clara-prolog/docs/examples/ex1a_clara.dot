@@ -1,0 +1,49 @@
+digraph Clara {
+    rankdir=LR
+    fontname="Helvetica"
+    node [fontname="Helvetica" fontsize=11]
+    edge [fontsize=9]
+
+    rule_unlocked_0_0 [label="unlocked" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_tumbler_1_0_1 [label="tumbler_1" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_tumbler_2_0_2 [label="tumbler_2" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_tumbler_3_0_3 [label="tumbler_3" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_suggest_1_4 [label="suggest(Suggestion)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+    rule_suggest_1_5 [label="suggest(Suggestion)" shape=box style=filled fillcolor="#cce5ff" penwidth=2]
+
+    synth_suggest_1 [label="suggest/1" shape=box style=filled fillcolor="#7ba7d4" penwidth=3]
+    synth_suggest_1 -> rule_suggest_1_4 [label="clause" style=dotted color="#555555"]
+    synth_suggest_1 -> rule_suggest_1_5 [label="clause" style=dotted color="#555555"]
+
+    cond_1_0 [label="pick_position(3)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_1_0_1 -> cond_1_0 [label="requires"]
+    cond_1_1 [label="turn(left)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_1_0_1 -> cond_1_1 [label="requires"]
+    cond_2_0 [label="pick_position(1)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_2_0_2 -> cond_2_0 [label="requires"]
+    cond_2_1 [label="turn(right)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_2_0_2 -> cond_2_1 [label="requires"]
+    cond_3_0 [label="pick_position(2)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_3_0_3 -> cond_3_0 [label="requires"]
+    cond_3_1 [label="turn(left)" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_tumbler_3_0_3 -> cond_3_1 [label="requires"]
+    cond_4_0 [label="tumbler_1" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_suggest_1_4 -> cond_4_0 [label="requires"]
+    cond_4_1 [label="\\\\+ tumbler_2" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_suggest_1_4 -> cond_4_1 [label="requires"]
+    cond_4_2 [label="Suggestion" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_suggest_1_4 -> cond_4_2 [label="requires"]
+    cond_5_0 [label="tumbler_2" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_suggest_1_5 -> cond_5_0 [label="requires"]
+    cond_5_1 [label="Suggestion" shape=ellipse style="filled,dashed" fillcolor="#fff3cd"]
+    rule_suggest_1_5 -> cond_5_1 [label="requires"]
+
+    rule_unlocked_0_0 -> rule_tumbler_1_0_1 [color="#1a73e8"]
+    rule_unlocked_0_0 -> rule_tumbler_2_0_2 [color="#1a73e8"]
+    rule_unlocked_0_0 -> rule_tumbler_3_0_3 [color="#1a73e8"]
+
+    cond_4_0 -> rule_tumbler_1_0_1 [label="chains-to" style=dashed color="#1a73e8"]
+    cond_4_1 -> rule_tumbler_2_0_2 [label="chains-to" style=dashed color="#1a73e8"]
+    cond_5_0 -> rule_tumbler_2_0_2 [label="chains-to" style=dashed color="#1a73e8"]
+
+}
