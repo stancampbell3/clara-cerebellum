@@ -150,8 +150,9 @@ Graphviz DOT string that visualizes the rule/fact dependency graph.
 | Shape | Default fill | Meaning |
 |-------|-------------|---------|
 | Ellipse | `#d4edda` (green) | Bare fact — no body goals |
-| Box | `#cfe2ff` (blue) | Rule head with at least one body goal |
-| Dashed ellipse | `#fff3cd` (amber) | Leaf condition — not bridged to another head |
+| Box | `#cce5ff` (blue) | Rule head with at least one body goal |
+| Box (darker, heavier border) | `#7ba7d4` (dark blue) | Synthetic umbrella node — groups 2+ clauses sharing the same head functor/arity |
+| Dashed ellipse | `#fff3cd` (amber) | Leaf condition — not bridged to another rule head |
 
 ### Edge types
 
@@ -160,6 +161,7 @@ Graphviz DOT string that visualizes the rule/fact dependency graph.
 | Solid | Black | `requires` | Rule head → leaf condition |
 | Solid | Blue | *(none)* | Assert-bridge: head A → head B when A's condition is asserted by B |
 | Dashed | Blue | `chains-to` | Condition → rule head whose functor/arity it directly matches |
+| Dotted | Gray | `clause` | Umbrella node → concrete clause node |
 | Dashed | Gray | `satisfies` | Fact → condition whose functor/arity it matches |
 | Dashed | Gray | *(undirected)* | Shared-condition link, when `DotOptions.link_shared_conditions = true` |
 
@@ -188,11 +190,119 @@ are merged:
 - All entries agree → use that value.
 - Any disagreement (including `KnownTrue` + `KnownFalse`) → `KnownUnresolved` (amber).
 
+Coloring is applied only from what is **directly present** in the tableau at
+that phase. Logical inference is not performed — see [Trace coloring design](#trace-coloring-design)
+for the rationale.
+
+### `extract_consulted_files`
+
+```rust
+pub fn extract_consulted_files(rules: &[PrologRule]) -> Vec<String>
+```
+
+Scans bare-fact nodes in a parsed rule set for `consult(file)` terms and
+returns the inner path strings. Used by the trace DOT endpoint to recover the
+full rule graph when the registered source only contains seed clauses (e.g.
+`consult('rules.pl').`, `day_of_week(saturday).`).
+
+### `propagate_rule_coloring`
+
+```rust
+pub fn propagate_rule_coloring(rules: &[PrologRule], coloring: &mut NodeColoring)
+```
+
+Performs a fixpoint pass over the rule set: for each rule whose every positive,
+non-meta body-condition functor is already `KnownTrue` in `coloring`, the rule
+head functor is also marked `KnownTrue`. The loop repeats until no new entries
+are added, so deep chains propagate correctly in a single call.
+
+This function is **not called by the trace DOT endpoint** — see
+[Trace coloring design](#trace-coloring-design). It is exported for
+callers that need to compute a fully-inferred coloring from a static snapshot
+(e.g. offline analysis tools or the `baloroptik file` subcommand).
+
 ### `DotOptions`
 
 | Field | Default | Effect |
 |-------|---------|--------|
 | `link_shared_conditions` | `false` | When `true`, adds dashed gray undirected edges between condition nodes that share the same label across rules. Useful for identifying shared sub-goals. |
+
+---
+
+## Trace Coloring Design
+
+### Coloring is observation-driven, not inference-driven
+
+The trace DOT endpoint (`GET /deduce/{id}/trace/{change_id}/dot`) colors nodes
+from the Dagda tableau snapshot recorded at that phase and **nothing else**.
+`propagate_rule_coloring` is explicitly not called.
+
+This is intentional. Propagation-based coloring would make the entire graph
+green from the first frame whenever the seed facts are logically sufficient to
+prove all goals — which is the normal case. The trace would show no progression
+and would be useless for understanding the reasoning process.
+
+Instead, coloring tracks what has **actually been recorded in the tableau** at
+each phase:
+
+| Phase | What enters the tableau |
+|-------|------------------------|
+| `initial` | Bare seed facts (`day_of_week`, `wet`, …) from `seed_tableau_from_source` |
+| `prolog_to_clips` | One snapshot per relayed event; each snapshot reflects `record_event_in_tableau` on that event's payload |
+| `clips_to_prolog` | Same, for CLIPS goal events (goal events are ignored by `record_event_in_tableau`, so no new green nodes until a fact assertion comes back) |
+| `final_converged` | `re_evaluate_root_goal` marks the root goal `KnownTrue` just before this snapshot |
+
+The result is a frame-by-frame record of what the system has actually computed,
+not what it could compute.
+
+`propagate_rule_coloring` remains available for offline use cases where the
+caller wants a fully-inferred static picture — such as colorizing a snapshot
+for documentation or export — and is willing to lose the temporal dimension.
+
+### How intermediate predicates enter the tableau
+
+Predicates like `wet_surface` and `not_sprinklers` that are proved by Prolog
+backward chaining (not directly asserted) enter the tableau via the `updated/3`
+hook in the decorated source (`_clara.pl`). The hook fires when any clause of a
+`dynamic` predicate is assertz'd. The relay then calls `record_event_in_tableau`
+on each published event, updating the Dagda tableau and snapshotting it.
+
+The root goal (`it_rained`) is handled separately: `re_evaluate_root_goal` in
+`CycleController` re-queries Prolog once all mailboxes are empty and writes the
+result directly to the tableau before the `final_converged` snapshot.
+
+### Known issue: `updated/3` fires for rule clause assertz
+
+**Symptom**: when `ex2_clara.pl` (or any decorated source with synthetic groups)
+is loaded via `consult`, the `updated/3` hook fires for every rule clause that
+is assertz'd as part of loading the file — not just for runtime bare-fact
+assertions. For example, when `wet_surface :- wet(ground).` is added as a
+clause of the `dynamic` predicate `wet_surface/0`, the hook fires and publishes
+`wet_surface` as a `KnownTrue` Coire event.
+
+**Effect**: `wet_surface` and `not_sprinklers` appear as `KnownTrue` in the
+tableau at the first `prolog_to_clips` snapshot (not at `initial`, since the
+Coire events haven't been consumed yet). This is earlier than strictly correct —
+the rules have been *loaded*, not *proved*. In practice the result is accurate
+because both rules do hold given the seeded facts, but a more conservative
+system would only publish after an explicit proof.
+
+**Suggested fix**: Change the `updated/3` handler in `generate_listen_preamble`
+(`clara-cycle/src/transduction.rs`) to check whether the clause body is `true`
+before publishing:
+
+```prolog
+updated(Pred, Action, Context) :-
+    clause(Head, Body, Context),
+    ( Body == true -> coire_publish_assert(Head) ; true ),
+    format('Updated ~w with action ~w in context ~p~n', [Pred, Action, Head]).
+```
+
+With this change only bare facts (`wet(sidewalk).`) trigger a Coire publish;
+rule definitions (`wet_surface :- wet(ground).`) do not. Intermediate predicates
+would then only appear in the tableau when the CLIPS-driven goal loop causes
+Prolog to assertz the proved result explicitly, or when a separate
+proof-recording mechanism is added to `consume_coire_events`.
 
 ---
 
@@ -463,9 +573,17 @@ GET  /deduce/{id}/trace/{cid}/entries  →  raw PredicateEntry slice
 GET  /deduce/{id}/trace/export         →  full Vec<TableauChange> for offline replay
 ```
 
-The DOT endpoint calls `coloring_from_entries` on the stored entries, applies
-the resulting `NodeColoring` to the cached `Vec<PrologRule>`, and calls
-`generate_dot`. Feed the output to Graphviz or `@viz-js/viz` in the browser.
+The DOT endpoint:
+
+1. Loads the cached `"parsed_rules"` artifact for the deduction's `prolog_source_id`.
+2. If the parsed rules contain only bare facts (i.e. the registered source was
+   inline `prolog_clauses` rather than a full rule file), follows any
+   `consult(file)` entries via `extract_consulted_files` and extends the rule
+   set by parsing those files from disk.
+3. Calls `coloring_from_entries` on the stored tableau entries for that phase.
+4. Calls `generate_dot` with the combined rule set and the coloring.
+
+Feed the output to Graphviz or `@viz-js/viz` in the browser.
 
 `baloroptik` automates the last four steps: `baloroptik trace` fetches all
 phase DOTs in one command; `baloroptik replay` replays a previously exported
@@ -537,12 +655,14 @@ pre-process each file with a unique prefix).
 
 | File | Purpose |
 |------|---------|
-| `clara-cycle/src/transduction.rs` | Parser, CLIPS code generator, DOT generator, `NodeColoring`, `coloring_from_entries`, public API |
+| `clara-cycle/src/transduction.rs` | Parser, CLIPS code generator, DOT generator, `NodeColoring`, `coloring_from_entries`, `extract_consulted_files`, `propagate_rule_coloring`, public API |
 | `clara-cycle/src/transpile.rs` | `Term` AST (with `Serialize`/`Deserialize`), `render_clips_fact`, `render_prolog_term` (shared) |
+| `clara-cycle/src/session.rs` | `DeductionSession`, `seed_tableau_from_source`, `record_event_in_tableau` |
+| `clara-cycle/src/controller.rs` | `CycleController::run`, `re_evaluate_root_goal`, `record_tableau` |
 | `clara-coire/src/source.rs` | `SourceRegistry` — `get_or_create_artifact` for `"parsed_rules"` and `"dot"` caching |
 | `clara-coire/src/store.rs` | `CoireStore::list_snapshots` — list persisted deductions newest-first |
-| `clara-api/src/handlers/deduce_handler.rs` | `list_deductions` handler (`GET /deduce`) |
-| `clara-api/src/handlers/trace_handler.rs` | `list_trace`, `trace_dot`, `trace_entries`, `export_trace` HTTP handlers |
+| `clara-api/src/handlers/deduce_handler.rs` | `list_deductions`, `resolve_prolog_source` (auto-registers inline clauses) |
+| `clara-api/src/handlers/trace_handler.rs` | `list_trace`, `trace_dot` (follows `consult` directives, colors from tableau), `trace_entries`, `export_trace` |
 | `clara-api/src/handlers/source_handler.rs` | `register_source`, `get_source`, `get_source_artifact`, `delete_source` HTTP handlers |
 
 ### CLI binaries

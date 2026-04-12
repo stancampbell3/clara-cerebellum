@@ -14,7 +14,7 @@
 //! | `GET`  | `/deduce/{id}/trace/export` | Full `Vec<TableauChange>` export for offline replay |
 
 use actix_web::{web, HttpResponse};
-use clara_cycle::{coloring_from_entries, generate_dot, parse_prolog_rules, DotOptions, PredicateEntry, PrologRule};
+use clara_cycle::{coloring_from_entries, extract_consulted_files, generate_dot, parse_prolog_rules, DotOptions, PredicateEntry, PrologRule};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -158,13 +158,40 @@ pub async fn trace_dot(
     };
 
     // 4. Deserialize rules.
-    let rules: Vec<PrologRule> = match serde_json::from_str(&artifact.content) {
+    let mut rules: Vec<PrologRule> = match serde_json::from_str(&artifact.content) {
         Ok(r) => r,
         Err(e) => {
             return HttpResponse::InternalServerError()
                 .json(json!({ "error": format!("deserialize parsed_rules: {}", e) }));
         }
     };
+
+    // 4a. If the registered source only contained seed clauses (no rules with
+    //     bodies), try to follow any consult(file) directives and extend the
+    //     rule set with the rules from those files.  This covers the common
+    //     case where the deduction was started with inline `prolog_clauses`
+    //     like `["consult('/path/to/rules.pl').", "day_of_week(saturday)."]`
+    //     rather than a pre-registered `prolog_source_id` pointing at the
+    //     rule file itself.
+    if rules.iter().all(|r| r.body.is_empty()) {
+        for path in extract_consulted_files(&rules) {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let extra = parse_prolog_rules(&content);
+                    if !extra.is_empty() {
+                        log::debug!(
+                            "trace_dot: extended rule set from consulted file '{}' (+{} rules)",
+                            path, extra.len()
+                        );
+                        rules.extend(extra);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("trace_dot: could not read consulted file '{}': {}", path, e);
+                }
+            }
+        }
+    }
 
     // 5. Deserialize tableau entries for this phase.
     let entries: Vec<PredicateEntry> = match serde_json::from_str(&change.entries_json) {
@@ -176,6 +203,15 @@ pub async fn trace_dot(
     };
 
     // 6. Build coloring and generate DOT.
+    //    Coloring is driven entirely by what the Dagda tableau actually recorded
+    //    at this phase — not by logical inference from available facts.  Relay
+    //    events (relay_prolog_to_clips / relay_clips_to_prolog) call
+    //    record_event_in_tableau before snapshotting, so intermediate predicates
+    //    like `wet_surface` appear green once the relay phase that carries their
+    //    Coire event is rendered.  The root goal is colored by re_evaluate_root_goal
+    //    at convergence.  Propagation-based pre-coloring is intentionally absent:
+    //    it would make everything green from the initial phase, hiding the trace
+    //    progression.
     let coloring = coloring_from_entries(&entries);
     let dot = generate_dot(&rules, Some(&coloring), &DotOptions::default());
 

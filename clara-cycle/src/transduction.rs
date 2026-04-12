@@ -527,6 +527,80 @@ pub struct NodeColoring {
     pub values: HashMap<String, TruthValue>,
 }
 
+/// Extract file paths from `consult(file)` bare facts in a parsed rule set.
+///
+/// Scans for fact nodes (rules with empty bodies) whose head is
+/// `consult(atom_or_string)` and returns the inner path strings.
+///
+/// This is used by trace visualization to follow consulted files and include
+/// their rules in the dependency graph when the registered source only contains
+/// seed clauses (e.g. `consult('rules.pl').`, `day_of_week(saturday).`).
+pub fn extract_consulted_files(rules: &[PrologRule]) -> Vec<String> {
+    rules.iter()
+        .filter(|r| r.body.is_empty())
+        .filter_map(|r| {
+            if let crate::transpile::Term::Compound { functor, args } = &r.head {
+                if functor == "consult" && args.len() == 1 {
+                    return match &args[0] {
+                        crate::transpile::Term::Atom(s)
+                        | crate::transpile::Term::Str(s) => Some(s.clone()),
+                        _ => None,
+                    };
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Propagate truth values forward through the rule graph in a [`NodeColoring`].
+///
+/// Performs a fixpoint iteration over the rule set.  For each rule whose every
+/// non-meta positive body-condition functor resolves to [`TruthValue::KnownTrue`]
+/// in `coloring`, the rule head functor is also marked `KnownTrue`.
+///
+/// This lets intermediate heads like `wet_surface` and `not_sprinklers` acquire
+/// green fill even when they are absent from the Dagda tableau — they are proven
+/// by propagation from known-true leaf facts.
+///
+/// **Negative body goals** (`\+`) are treated as satisfied (skipped) during
+/// propagation because their truth is tracked separately.
+///
+/// **Multi-clause predicates**: a head is marked `KnownTrue` as soon as any
+/// single clause's entire body is `KnownTrue`.
+pub fn propagate_rule_coloring(rules: &[PrologRule], coloring: &mut NodeColoring) {
+    loop {
+        let mut changed = false;
+        for rule in rules {
+            if rule.body.is_empty() {
+                continue; // bare facts need no propagation
+            }
+            let (head_functor, _) = term_functor_arity(&rule.head);
+            if let Some(TruthValue::KnownTrue) = coloring.values.get(head_functor) {
+                continue; // already known true — skip
+            }
+            // All positive, non-meta body conditions must be KnownTrue.
+            let all_satisfied = rule.body.iter().all(|goal| match goal {
+                BodyGoal::Negative(_) => true, // negation-as-failure: treat as satisfied
+                BodyGoal::Positive(term) => {
+                    let (cf, _) = term_functor_arity(term);
+                    if is_meta_predicate(cf) {
+                        return true; // meta-predicates are infrastructure, not domain facts
+                    }
+                    matches!(coloring.values.get(cf), Some(TruthValue::KnownTrue))
+                }
+            });
+            if all_satisfied {
+                coloring.values.insert(head_functor.to_string(), TruthValue::KnownTrue);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 /// Build a [`NodeColoring`] from a tableau snapshot.
 ///
 /// Each [`PredicateEntry`] contributes its functor name → truth value.  When
