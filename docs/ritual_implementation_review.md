@@ -1,6 +1,6 @@
-# Ritual Framework — Phases 1–4 Implementation Review
+# Ritual Framework — Implementation Review (Phases 1–5)
 
-_Branch: `housbonde_lif` · Date: 2026-04-13_
+_Branch: `housbonde_lif` · Last updated: 2026-04-14_
 
 ---
 
@@ -15,71 +15,101 @@ New workspace crate `clara-ritual` with no external broker dependency.
 | `src/error.rs` | `RitualError`: `InvalidTopicName`, `TopicNotFound`, `BrokerError`, `Serialization` |
 | `src/envelope.rs` | `TephraEnvelope`, `TephraPayload` (Plaintext / Encrypted stub), `RitualConfig`, `label` constants, TTL logic |
 | `src/topic.rs` | `topic_name(dis_domain, ritual_id)` — normalises `/` → `.`, validates Kafka name constraints, returns `"{domain}.ritual.{uuid}"` |
-| `src/broker.rs` | `KafkaBridge` trait (`publish` / `poll`) + `InMemoryBroker` (append-only `Vec` per topic behind `Arc<Mutex<_>>`) |
+| `src/broker.rs` | `KafkaBridge` trait + `InMemoryBroker` |
 
-**Test coverage**: 18 unit tests across `envelope.rs`, `topic.rs`, `broker.rs` — TTL edge cases, serde round-trips, offset advancement, clone sharing, topic isolation, negative offset clamping.
+**Test coverage**: 18 unit tests across `envelope.rs`, `topic.rs`, `broker.rs`.
 
 ### Phase 2 — Registry & Handle
 
 | File | Contents |
 |---|---|
-| `src/ritual.rs` | `Ritual` struct, `RitualState` enum (`Active` / `Terminated`) |
+| `src/ritual.rs` | `Ritual` struct (incl. `participants: HashMap<String, Uuid>`), `RitualState` enum |
 | `src/registry.rs` | `RitualRegistry::create / join / terminate / get_status / ensure_topic` |
 | `src/handle.rs` | `RitualHandle::publish_event / poll_incoming`; `Clone` shares `consumer_offset` Arc |
 
-`AppState` in `clara-api/src/handlers/session_handler.rs` gained `pub ritual_registry: Arc<RitualRegistry>`.  
-Initialised in `clara-api/src/server.rs` before `actix_web::rt::System::new()` (same pattern as `FieryPitClient`).
+`AppState` gained `pub ritual_registry: Arc<RitualRegistry>`, initialised in `server.rs` before the actix runtime.
 
-**Test coverage**: 10 registry tests + 7 handle integration tests — join active/terminated ritual, terminate then join, status, TTL filtering, offset advancement, clone sharing.
+`RitualRegistry::join` accepts `participant_key: Option<&str>` — same key always returns the same `performance_id` (idempotent join for FieryPit peers).
+
+**Test coverage**: 13 registry tests + 7 handle integration tests.
 
 ### Phase 3 — CycleController Integration
 
 Changes to `clara-cycle/src/controller.rs` gated behind `ritual` feature flag:
 
-- Field: `#[cfg(feature = "ritual")] ritual_handle: Option<clara_ritual::RitualHandle>`
-- Builder: `pub fn with_ritual(self, handle: RitualHandle) -> Self`
-- `evaluator_pass()` dispatches to `evaluator_pass_ritual()` when the feature is active
-- `evaluator_pass_ritual()`: polls `RitualHandle::poll_incoming()` → calls `ingest_tephra()` for each; then calls `publish_evaluator_events()`
-- `ingest_tephra()`: extracts `TephraPayload::Plaintext` body, constructs `ClaraEvent` with origin `"ritual/{label}"`, writes to global Coire
-- `publish_evaluator_events()`: polls Coire for events with prefix `"evaluator/"`, publishes each as a Tephra with label `OFFERING`
+- `ritual_handle: Option<RitualHandle>` field + `with_ritual()` builder
+- `pending_evaluator_responses: usize` counter — incremented on every Offering published, decremented on each Hohi ingested; `has_converged()` blocks while non-zero. Max-cycles termination is unaffected.
+- `evaluator_pass_ritual()`: polls `poll_incoming()` → `ingest_tephra()` for each Tephra, then `publish_evaluator_events()`
+- `ingest_tephra()`: unpacks `Plaintext` body → `ClaraEvent` with origin `"ritual/{label}"` → writes to global Coire
+- `publish_evaluator_events()`: drains Coire events with prefix `"evaluator/"` → publishes as Offerings to Ritual topic
 
 `clara-cycle/Cargo.toml`: `clara-ritual` is an optional dependency; `clara-api` enables it via `features = ["ritual"]`.
 
-**Test coverage**: 5 integration tests in `controller.rs` under `#[cfg(all(test, feature = "ritual"))]` — ingest round-trip, encrypted skip, drain+publish, full evaluator_pass, noop without handle.
+**Test coverage**: 8 integration tests in `controller.rs` under `#[cfg(all(test, feature = "ritual"))]`.
 
 ### Phase 4 — REST API
 
-New files:
-- `clara-api/src/handlers/ritual_handler.rs` — four handlers
-- `clara-api/src/routes/ritual.rs` — re-exports
-
-Routes added to `clara-api/src/routes/mod.rs`:
+Routes:
 
 ```
 POST   /ritual               → create_ritual()    201 { ritual_id }
-POST   /ritual/{id}/join     → join_ritual()      200 { ritual_id, performance_id, topic, dis_domain }
+GET    /ritual/{id}/join     → join_ritual()      200 { ritual_id, performance_id, topic, dis_domain }
+                               query: ?participant=<stable-key>  (optional — makes join idempotent)
 GET    /ritual/{id}/status   → ritual_status()    200 { ritual_id, state }
 DELETE /ritual/{id}          → terminate_ritual() 200 { ritual_id, status: "terminated" }
 ```
 
-Error responses: 404 (not found), 409 (terminated on join), 400 (invalid topic name), 500 (other).
+`DeduceRequest` gained `ritual_id: Option<Uuid>`. When set, `start_deduce` calls `registry.join(ritual_id, None)` and attaches the handle via `controller.with_ritual()`.
+
+### Phase 5 — RsKafkaClient
+
+`KafkaBridge` trait gained two new methods implemented on both backends:
+
+| Method | InMemoryBroker | RsKafkaClient |
+|---|---|---|
+| `ensure_topic(topic, partitions, replication)` | no-op | `ControllerClient::create_topic()`; `TopicAlreadyExists` silently ignored |
+| `latest_offset(topic)` | `vec.len() as i64` | `PartitionClient::get_offset(OffsetAt::Latest)` |
+
+`RsKafkaClient` (`clara-ritual` crate, `rskafka` feature):
+- Dedicated single-threaded tokio runtime (same pattern as `FieryPitClient` — safe from `spawn_blocking`)
+- Lazy `PartitionClient` cache per topic (partition 0, `UnknownTopicHandling::Retry`)
+- `publish`: JSON → `rskafka::record::Record::produce`
+- `poll`: `fetch_records(offset, 1..1MiB, 100ms)` → deserialize envelopes
+- `RitualHandle` consumer offset seeded at `latest_offset()` on join — new handles skip history
+
+`ClaraConfig.server.kafka_bootstrap: Option<String>`: when set, `server.rs` constructs `RsKafkaClient` and fails fast on connection errors; when absent, `InMemoryBroker` is used.
+
+**Test coverage**: 40 unit tests in `clara-ritual` (incl. 3 new broker tests for `ensure_topic`/`latest_offset`); 57 cycle tests; all API tests pass.
 
 ---
 
-## Testing Gaps
+## Current Test Counts
 
-### 1. No manual `curl` smoke test yet
+| Crate | Tests | Command |
+|---|---|---|
+| `clara-ritual` | 40 | `cargo test -p clara-ritual --features rskafka` |
+| `clara-cycle` | 57 unit + 3 integration | `cargo test -p clara-cycle --features ritual` |
+| `clara-api` | 26 | `cargo test -p clara-api` |
 
-The Phase 4 checkbox for manual smoke testing is still open. Before Phase 5, run against a live `clara-api` instance:
+---
+
+## Open Testing Gaps
+
+### 1. Manual smoke test (Phases 4–5)
+
+Not yet run against a live server. With a server running on port 8080:
 
 ```bash
 # Create
 curl -s -X POST http://localhost:8080/ritual \
   -H 'Content-Type: application/json' \
-  -d '{"name":"test-ritual","participants":[]}' | jq
+  -d '{"name":"smoke-test","participants":[]}' | jq
 
-# Join (use ritual_id from above)
-curl -s -X POST http://localhost:8080/ritual/{id}/join | jq
+# Join (idempotent with participant key)
+curl -s "http://localhost:8080/ritual/{id}/join?participant=http://fiery-pit-1:8080" | jq
+
+# Join again with same key — must return same performance_id
+curl -s "http://localhost:8080/ritual/{id}/join?participant=http://fiery-pit-1:8080" | jq
 
 # Status
 curl -s http://localhost:8080/ritual/{id}/status | jq
@@ -88,89 +118,63 @@ curl -s http://localhost:8080/ritual/{id}/status | jq
 curl -s -X DELETE http://localhost:8080/ritual/{id} | jq
 
 # Join after terminate (should 409)
-curl -s -X POST http://localhost:8080/ritual/{id}/join | jq
+curl -s "http://localhost:8080/ritual/{id}/join" | jq
 ```
 
-### 2. `start_deduce` never calls `with_ritual()`
+Phase 5 E2E (requires a running Kafka broker):
 
-~~The bridge between `/deduce` and `/ritual` is unimplemented.~~ **Implemented.** `DeduceRequest` now has an optional `ritual_id: Option<Uuid>` field. When set, `start_deduce` calls `registry.join(ritual_id, None)` inside the blocking task and passes the resulting handle via `controller.with_ritual(handle)`. The `evaluator_pass_ritual` path is exercised in unit tests but has not yet been exercised inside a real `CycleController::run()` loop with a running server.
+```bash
+# docker run -d -p 9092:9092 apache/kafka:latest
+# Add to config: kafka_bootstrap = "localhost:9092"
+# Then run the smoke test above and verify the topic exists in Kafka
+```
 
-### 3. `evaluator_pass` timing within a real deduction cycle
+### 2. `evaluator_pass` in a live deduction cycle
 
-In unit tests, `evaluator_pass` is called directly. In a real cycle inside `CycleController::run()`, it is called once per iteration after the CLIPS pass. The interaction between cycle pacing and Tephra round-trip latency (Kafka RTT for Phase 5) has not been exercised.
+`evaluator_pass_ritual` is fully unit-tested but has never run inside a real `CycleController::run()` loop. The full path — `POST /deduce` with `ritual_id` set, CLIPS rule fires an `"evaluator/"` Coire event, Offering published to Kafka, peer Hohi arrives — is untested end-to-end.
 
-### 4. `ensure_topic()` is a no-op
+### 3. Coire singleton isolation in parallel tests
 
-`RitualRegistry::create()` does NOT call `ensure_topic()` — this is deferred to Phase 5. If Phase 5 wires rskafka but forgets to add the `ensure_topic()` call inside `create()`, the first `publish` will fail with a Kafka "unknown topic" error.
-
-### 5. Integration test isolation depends on global Coire singleton
-
-Phase 3 tests call `let _ = clara_coire::init_global();` to initialise the singleton, ignoring `AlreadyInitialized`. Tests use unique session UUIDs for isolation, but they share a single `InMemoryBroker` instance within a test. If `cargo test` parallelism causes interference between tests in different modules that both touch global Coire, spurious failures are possible. Run with `-- --test-threads=1` if flaky behaviour appears.
+Phase 3 tests share the global Coire singleton. Tests use unique session UUIDs but if `cargo test` parallelism causes interference, run with `-- --test-threads=1`.
 
 ---
 
-## Open Design Questions
+## Deferred / Phase 6+ Work
 
-### Q1 — Premature convergence while awaiting a Hohi ✓ Resolved
+### Quorum management (Phase 6+)
 
-**Resolution**: `pending_evaluator_responses: usize` counter added to `CycleController` (ritual feature only).
-- `publish_evaluator_events` increments by the number of Offerings successfully published.
-- `ingest_tephra` decrements by 1 (`saturating_sub`) when a `HOHI`-labelled envelope arrives.
-- `has_converged` returns `false` while the counter is non-zero.
-- Max-cycles termination is unaffected — the cycle still returns `Err(MaxCyclesExceeded)` after exhausting its budget regardless of pending count.
+`Ritual.participants` is the authoritative participant list but there is no enforcement of:
+- Minimum participant count before a ritual can be used
+- Quorum loss detection (participant drops out mid-ritual)
+- Rules for failing a ritual on quorum loss or timeout
 
-3 new tests cover increment, decrement, and underflow protection.
+The `participants` map laid the groundwork. Rules to define before Phase 6:
+- What is a quorum? (e.g., ≥ 2 participants joined)
+- How is quorum loss detected? (heartbeat? join poll?)
+- What status transitions are triggered? (`Degraded`, `Failed`?)
 
-### Q2 — Late joiner offset (Phase 5 implementation note)
+### FieryPit integration (Phase 6)
 
-Not an open question. `InMemoryBroker` replays from offset 0 by design. In Phase 5, `RsKafkaClient` should initialise the `PartitionClient` at the latest offset for new `CycleController` handles so Dis-side joins don't replay prior messages. FieryPit peers using `confluent-kafka-python` are unaffected — they already use `"auto.offset.reset": "latest"`.
+- GoatWrangler endpoints: `/ritual/join`, `/ritual/{id}/poll`, `/ritual/{id}/publish`, `DELETE /ritual/{id}`
+- `FieryPitClient` Rust-side methods: `ritual_join`, `ritual_poll`, `ritual_publish`, `ritual_leave`
+- `RitualRegistry::bootstrap_participant()` — call `FieryPitClient::ritual_join` when participants are listed in `RitualConfig`
 
-**Phase 5 task**: Initialise `consumer_offset` from the broker's latest offset in `RitualHandle::new()` when backed by `RsKafkaClient`.
+### Authentication (deferred)
 
-### Q3 — GET /ritual/{id}/join (idempotent) ✓ Resolved
+All `/ritual/*` endpoints are unauthenticated, consistent with the rest of the API. A dedicated auth pass is required before external exposure.
 
-**Resolution**: Changed `POST /ritual/{id}/join` → `GET /ritual/{id}/join`.
+### Encryption envelope (Phase 7)
 
-`Ritual` now tracks a `participants: HashMap<String, Uuid>` map (participant key → `performance_id`). The handler accepts an optional `?participant=<key>` query parameter:
-- With a key: the same caller always receives the same `performance_id` (idempotent).
-- Without a key: a fresh `performance_id` is generated (anonymous join — used internally by `start_deduce`).
-
-**Deferred**: Quorum management (minimum participant count, quorum loss detection, ritual failure rules) is future work. The `participants` map lays the groundwork — it is the authoritative participant list.
-
-### Q4 — `ritual_id` in `DeduceRequest` ✓ Resolved
-
-**Resolution**: `DeduceRequest` now has `ritual_id: Option<Uuid>`. When set, `start_deduce` calls `registry.join(ritual_id, None)` (anonymous — fresh `performance_id` per run) inside the blocking task and passes the handle to `CycleController::with_ritual()`. Failed joins are logged and the deduction continues without a ritual handle.
-
-### Q5 — No authentication on `/ritual/*` endpoints (deferred)
-
-All endpoints remain unauthenticated. Authentication across all public routes is deferred until the API is stable. **Tracked**: API-wide authentication pass is a pre-production requirement.
-
-### Q6 — `ensure_topic()` call missing from `create()` (Phase 5 task)
-
-`RitualRegistry::create()` does NOT call `ensure_topic()`. For Phase 5, the call sequence must be:
-
-```rust
-pub fn create(&self, config: RitualConfig) -> Result<Uuid, RitualError> {
-    let ritual_id = Uuid::new_v4();
-    let topic = topic_name(&self.dis_domain, ritual_id)?;
-    self.ensure_topic(ritual_id, 1, 1)?;   // ← add this before inserting
-    // ... insert ritual ...
-}
-```
-
-Without this, the first `publish_event` call against rskafka will fail with an unknown-topic error.
+`TephraPayload::Encrypted` stub is defined but not wired. `ingest_tephra` skips encrypted payloads with a warning.
 
 ---
 
-## Pre-Phase-5 Checklist
+## Phase 5 Resolved Items
 
-- [x] Run `cargo test -p clara-ritual` — 37 tests pass
-- [x] Run `cargo test -p clara-cycle --features ritual` — 57 unit + 3 integration tests pass
-- [x] Run `cargo test -p clara-api` — all tests pass
-- [ ] Manual `curl` smoke test of all 4 `/ritual/*` endpoints against a running server
-  - Note: `POST /ritual/{id}/join` is now `GET /ritual/{id}/join?participant=<key>`
-- [x] Pending evaluator responses counter (Q1) — implemented and tested
-- [x] `ritual_id: Option<Uuid>` in `DeduceRequest` (Q4) — implemented
-- [ ] Add `ensure_topic()` call inside `RitualRegistry::create()` (Q6) — required for Phase 5
-- [ ] Phase 5: initialise `consumer_offset` at latest broker offset for Dis-side handles (Q2)
-- [ ] Phase 5: quorum management — minimum participant count, quorum loss detection, ritual failure rules (Q3 deferred)
+| Item | Status |
+|---|---|
+| `ensure_topic()` called from `create()` (was Q6) | ✓ Resolved |
+| `consumer_offset` seeded at latest on join (was Q2) | ✓ Resolved — `latest_offset()` added to trait |
+| `ritual_id` in `DeduceRequest` (was Q4) | ✓ Resolved |
+| Premature convergence counter (was Q1) | ✓ Resolved |
+| Idempotent GET join (was Q3) | ✓ Resolved |
