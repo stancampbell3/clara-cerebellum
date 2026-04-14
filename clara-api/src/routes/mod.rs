@@ -7,6 +7,7 @@ pub mod deduce;
 pub mod coire;
 pub mod trace;
 pub mod source;
+pub mod ritual;
 
 use actix_web::web;
 
@@ -60,5 +61,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             // Coire observability / push hooks
             .route("/cycle/coire/snapshot", web::get().to(coire::snapshot))
             .route("/cycle/coire/push",     web::post().to(coire::push))
+            // Ritual coordination (literal sub-paths before parameterised)
+            .route("/ritual",               web::post().to(ritual::create_ritual))
+            .route("/ritual/{id}/join",     web::get().to(ritual::join_ritual))
+            .route("/ritual/{id}/status",   web::get().to(ritual::ritual_status))
+            .route("/ritual/{id}",          web::delete().to(ritual::terminate_ritual))
     );
 }

@@ -44,6 +44,7 @@ pub async fn start_deduce(
     let context           = req.context.clone();
     let req_prolog_src_id = req.prolog_source_id;
     let req_clips_src_id  = req.clips_source_id;
+    let ritual_id_req     = req.ritual_id;
 
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
@@ -66,9 +67,10 @@ pub async fn start_deduce(
         );
     }
 
-    let state_bg        = state.clone();
-    let coire_store     = state.coire_store.clone();
-    let active_sessions = state.active_coire_sessions.clone();
+    let state_bg           = state.clone();
+    let coire_store        = state.coire_store.clone();
+    let active_sessions    = state.active_coire_sessions.clone();
+    let ritual_registry_bg = state.ritual_registry.clone();
 
     tokio::spawn(async move {
         // Channel: blocking thread sends session UUIDs as soon as they exist,
@@ -105,7 +107,27 @@ pub async fn start_deduce(
                 let c = CycleController::new(session, max_cycles, initial_goal_bg, interrupt_bg)
                     .with_deduction_id(deduction_id);
                 let c = if let Some(store) = store_bg { c.with_store(store) } else { c };
-                c.with_trace(trace)
+                let c = c.with_trace(trace);
+                // Attach a RitualHandle when the caller supplied a ritual_id.
+                // Each deduction run joins anonymously (fresh performance_id).
+                if let Some(rid) = ritual_id_req {
+                    match ritual_registry_bg.join(rid, None) {
+                        Ok(handle) => {
+                            log::info!(
+                                "start_deduce: deduction {} joined ritual {} (performance {})",
+                                deduction_id, rid, handle.performance_id
+                            );
+                            c.with_ritual(handle)
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "start_deduce: failed to join ritual {} for deduction {}: {}",
+                                rid, deduction_id, e
+                            );
+                            c
+                        }
+                    }
+                } else { c }
             };
             let result = controller.run();
             // Pass resolved source IDs back alongside the result.

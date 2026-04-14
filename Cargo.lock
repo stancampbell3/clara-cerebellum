@@ -1034,6 +1034,7 @@ dependencies = [
  "clara-core",
  "clara-cycle",
  "clara-prolog",
+ "clara-ritual",
  "clara-session",
  "clara-toolbox",
  "dotenvy",
@@ -1128,6 +1129,7 @@ dependencies = [
  "clara-coire",
  "clara-dagda",
  "clara-prolog",
+ "clara-ritual",
  "clara-toolbox",
  "env_logger 0.11.8",
  "log",
@@ -1228,6 +1230,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "clara-ritual"
+version = "0.1.0"
+dependencies = [
+ "clara-coire",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
  "uuid",
 ]
 

@@ -1,5 +1,6 @@
 use actix_web::{web, HttpResponse};
 use clara_session::SessionManager;
+use clara_ritual::RitualRegistry;
 use crate::subprocess::SubprocessPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -41,6 +42,9 @@ pub struct AppState {
     /// TTL in milliseconds for [`DeductionSnapshot`] entries. Used when
     /// saving a snapshot after a `persist: true` deduction request.
     pub snapshot_ttl_ms: i64,
+    /// Registry of all active Rituals. Initialized with `InMemoryBroker` until
+    /// Phase 5 wires in the real `RsKafkaClient`.
+    pub ritual_registry: Arc<RitualRegistry>,
 }
 
 /// Convert a clara-session::Session to API SessionResponse

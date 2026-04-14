@@ -14,6 +14,7 @@ use serde_json::json;
 fn create_test_state() -> web::Data<AppState> {
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, RwLock};
+    use clara_ritual::{InMemoryBroker, RitualRegistry};
     web::Data::new(AppState {
         session_manager: SessionManager::new(ManagerConfig::default()),
         subprocess_pool: SubprocessPool::new(
@@ -24,6 +25,10 @@ fn create_test_state() -> web::Data<AppState> {
         coire_store: None,
         active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
         snapshot_ttl_ms: 604_800_000,
+        ritual_registry: Arc::new(RitualRegistry::new(
+            "dis.test",
+            Arc::new(InMemoryBroker::new()),
+        )),
     })
 }
 

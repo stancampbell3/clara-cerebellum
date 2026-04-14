@@ -4,6 +4,7 @@ use clara_cycle::CoireStore;
 use clara_session::{SessionManager, ManagerConfig};
 use clara_config::ConfigLoader;
 use clara_toolbox::{set_domain_id, ToolboxCacheEviction};
+use clara_ritual::{InMemoryBroker, RitualRegistry};
 use log::info;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -111,6 +112,17 @@ pub async fn start_server(
     let snapshot_ttl_ms =
         (config.persistence.deduction_snapshot_ttl_seconds as i64).saturating_mul(1000);
 
+    // Initialize RitualRegistry.
+    // Phase 2: backed by InMemoryBroker. Phase 5 will replace with RsKafkaClient
+    // using config.kafka_bootstrap (or equivalent ClaraConfig field).
+    let dis_domain = config.server.dis_domain_id
+        .clone()
+        .unwrap_or_else(|| "dis.local".to_string());
+    let ritual_registry = Arc::new(RitualRegistry::new(
+        dis_domain,
+        Arc::new(InMemoryBroker::new()),
+    ));
+
     // Create app state
     let app_state = web::Data::new(AppState {
         session_manager,
@@ -119,6 +131,7 @@ pub async fn start_server(
         coire_store,
         active_coire_sessions,
         snapshot_ttl_ms,
+        ritual_registry,
     });
 
     // Create and start server
@@ -145,6 +158,10 @@ mod tests {
             "./clips".to_string(),
             "__END__".to_string(),
         );
+        let ritual_registry = Arc::new(RitualRegistry::new(
+            "dis.test",
+            Arc::new(InMemoryBroker::new()),
+        ));
         let state = AppState {
             session_manager: manager,
             subprocess_pool: pool,
@@ -152,6 +169,7 @@ mod tests {
             coire_store: None,
             active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
             snapshot_ttl_ms: 604_800_000,
+            ritual_registry,
         };
         // Just verify it can be created
         let _cloned = state.clone();

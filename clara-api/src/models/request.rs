@@ -152,6 +152,16 @@ pub struct DeduceRequest {
     /// to LLM evaluate calls that accept a `context` field.
     #[serde(default)]
     pub context: Vec<serde_json::Value>,
+    /// Optional ID of an active Ritual to join for this deduction run.
+    ///
+    /// When set and the `ritual` feature is enabled, the `CycleController`
+    /// will receive a `RitualHandle` via `with_ritual()`, enabling
+    /// `evaluator_pass` to exchange Tephras with peer FieryPit evaluators.
+    /// Each deduction run joins anonymously (fresh `performance_id`) so
+    /// independent runs participating in the same Ritual are distinct
+    /// performances.
+    #[serde(default)]
+    pub ritual_id: Option<Uuid>,
 }
 
 /// Request to resume a previously persisted deduction.
