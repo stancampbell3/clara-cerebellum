@@ -482,12 +482,15 @@ same Kafka cluster as Dis.
 - [x] Wire into `main.rs` routing
 - [ ] Manual smoke test via `curl`
 
-### Phase 5 — rskafka Client
-- [ ] Add `rskafka` dependency to `clara-ritual/Cargo.toml`
-- [ ] Implement `RsKafkaClient: KafkaBridge` with dedicated internal tokio runtime
-- [ ] `RsKafkaClient::new(bootstrap_servers)` → connects, creates `PartitionClient`
-- [ ] `ensure_topic` via `ControllerClient::create_topic()` with configurable partitions/replication
-- [ ] Wire `RsKafkaClient` into `RitualRegistry` constructor via `ClaraConfig.kafka_bootstrap`
+### Phase 5 — rskafka Client ✓ (pending E2E smoke test)
+- [x] Add `rskafka` dependency to `clara-ritual/Cargo.toml` (optional, `rskafka` feature)
+- [x] Implement `RsKafkaClient: KafkaBridge` with dedicated internal tokio runtime
+- [x] `RsKafkaClient::new(bootstrap_servers)` → connects, creates `PartitionClient` (lazy per topic)
+- [x] `ensure_topic` via `ControllerClient::create_topic()` — `TopicAlreadyExists` is silently ignored
+- [x] `KafkaBridge::latest_offset()` — seeds new handle consumer_offset at latest to skip history
+- [x] `KafkaBridge::ensure_topic()` — called from `RitualRegistry::create()` (was deferred from Phase 2)
+- [x] Wire `RsKafkaClient` into `RitualRegistry` via `ClaraConfig.server.kafka_bootstrap`
+- [x] `InMemoryBroker` now used when `kafka_bootstrap` is absent (logged at startup)
 - [ ] End-to-end smoke test with a local Kafka broker (Docker: `confluentinc/cp-kafka` or `apache/kafka`)
 
 ### Phase 6 — FieryPit Producers/Consumers

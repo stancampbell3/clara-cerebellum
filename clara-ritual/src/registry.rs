@@ -36,6 +36,9 @@ impl RitualRegistry {
     pub fn create(&self, config: RitualConfig) -> Result<Uuid, RitualError> {
         let ritual_id = Uuid::new_v4();
         let topic     = topic_name(&self.dis_domain, ritual_id)?;
+        // Ensure the Kafka topic exists before any publish can happen.
+        // No-op for InMemoryBroker; calls ControllerClient::create_topic for RsKafkaClient.
+        self.broker.ensure_topic(&topic, 1, 1)?;
         self.rituals.write().unwrap().insert(
             ritual_id,
             Ritual {
@@ -82,12 +85,17 @@ impl RitualRegistry {
             Uuid::new_v4()
         };
 
+        // Seed the consumer offset at the current latest so new handles do not
+        // replay messages published before they joined.
+        let initial_offset = self.broker.latest_offset(&ritual.topic).unwrap_or(0);
+
         let handle = RitualHandle::new(
             ritual_id,
             performance_id,
             self.dis_domain.clone(),
             self.broker.clone(),
             ritual.topic.clone(),
+            initial_offset,
         );
         log::info!(
             "RitualRegistry: joined ritual {} (performance {}, participant={:?})",
@@ -112,22 +120,28 @@ impl RitualRegistry {
         self.rituals.read().unwrap().get(&ritual_id).map(|r| r.state.clone())
     }
 
-    /// Ensure the Kafka topic exists for this Ritual.
+    /// Ensure the Kafka topic for `ritual_id` exists, creating it if necessary.
     ///
-    /// Phase 2: no-op — `InMemoryBroker` requires no pre-creation.
-    /// Phase 5: will call `ControllerClient::create_topic()` on `RsKafkaClient`
-    /// with the provided `partitions` and `replication` counts.
+    /// Delegates to the underlying `KafkaBridge::ensure_topic` implementation:
+    /// - `InMemoryBroker`: no-op.
+    /// - `RsKafkaClient`: calls `ControllerClient::create_topic()`.
+    ///
+    /// Note: `RitualRegistry::create()` already calls this internally, so
+    /// callers typically do not need to invoke it directly.
     pub fn ensure_topic(
         &self,
         ritual_id:   Uuid,
-        _partitions: i16,
-        _replication: i16,
+        partitions:  i16,
+        replication: i16,
     ) -> Result<(), RitualError> {
-        // Validate that the ritual exists; actual topic creation deferred to Phase 5.
-        self.rituals.read().unwrap().get(&ritual_id).ok_or_else(|| {
-            RitualError::TopicNotFound(ritual_id.to_string())
-        })?;
-        Ok(())
+        let topic = {
+            let guard = self.rituals.read().unwrap();
+            let ritual = guard.get(&ritual_id).ok_or_else(|| {
+                RitualError::TopicNotFound(ritual_id.to_string())
+            })?;
+            ritual.topic.clone()
+        };
+        self.broker.ensure_topic(&topic, partitions as i32, replication)
     }
 }
 

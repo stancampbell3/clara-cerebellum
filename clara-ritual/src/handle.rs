@@ -30,6 +30,7 @@ impl RitualHandle {
         dis_domain:     String,
         broker:         Arc<dyn KafkaBridge>,
         topic:          String,
+        initial_offset: i64,
     ) -> Self {
         Self {
             ritual_id,
@@ -37,7 +38,7 @@ impl RitualHandle {
             dis_domain,
             broker,
             topic,
-            consumer_offset: Arc::new(AtomicI64::new(0)),
+            consumer_offset: Arc::new(AtomicI64::new(initial_offset)),
         }
     }
 

@@ -25,6 +25,15 @@ pub struct ServerConfig {
     /// cross-domain gossip via the Coire/Feathers relay.
     /// Optional — omit or set to `null` to leave entries un-attributed.
     pub dis_domain_id: Option<String>,
+    /// Kafka bootstrap server string for the Ritual messaging backbone.
+    ///
+    /// Format: `"host:port"` or comma-separated `"host1:port1,host2:port2"`.
+    /// When set, `RitualRegistry` is backed by a real `RsKafkaClient` and
+    /// Ritual topics are created in the Kafka cluster on `POST /ritual`.
+    /// When `null` or absent, an `InMemoryBroker` is used (development only —
+    /// messages are not shared across processes or server restarts).
+    #[serde(default)]
+    pub kafka_bootstrap: Option<String>,
 }
 
 /// CLIPS binary and subprocess configuration

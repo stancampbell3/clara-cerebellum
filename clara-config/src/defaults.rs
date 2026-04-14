@@ -7,6 +7,7 @@ pub fn default_server_config() -> ServerConfig {
         request_timeout_ms: 30000,
         max_request_body_size: 1048576, // 1MB
         dis_domain_id: None,
+        kafka_bootstrap: None,
     }
 }
 

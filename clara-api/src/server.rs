@@ -4,7 +4,7 @@ use clara_cycle::CoireStore;
 use clara_session::{SessionManager, ManagerConfig};
 use clara_config::ConfigLoader;
 use clara_toolbox::{set_domain_id, ToolboxCacheEviction};
-use clara_ritual::{InMemoryBroker, RitualRegistry};
+use clara_ritual::{InMemoryBroker, RitualRegistry, RsKafkaClient};
 use log::info;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -113,15 +113,36 @@ pub async fn start_server(
         (config.persistence.deduction_snapshot_ttl_seconds as i64).saturating_mul(1000);
 
     // Initialize RitualRegistry.
-    // Phase 2: backed by InMemoryBroker. Phase 5 will replace with RsKafkaClient
-    // using config.kafka_bootstrap (or equivalent ClaraConfig field).
+    // When `server.kafka_bootstrap` is configured, back the registry with a
+    // real RsKafkaClient so Ritual topics are created in the Kafka cluster.
+    // Otherwise fall back to InMemoryBroker (single-process / development).
     let dis_domain = config.server.dis_domain_id
         .clone()
         .unwrap_or_else(|| "dis.local".to_string());
-    let ritual_registry = Arc::new(RitualRegistry::new(
-        dis_domain,
-        Arc::new(InMemoryBroker::new()),
-    ));
+    let ritual_registry = {
+        let broker: Arc<dyn clara_ritual::KafkaBridge> = if let Some(ref bootstrap) = config.server.kafka_bootstrap {
+            let brokers: Vec<String> = bootstrap
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            match RsKafkaClient::new(brokers) {
+                Ok(client) => {
+                    info!("RitualRegistry: using RsKafkaClient (bootstrap={})", bootstrap);
+                    Arc::new(client)
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to connect RsKafkaClient to '{}': {}", bootstrap, e),
+                    ));
+                }
+            }
+        } else {
+            info!("RitualRegistry: using InMemoryBroker (kafka_bootstrap not configured)");
+            Arc::new(InMemoryBroker::new())
+        };
+        Arc::new(RitualRegistry::new(dis_domain, broker))
+    };
 
     // Create app state
     let app_state = web::Data::new(AppState {
