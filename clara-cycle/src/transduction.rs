@@ -739,7 +739,7 @@ pub fn generate_dot(rules: &[PrologRule], coloring: Option<&NodeColoring>, opts:
     let mut synth_ids: HashMap<(String, usize), String> = HashMap::new();
     {
         let mut multi: Vec<_> = head_by_fa.iter().filter(|(_, v)| v.len() > 1).collect();
-        multi.sort_by_key(|(k, _)| k.clone());
+        multi.sort_by_key(|(k, _)| (*k).clone());
         let mut emitted = false;
         for ((f, a), indices) in &multi {
             let synth_id = format!("synth_{}_{}", dot_id(f), a);

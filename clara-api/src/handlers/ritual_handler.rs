@@ -31,17 +31,27 @@ pub async fn create_ritual(
     state: web::Data<AppState>,
     req:   web::Json<RitualConfig>,
 ) -> HttpResponse {
-    match state.ritual_registry.create(req.into_inner()) {
-        Ok(ritual_id) => {
+    let registry = state.ritual_registry.clone();
+    let config   = req.into_inner();
+    // `registry.create()` calls `broker.ensure_topic()` which internally does
+    // `runtime.block_on(...)`. That panics when called from an async thread.
+    // `web::block` moves the call onto a blocking thread pool thread where
+    // `block_on` is safe — same pattern as `CycleController::run()`.
+    match web::block(move || registry.create(config)).await {
+        Ok(Ok(ritual_id)) => {
             log::info!("Ritual {} created", ritual_id);
             HttpResponse::Created().json(json!({ "ritual_id": ritual_id }))
         }
-        Err(RitualError::InvalidTopicName(msg)) => {
+        Ok(Err(RitualError::InvalidTopicName(msg))) => {
             HttpResponse::BadRequest().json(json!({ "error": msg }))
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             log::warn!("create_ritual failed: {}", e);
             HttpResponse::InternalServerError().json(json!({ "error": e.to_string() }))
+        }
+        Err(e) => {
+            log::error!("create_ritual blocking task panicked: {}", e);
+            HttpResponse::InternalServerError().json(json!({ "error": "internal error" }))
         }
     }
 }
@@ -73,9 +83,12 @@ pub async fn join_ritual(
 ) -> HttpResponse {
     let ritual_id       = path.into_inner();
     let participant_key = query.into_inner().participant;
+    let registry        = state.ritual_registry.clone();
 
-    match state.ritual_registry.join(ritual_id, participant_key.as_deref()) {
-        Ok(handle) => {
+    // `registry.join()` calls `broker.latest_offset()` which uses
+    // `runtime.block_on(...)` — must run on a blocking thread, not an async one.
+    match web::block(move || registry.join(ritual_id, participant_key.as_deref())).await {
+        Ok(Ok(handle)) => {
             log::info!(
                 "Ritual {} joined — performance {}",
                 ritual_id, handle.performance_id
@@ -87,16 +100,20 @@ pub async fn join_ritual(
                 "dis_domain":     handle.dis_domain,
             }))
         }
-        Err(RitualError::TopicNotFound(_)) => {
+        Ok(Err(RitualError::TopicNotFound(_))) => {
             HttpResponse::NotFound().json(json!({ "error": "ritual not found" }))
         }
-        Err(RitualError::BrokerError(msg)) => {
+        Ok(Err(RitualError::BrokerError(msg))) => {
             // join() returns BrokerError when the ritual is terminated.
             HttpResponse::Conflict().json(json!({ "error": msg }))
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             log::warn!("join_ritual {}: {}", ritual_id, e);
             HttpResponse::InternalServerError().json(json!({ "error": e.to_string() }))
+        }
+        Err(e) => {
+            log::error!("join_ritual blocking task panicked: {}", e);
+            HttpResponse::InternalServerError().json(json!({ "error": "internal error" }))
         }
     }
 }
