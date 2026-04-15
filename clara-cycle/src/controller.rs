@@ -616,8 +616,16 @@ impl CycleController {
     fn snapshot(&self) -> CoireSnapshot {
         let coire = clara_coire::global();
         CoireSnapshot {
-            prolog_pending: coire.count_pending(self.session.prolog_id).unwrap_or(1),
-            clips_pending:  coire.count_pending(self.session.clips_id).unwrap_or(1),
+            // Count only `relay-*` events for prolog_pending.  Those are the
+            // events that `coire_consume` (called from prolog_pass) drains, and
+            // therefore the only ones that drive new inference.  Informational
+            // events such as `ritual/...` events written by `ingest_tephra` are
+            // consumed independently (via explicit `coire_poll/2` in Prolog rules)
+            // and must not block convergence when no rules process them.
+            prolog_pending: coire
+                .count_pending_with_origin_prefix(self.session.prolog_id, "relay-")
+                .unwrap_or(1),
+            clips_pending: coire.count_pending(self.session.clips_id).unwrap_or(1),
         }
     }
 
@@ -1205,6 +1213,125 @@ mod ritual_tests {
         );
         ctrl.ingest_tephra(&hohi);
         assert_eq!(ctrl.pending_evaluator_responses, 0, "saturating_sub should not underflow");
+    }
+
+    // ── run() integration: full round-trip with mock evaluator ───────────────
+
+    /// End-to-end test for the `evaluator_pass` path inside `CycleController::run()`.
+    ///
+    /// Exercises the full cycle-loop path that the unit tests leave untested:
+    ///
+    ///   evaluator/ Coire event
+    ///     → `publish_evaluator_events` publishes Offering (pending=1)
+    ///     → `has_converged` blocked while pending>0
+    ///     → mock evaluator thread sees Offering, responds with Hohi
+    ///     → `poll_incoming` receives Hohi
+    ///     → `ingest_tephra` decrements pending to 0
+    ///     → `has_converged` passes → `CycleStatus::Converged`
+    ///
+    /// Uses `InMemoryBroker` — no Kafka, no FieryPit required.
+    #[test]
+    fn run_loop_converges_with_mock_evaluator_hohi() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use clara_ritual::{TephraEnvelope, TephraPayload, topic_name};
+
+        setup_coire();
+
+        // ── ritual setup ──────────────────────────────────────────────────────
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "mock-eval-test".into(), participants: vec![] })
+            .unwrap();
+
+        let topic = topic_name("dis.test", ritual_id).unwrap();
+
+        // CycleController handle — consumer offset seeded at latest (0, empty topic).
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        // ── pre-seed evaluator/ Coire event ──────────────────────────────────
+        // Simulates what a CLIPS rule would emit. `publish_evaluator_events`
+        // will drain this on cycle 0 and publish it as an Offering.
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+
+        clara_coire::global().write_event(&clara_coire::ClaraEvent::new(
+            prolog_id,
+            "evaluator/ask-peer",
+            serde_json::json!({"query": "is_valid(X)"}),
+        )).unwrap();
+
+        // ── mock evaluator thread ─────────────────────────────────────────────
+        // Polls the broker directly for Offerings, responds with a Hohi.
+        let mock_broker    = broker.clone();
+        let mock_topic     = topic.clone();
+        let mock_responded = Arc::new(AtomicBool::new(false));
+        let mock_flag      = mock_responded.clone();
+
+        let mock_thread = std::thread::spawn(move || {
+            let mock_perf_id = Uuid::new_v4();
+            let mut offset   = 0i64;
+
+            for _ in 0..200 {
+                let (envelopes, next_offset) = mock_broker
+                    .poll(&mock_topic, offset)
+                    .expect("mock poll failed");
+                offset = next_offset;
+
+                for env in &envelopes {
+                    if env.label == clara_ritual::label::OFFERING {
+                        let hohi = TephraEnvelope::new(
+                            ritual_id,
+                            mock_perf_id,
+                            clara_ritual::label::HOHI,
+                            60_000,
+                            "mock-evaluator.test",
+                            TephraPayload::Plaintext {
+                                body: serde_json::json!({"answer": "valid", "echo": &env.payload}),
+                            },
+                        );
+                        mock_broker
+                            .publish(&mock_topic, &hohi)
+                            .expect("mock publish failed");
+                        mock_flag.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            // If we get here without finding an Offering the test will fail at
+            // the mock_responded assertion below.
+        });
+
+        // ── run CycleController ───────────────────────────────────────────────
+        let mut ctrl = CycleController::new(
+            session,
+            50,   // generous max_cycles — expect convergence by cycle 3
+            None, // goal defaults to "true" (empty session, no rules needed)
+            Arc::new(AtomicBool::new(false)),
+        ).with_ritual(cc_handle);
+
+        let result = ctrl.run().expect("run() should converge, not hit max_cycles");
+
+        // ── assertions ────────────────────────────────────────────────────────
+        assert_eq!(
+            result.status,
+            crate::result::CycleStatus::Converged,
+            "expected Converged, got {:?}", result.status
+        );
+        assert!(
+            result.cycles >= 2,
+            "expected at least 2 cycles (pending counter must have blocked cycle 0 convergence), \
+             got {} cycle(s)", result.cycles
+        );
+
+        // Confirm the mock evaluator actually fired — the Offering reached it.
+        mock_thread.join().expect("mock evaluator thread panicked");
+        assert!(
+            mock_responded.load(Ordering::Relaxed),
+            "mock evaluator never saw an Offering — publish_evaluator_events may not have fired"
+        );
     }
 
     // ── no-ritual guard ───────────────────────────────────────────────────────

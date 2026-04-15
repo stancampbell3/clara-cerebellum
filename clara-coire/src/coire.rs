@@ -264,6 +264,30 @@ impl Coire {
         let count: i64 = stmt.query_row(duckdb::params![session_id.to_string()], |row| row.get(0))?;
         Ok(count as usize)
     }
+
+    /// Count pending events for `session_id` whose origin starts with `prefix`.
+    ///
+    /// Used by the convergence check to count only events that trigger further
+    /// inference (e.g. `"relay-"` events), excluding informational events such
+    /// as `"ritual/"` events written by `ingest_tephra` that are consumed
+    /// independently via explicit `coire_poll/2` calls in Prolog rules.
+    pub fn count_pending_with_origin_prefix(
+        &self,
+        session_id: Uuid,
+        prefix: &str,
+    ) -> CoireResult<usize> {
+        let conn    = self.conn.lock().unwrap();
+        let pattern = format!("{}%", prefix);
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM coire_events \
+             WHERE session_id = ? AND status = 'pending' AND origin LIKE ?",
+        )?;
+        let count: i64 = stmt.query_row(
+            duckdb::params![session_id.to_string(), pattern],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
 }
 
 pub(crate) struct RawRow {
