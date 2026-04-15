@@ -106,16 +106,25 @@ pub struct CycleController {
     #[cfg(feature = "ritual")]
     ritual_handle: Option<clara_ritual::RitualHandle>,
     /// Count of Offerings published to the Ritual topic that have not yet
-    /// been answered by a Hohi from a peer evaluator.
+    /// been answered by a Hohi (or Tabu) from a peer evaluator.
     ///
     /// Convergence is blocked while this is non-zero so the cycle does not
     /// terminate before peer responses arrive. The counter is decremented
-    /// each time `ingest_tephra` processes a Hohi-labelled envelope.
+    /// each time `ingest_tephra` processes a Hohi- or Tabu-labelled envelope.
     /// Max-cycles termination is NOT blocked — the cycle will still exhaust
     /// its budget and return `Err(MaxCyclesExceeded)` if responses never
     /// arrive, matching the existing no-solution convergence behaviour.
     #[cfg(feature = "ritual")]
     pending_evaluator_responses: usize,
+    /// How many consecutive cycles without any peer response before we
+    /// synthesise a Tabu and clear `pending_evaluator_responses`.
+    /// Default: 10.
+    #[cfg(feature = "ritual")]
+    evaluator_patience_cycles: u32,
+    /// Cycles elapsed since `pending_evaluator_responses` last changed.
+    /// Reset to 0 whenever `pending_evaluator_responses` decrements.
+    #[cfg(feature = "ritual")]
+    cycles_without_response: u32,
 }
 
 impl CycleController {
@@ -139,7 +148,19 @@ impl CycleController {
             ritual_handle: None,
             #[cfg(feature = "ritual")]
             pending_evaluator_responses: 0,
+            #[cfg(feature = "ritual")]
+            evaluator_patience_cycles: 10,
+            #[cfg(feature = "ritual")]
+            cycles_without_response: 0,
         }
+    }
+
+    /// Override the number of consecutive cycles without a peer response
+    /// before a synthetic Tabu is asserted.  Default: 10.
+    #[cfg(feature = "ritual")]
+    pub fn with_evaluator_patience(mut self, patience: u32) -> Self {
+        self.evaluator_patience_cycles = patience;
+        self
     }
 
     /// Attach a [`RitualHandle`] so that `evaluator_pass` will publish
@@ -520,13 +541,17 @@ impl CycleController {
             }
         };
 
-        // A Hohi means a peer evaluator has answered one of our Offerings.
-        if tephra.label == clara_ritual::label::HOHI {
+        // A Hohi or Tabu means a peer evaluator has responded to one of our Offerings.
+        // Both count as "responded" — Tabu is an error response, not silence.
+        if tephra.label == clara_ritual::label::HOHI
+            || tephra.label == clara_ritual::label::TABU
+        {
             self.pending_evaluator_responses =
                 self.pending_evaluator_responses.saturating_sub(1);
+            self.cycles_without_response = 0;
             log::debug!(
-                "CycleController: ingest_tephra Hohi received — pending now {}",
-                self.pending_evaluator_responses
+                "CycleController: ingest_tephra {} received — pending now {}",
+                tephra.label, self.pending_evaluator_responses
             );
         }
 
@@ -549,14 +574,38 @@ impl CycleController {
         }
     }
 
+    /// Write a synthetic `ritual/tabu` Coire event indicating that a peer
+    /// evaluator timed out (was silent for `evaluator_patience_cycles` cycles).
+    ///
+    /// CLIPS/Prolog rules can pattern-match on this event to implement recovery
+    /// logic or declare the goal unresolvable.
+    #[cfg(feature = "ritual")]
+    fn assert_evaluator_timeout_tabu(&self) {
+        let event = clara_coire::ClaraEvent::new(
+            self.session.prolog_id,
+            "ritual/tabu-timeout",
+            serde_json::json!({ "error": "evaluator_timeout" }),
+        );
+        match clara_coire::global().write_event(&event) {
+            Ok(()) => log::debug!(
+                "CycleController: asserted timeout Tabu as Coire event {}",
+                event.event_id
+            ),
+            Err(e) => log::warn!(
+                "CycleController: failed to assert timeout Tabu: {}",
+                e
+            ),
+        }
+    }
+
     /// Drain all pending Coire events whose origin starts with `"evaluator/"`
     /// and publish each as a Tephra to the Ritual topic.
     ///
     /// Each successfully published Offering increments
     /// `pending_evaluator_responses` so that convergence is blocked until a
-    /// matching Hohi arrives via `ingest_tephra`.  Events with other origins
-    /// are left untouched so the Prolog and CLIPS passes can consume them
-    /// normally.
+    /// matching Hohi (or Tabu) arrives via `ingest_tephra`.  Events with other
+    /// origins are left untouched so the Prolog and CLIPS passes can consume
+    /// them normally.
     #[cfg(feature = "ritual")]
     fn publish_evaluator_events(&mut self, handle: &clara_ritual::RitualHandle) {
         let coire = clara_coire::global();
@@ -664,9 +713,30 @@ impl CycleController {
         let tableau_stable  = !agenda.tableau_progressed(&self.session);
         let root_resolved   = agenda.root_goal_resolved(&self.session);
 
-        // Block convergence while Offerings are awaiting Hohi responses from
+        // Block convergence while Offerings are awaiting Hohi/Tabu responses from
         // peer evaluators. This prevents the cycle from declaring a fixed point
         // before peer responses arrive.  Max-cycles termination is unaffected.
+        //
+        // Patience timeout: if the peer is silent for `evaluator_patience_cycles`
+        // consecutive cycles, synthesise a Tabu event and clear the counter so
+        // the cycle can continue (CLIPS/Prolog rules may fire on it).
+        #[cfg(feature = "ritual")]
+        {
+            if self.pending_evaluator_responses > 0 {
+                self.cycles_without_response += 1;
+                if self.cycles_without_response >= self.evaluator_patience_cycles {
+                    log::warn!(
+                        "CycleController: evaluator patience exhausted after {} cycles \
+                         — asserting timeout Tabu and clearing {} pending response(s)",
+                        self.evaluator_patience_cycles,
+                        self.pending_evaluator_responses,
+                    );
+                    self.assert_evaluator_timeout_tabu();
+                    self.pending_evaluator_responses = 0;
+                    self.cycles_without_response = 0;
+                }
+            }
+        }
         #[cfg(feature = "ritual")]
         let pending_responses_zero = self.pending_evaluator_responses == 0;
         #[cfg(not(feature = "ritual"))]

@@ -7,8 +7,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-clara-clips  = { path = "../clara-clips", features = ["ffi"] }
-clara-ritual = { path = "../clara-ritual", features = ["rskafka"] }
+clara-clips       = { path = "../clara-clips", features = ["ffi"] }
+clara-ritual      = { path = "../clara-ritual", features = ["rskafka"] }
+fiery-pit-client  = { path = "../fiery-pit-client" }
 clara-coire = { path = "../clara-coire" }
 clara-cycle = { path = "../clara-cycle", features = ["ritual"] }
 clara-config = { path = "../clara-config", features = ["toml"] }

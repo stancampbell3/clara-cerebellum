@@ -45,6 +45,13 @@ pub struct AppState {
     /// Registry of all active Rituals. Initialized with `InMemoryBroker` until
     /// Phase 5 wires in the real `RsKafkaClient`.
     pub ritual_registry: Arc<RitualRegistry>,
+    /// Dis domain identifier (e.g. "dis.local"). Used when bootstrapping
+    /// FieryPit participant Kafka consumers at Ritual creation.
+    pub dis_domain: String,
+    /// Kafka bootstrap servers address (e.g. "localhost:9092"). Forwarded to
+    /// FieryPit participants at Ritual creation so they can connect to the
+    /// same broker. `None` when using the in-memory broker (tests / dev).
+    pub kafka_bootstrap: Option<String>,
 }
 
 /// Convert a clara-session::Session to API SessionResponse

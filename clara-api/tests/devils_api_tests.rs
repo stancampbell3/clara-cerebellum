@@ -29,6 +29,8 @@ fn create_test_state() -> web::Data<AppState> {
             "dis.test",
             Arc::new(InMemoryBroker::new()),
         )),
+        dis_domain: "dis.test".to_string(),
+        kafka_bootstrap: None,
     })
 }
 

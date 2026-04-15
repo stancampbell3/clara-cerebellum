@@ -7,6 +7,9 @@ use uuid::Uuid;
 pub mod label {
     pub const OFFERING: &str = "offering";
     pub const HOHI: &str = "hohi";
+    /// Error response from a peer evaluator.  A Tephra carrying a Tabu is
+    /// always an error response; the peer responded but evaluation failed.
+    pub const TABU: &str = "tabu";
     pub const PROLOG_FACT: &str = "prolog_fact";
     pub const CLIPS_FIRE: &str = "clips_fire";
     pub const CLARA_FY_HIT: &str = "clara_fy_hit";

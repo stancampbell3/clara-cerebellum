@@ -125,7 +125,8 @@ pub async fn start_server(
     let dis_domain = config.server.dis_domain_id
         .clone()
         .unwrap_or_else(|| "dis.local".to_string());
-    let ritual_registry = Arc::new(RitualRegistry::new(dis_domain, ritual_broker));
+    let kafka_bootstrap = config.server.kafka_bootstrap.clone();
+    let ritual_registry = Arc::new(RitualRegistry::new(dis_domain.clone(), ritual_broker));
 
     // Create app state
     let app_state = web::Data::new(AppState {
@@ -136,6 +137,8 @@ pub async fn start_server(
         active_coire_sessions,
         snapshot_ttl_ms,
         ritual_registry,
+        dis_domain,
+        kafka_bootstrap,
     });
 
     // Create and start server
@@ -174,6 +177,8 @@ mod tests {
             active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
             snapshot_ttl_ms: 604_800_000,
             ritual_registry,
+            dis_domain: "dis.test".to_string(),
+            kafka_bootstrap: None,
         };
         // Just verify it can be created
         let _cloned = state.clone();

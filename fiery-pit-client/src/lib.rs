@@ -129,6 +129,23 @@ pub struct SetFishRequest {
     pub fish: String,
 }
 
+/// POST /ritual/join — register this Dis instance as a Ritual participant.
+///
+/// lildaemon starts its own Kafka consumer on `topic` and begins the
+/// autonomous evaluate → publish loop (Option B architecture).
+#[derive(Debug, Clone, Serialize)]
+pub struct RitualJoinRequest {
+    pub ritual_id:         String,
+    pub topic:             String,
+    pub bootstrap_servers: String,
+    pub dis_domain:        String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluator:         Option<String>,
+    #[serde(default)]
+    pub session_stateful:  bool,
+    pub eval_timeout_s:    f64,
+}
+
 /// POST /hung-detector/configure — all fields optional
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct HungDetectorConfig {
@@ -740,6 +757,49 @@ impl FieryPitClient {
             &format!("/prolog/sessions/{}/consult", session_id),
             &PrologConsultRequest { clauses },
         )
+    }
+
+    // =========================================================================
+    // Ritual coordination — /ritual/*
+    // =========================================================================
+
+    /// Register this Dis instance as a participant in `ritual_id`.
+    ///
+    /// lildaemon starts its own Kafka consumer on `topic` and begins
+    /// the autonomous evaluate → publish Tephra loop.
+    ///
+    /// Returns `409 Conflict` (mapped to `FieryPitError::Status`) if the
+    /// lildaemon is already joined to this ritual.
+    pub fn ritual_join(
+        &self,
+        ritual_id:        uuid::Uuid,
+        topic:            &str,
+        bootstrap:        &str,
+        dis_domain:       &str,
+        evaluator:        Option<&str>,
+        session_stateful: bool,
+        eval_timeout_s:   f64,
+    ) -> Result<Value, FieryPitError> {
+        self.post(
+            "/ritual/join",
+            &RitualJoinRequest {
+                ritual_id:         ritual_id.to_string(),
+                topic:             topic.to_string(),
+                bootstrap_servers: bootstrap.to_string(),
+                dis_domain:        dis_domain.to_string(),
+                evaluator:         evaluator.map(|s| s.to_string()),
+                session_stateful,
+                eval_timeout_s,
+            },
+        )
+    }
+
+    /// Deregister lildaemon from `ritual_id`: stops its consumer and discards state.
+    ///
+    /// Returns `404 Not Found` (mapped to `FieryPitError::Status`) if the
+    /// lildaemon is not currently joined to this ritual.
+    pub fn ritual_leave(&self, ritual_id: uuid::Uuid) -> Result<Value, FieryPitError> {
+        self.delete(&format!("/ritual/{}", ritual_id))
     }
 }
 

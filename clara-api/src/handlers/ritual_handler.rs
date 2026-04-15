@@ -1,5 +1,6 @@
 use actix_web::{web, HttpResponse};
 use clara_ritual::{RitualConfig, RitualError, RitualState};
+use fiery_pit_client::FieryPitClient;
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
@@ -31,13 +32,58 @@ pub async fn create_ritual(
     state: web::Data<AppState>,
     req:   web::Json<RitualConfig>,
 ) -> HttpResponse {
-    let registry = state.ritual_registry.clone();
-    let config   = req.into_inner();
+    let registry         = state.ritual_registry.clone();
+    let dis_domain       = state.dis_domain.clone();
+    let kafka_bootstrap  = state.kafka_bootstrap.clone();
+    let config           = req.into_inner();
+
     // `registry.create()` calls `broker.ensure_topic()` which internally does
     // `runtime.block_on(...)`. That panics when called from an async thread.
     // `web::block` moves the call onto a blocking thread pool thread where
     // `block_on` is safe — same pattern as `CycleController::run()`.
-    match web::block(move || registry.create(config)).await {
+    match web::block(move || {
+        let participants = config.participants.clone();
+        let ritual_id    = registry.create(config)?;
+
+        // Bootstrap any listed FieryPit participant URLs by calling
+        // POST /ritual/join on each one.  We derive the topic the same way
+        // RitualRegistry::create() does so we do not need to re-query the
+        // registry.  Failures are logged as warnings but do NOT abort the
+        // create response — the ritual exists; participants can rejoin later.
+        if !participants.is_empty() {
+            let topic = match clara_ritual::topic_name(&dis_domain, ritual_id) {
+                Ok(t)  => t,
+                Err(e) => {
+                    log::warn!("create_ritual: could not derive topic for bootstrapping: {}", e);
+                    return Ok(ritual_id);
+                }
+            };
+            let bootstrap = kafka_bootstrap.as_deref().unwrap_or("localhost:9092");
+            for url in &participants {
+                let client = FieryPitClient::new(url.as_str());
+                match client.ritual_join(
+                    ritual_id,
+                    &topic,
+                    bootstrap,
+                    &dis_domain,
+                    None,   // evaluator: None → use currently focused evaluator
+                    false,  // session_stateful: default
+                    30.0,   // eval_timeout_s: default
+                ) {
+                    Ok(_) => log::info!(
+                        "create_ritual: bootstrapped participant {} for ritual {}",
+                        url, ritual_id
+                    ),
+                    Err(e) => log::warn!(
+                        "create_ritual: failed to bootstrap participant {}: {}",
+                        url, e
+                    ),
+                }
+            }
+        }
+
+        Ok::<Uuid, RitualError>(ritual_id)
+    }).await {
         Ok(Ok(ritual_id)) => {
             log::info!("Ritual {} created", ritual_id);
             HttpResponse::Created().json(json!({ "ritual_id": ritual_id }))
