@@ -28,12 +28,16 @@ impl DeductionSession {
     /// Create a fresh Prolog + CLIPS engine pair with an empty tableau.
     pub fn new() -> Result<Self, CycleError> {
         let prolog    = PrologEnvironment::new()?;
-        let clips     = ClipsEnvironment::new().map_err(CycleError::SessionCreationFailed)?;
+        let mut clips = ClipsEnvironment::new().map_err(CycleError::SessionCreationFailed)?;
         let prolog_id = prolog.session_id();
         let clips_id  = clips.session_id();
         let tableau   = Dagda::new().map_err(|e| {
             CycleError::SessionCreationFailed(format!("tableau init failed: {e}"))
         })?;
+        // Inject the Prolog session UUID into CLIPS so rules can emit events
+        // directly to the Prolog Coire mailbox (e.g. evaluator/ ritual requests).
+        clips.eval(&format!("(bind ?*prolog-session-id* \"{}\")", prolog_id))
+            .map_err(CycleError::SessionCreationFailed)?;
         Ok(Self { prolog, clips, prolog_id, clips_id, tableau })
     }
 

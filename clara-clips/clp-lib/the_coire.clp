@@ -18,6 +18,11 @@
 ;;; Read-only from CLIPS code; use (coire-session) to access it.
 (defglobal ?*coire-session-id* = "")
 
+;;; Paired Prolog engine's session UUID — injected by Rust at construction.
+;;; Use for cross-engine Coire writes (e.g. emitting evaluator/ events that
+;;; publish_evaluator_events reads from the Prolog mailbox).
+(defglobal ?*prolog-session-id* = "")
+
 ;;; (coire-session) → string: return this engine's session UUID.
 (deffunction coire-session ()
   ?*coire-session-id*)

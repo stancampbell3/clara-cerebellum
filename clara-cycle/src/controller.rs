@@ -269,21 +269,26 @@ impl CycleController {
             relay_prolog_to_clips(&mut self.session, rec.as_ref())?;
             log::debug!("... relay clips complete");
 
-            // 3. Evaluator pass (structural stub — no LLM/FieryPit yet)
-            log::debug!("Evaluator pass");
-            self.evaluator_pass();
-            log::debug!("... evaluator pass complete");
-
-            // 4. CLIPS pass — consume Coire events + run inference engine
+            // 3. CLIPS pass — consume Coire events + run inference engine.
+            //    Runs before the evaluator pass so that CLIPS rules can emit
+            //    evaluator/ events (e.g. peer-evaluation requests) that
+            //    publish_evaluator_events then picks up in the same cycle.
             log::debug!("CLIPS pass");
             self.clips_pass()?;
             log::debug!("... CLIPS pass complete");
 
-            // 5. Relay CLIPS → Prolog
+            // 4. Relay CLIPS → Prolog
             log::debug!("Relay CLIPS → Prolog");
             let rec = self.make_recorder(cycle);
             relay_clips_to_prolog(&mut self.session, rec.as_ref())?;
             log::debug!("... relay prolog complete");
+
+            // 5. Evaluator pass — poll peer Tephras + publish evaluator/ events.
+            //    Positioned after CLIPS so CLIPS-emitted evaluator/ events are
+            //    visible in the same cycle they are produced.
+            log::debug!("Evaluator pass");
+            self.evaluator_pass();
+            log::debug!("... evaluator pass complete");
 
             // 6. Convergence check
             log::debug!("Convergence check");
@@ -555,20 +560,45 @@ impl CycleController {
             );
         }
 
-        let event = clara_coire::ClaraEvent::new(
-            self.session.prolog_id,
-            format!("ritual/{}", tephra.label),
-            body,
-        );
+        let coire = clara_coire::global();
+        let origin = format!("ritual/{}", tephra.label);
 
-        match clara_coire::global().write_event(&event) {
+        // Write to Prolog mailbox — consumed via explicit coire_poll/2 in rules.
+        let prolog_event = clara_coire::ClaraEvent::new(
+            self.session.prolog_id,
+            origin.clone(),
+            body.clone(),
+        );
+        match coire.write_event(&prolog_event) {
             Ok(()) => log::debug!(
                 "CycleController: ingest_tephra wrote tephra {} (label={}) \
-                 as Coire event {}",
-                tephra.tephra_id, tephra.label, event.event_id
+                 to Prolog mailbox as event {}",
+                tephra.tephra_id, tephra.label, prolog_event.event_id
             ),
             Err(e) => log::warn!(
-                "CycleController: ingest_tephra failed to write tephra {}: {}",
+                "CycleController: ingest_tephra failed to write tephra {} \
+                 to Prolog mailbox: {}",
+                tephra.tephra_id, e
+            ),
+        }
+
+        // Also write to CLIPS mailbox so rules can react to Hohi/Tabu responses.
+        // consume_coire_events() will dispatch it as a (coire-event ...) template
+        // fact, allowing (defrule receive-hohi-answer ...) to fire.
+        let clips_event = clara_coire::ClaraEvent::new(
+            self.session.clips_id,
+            origin,
+            body,
+        );
+        match coire.write_event(&clips_event) {
+            Ok(()) => log::debug!(
+                "CycleController: ingest_tephra wrote tephra {} (label={}) \
+                 to CLIPS mailbox as event {}",
+                tephra.tephra_id, tephra.label, clips_event.event_id
+            ),
+            Err(e) => log::warn!(
+                "CycleController: ingest_tephra failed to write tephra {} \
+                 to CLIPS mailbox: {}",
                 tephra.tephra_id, e
             ),
         }
@@ -920,8 +950,35 @@ impl CycleController {
         }
     }
 
-    /// Extract the final bindings for the root goal from the tableau.
+    /// Extract the final bindings for the root goal.
+    ///
+    /// Prefers bindings captured by `re_evaluate_root_goal` (accurate for any
+    /// functor arity) over the wildcard tableau lookup, which only works for
+    /// 1-arity predicates due to the fixed `["*"]` key.
     fn root_goal_bindings(&self, agenda: &GoalAgenda) -> Option<Vec<Binding>> {
+        // Primary path: bindings from the most recent re-evaluation of the root
+        // goal.  `final_solutions` holds the raw Prolog query result as JSON
+        // like `[{"Prompt": "hello", "Answer": "chanter_responded"}]`.
+        if let Some(solutions) = &self.final_solutions {
+            if let Some(arr) = solutions.as_array() {
+                if let Some(first) = arr.first() {
+                    if let Some(obj) = first.as_object() {
+                        let bindings: Vec<Binding> = obj.iter()
+                            .filter(|(k, _)| is_prolog_variable(k))
+                            .map(|(k, v)| Binding {
+                                var: k.clone(),
+                                val: v.as_str().unwrap_or(&v.to_string()).to_string(),
+                            })
+                            .collect();
+                        if !bindings.is_empty() {
+                            return Some(bindings);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: wildcard tableau lookup (works for 0- or 1-arity goals).
         let functor = agenda.root_functor.as_deref()?;
         let entry = self
             .session
@@ -1429,5 +1486,166 @@ mod ritual_tests {
         // Event should still be pending — evaluator_pass was a no-op
         let pending = coire.read_pending(prolog_id).unwrap();
         assert_eq!(pending.len(), 1);
+    }
+
+    // ── Phase 6 e2e: CLIPS rule → evaluator/ → Kafka → Hohi → CLIPS → Prolog ──
+
+    /// End-to-end test for the full ritual peer-evaluation round-trip driven by
+    /// CLIPS forward-chaining rules.
+    ///
+    /// Cycle trace (CLIPS before evaluator pass):
+    ///
+    ///   Cycle 0
+    ///     Prolog: peer_answered(hello, A) fails — no answered/2 yet
+    ///     CLIPS:  (need-peer-eval "hello") → ask-peer-chanter fires
+    ///             → coire-emit to Prolog mailbox: "evaluator/ask-chanter"
+    ///     Evaluator: publish_evaluator_events drains "evaluator/ask-chanter"
+    ///                → Offering on topic, pending = 1
+    ///     Convergence: pending > 0 → NOT CONVERGED
+    ///
+    ///   Cycle 1  (mock evaluator responds with Hohi)
+    ///     Evaluator: ingest_tephra → pending = 0
+    ///                dual-writes ritual/hohi to Prolog + CLIPS mailboxes
+    ///     Convergence: clips_pending = 1 → NOT CONVERGED
+    ///
+    ///   Cycle 2
+    ///     CLIPS: consume_coire_events dispatches (coire-event origin=ritual/hohi)
+    ///            receive-hohi-answer fires → coire-publish-assert answered(hello,chanter_responded)
+    ///     Relay C→P: answered/2 asserted in Prolog mailbox
+    ///     Convergence: prolog_pending = 1 → NOT CONVERGED
+    ///
+    ///   Cycle 3
+    ///     Prolog: consume relay event → assertz(answered(hello, chanter_responded))
+    ///             peer_answered(hello, A) succeeds! A = chanter_responded
+    ///     Convergence: mailboxes empty, pending = 0, root resolved → CONVERGED
+    ///
+    /// Uses InMemoryBroker — no Kafka or lildaemon required.
+    #[test]
+    fn run_loop_ritual_chanter_e2e() {
+        use clara_ritual::{TephraEnvelope, TephraPayload, topic_name};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        setup_coire();
+
+        // ── ritual setup ──────────────────────────────────────────────────────
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "chanter-e2e".into(), participants: vec![] })
+            .unwrap();
+        let topic     = topic_name("dis.test", ritual_id).unwrap();
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        // ── session setup — seed Prolog + CLIPS KBs ───────────────────────────
+        let mut session = DeductionSession::new().unwrap();
+
+        // Prolog: peer_answered/2 depends on answered/2 (asserted later by CLIPS)
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            ":- dynamic answered/2.".into(),
+            "peer_answered(Prompt, Answer) :- answered(Prompt, Answer).".into(),
+        ]).expect("seed_prolog failed");
+
+        // CLIPS: load the two ritual rules from the test resource file
+        session.seed_clips_file(
+            "tests/resources/ritual_chanter_test_clara.clp"
+        ).expect("seed_clips_file failed");
+
+        // Seed initial CLIPS working-memory fact that triggers ask-peer-chanter
+        session.clips.eval("(assert (need-peer-eval \"hello\"))").expect("WM seed failed");
+
+        // ── mock evaluator thread ─────────────────────────────────────────────
+        // Polls the broker for an Offering and responds with a Hohi.
+        let mock_broker    = broker.clone();
+        let mock_topic     = topic.clone();
+        let mock_responded = Arc::new(AtomicBool::new(false));
+        let mock_flag      = mock_responded.clone();
+
+        let mock_thread = std::thread::spawn(move || {
+            let mock_perf_id = Uuid::new_v4();
+            let mut offset   = 0i64;
+
+            for _ in 0..400 {
+                let (envelopes, next_offset) = mock_broker
+                    .poll(&mock_topic, offset)
+                    .expect("mock poll failed");
+                offset = next_offset;
+
+                for env in &envelopes {
+                    if env.label == clara_ritual::label::OFFERING {
+                        let hohi = TephraEnvelope::new(
+                            ritual_id,
+                            mock_perf_id,
+                            clara_ritual::label::HOHI,
+                            60_000,
+                            "chanter.test",
+                            TephraPayload::Plaintext {
+                                body: serde_json::json!({
+                                    "responder": "chanter",
+                                    "data": { "prompt": "hello" }
+                                }),
+                            },
+                        );
+                        mock_broker
+                            .publish(&mock_topic, &hohi)
+                            .expect("mock publish failed");
+                        mock_flag.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        });
+
+        // ── run CycleController ───────────────────────────────────────────────
+        let mut ctrl = CycleController::new(
+            session,
+            50,
+            Some("peer_answered(hello, Answer)".into()),
+            Arc::new(AtomicBool::new(false)),
+        ).with_ritual(cc_handle);
+
+        let result = ctrl.run().expect("run() should converge, not hit max_cycles");
+
+        // ── assertions ────────────────────────────────────────────────────────
+        assert_eq!(
+            result.status,
+            crate::result::CycleStatus::Converged,
+            "expected Converged, got {:?}", result.status
+        );
+        assert!(
+            result.cycles >= 3,
+            "expected at least 3 cycles (CLIPS→evaluator→Hohi→relay→Prolog path), \
+             got {} cycle(s)", result.cycles
+        );
+
+        // The mock evaluator must have seen the Offering.
+        mock_thread.join().expect("mock evaluator thread panicked");
+        assert!(
+            mock_responded.load(Ordering::Relaxed),
+            "mock evaluator never received an Offering"
+        );
+
+        // The Kafka topic must have exactly one Offering and one Hohi.
+        let (all_msgs, _) = broker.poll(&topic, 0).expect("final broker poll failed");
+        let offerings: Vec<_> = all_msgs.iter()
+            .filter(|e| e.label == clara_ritual::label::OFFERING)
+            .collect();
+        let hohis: Vec<_> = all_msgs.iter()
+            .filter(|e| e.label == clara_ritual::label::HOHI)
+            .collect();
+        assert_eq!(offerings.len(), 1, "expected exactly 1 Offering on topic");
+        assert_eq!(hohis.len(),    1, "expected exactly 1 Hohi on topic");
+
+        // The root goal must be KnownTrue with Answer bound to chanter_responded.
+        let goal_bindings = result.goal_bindings
+            .expect("goal_bindings should be present after convergence");
+        let answer = goal_bindings.iter()
+            .find(|b| b.var == "Answer")
+            .map(|b| b.val.as_str())
+            .expect("Answer binding missing from goal_bindings");
+        assert_eq!(answer, "chanter_responded",
+            "expected Answer = chanter_responded, got {:?}", answer);
     }
 }
