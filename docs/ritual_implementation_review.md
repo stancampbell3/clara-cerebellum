@@ -271,7 +271,7 @@ Registered in `bootstrap_default_evaluators()` as `"chanter"` with metadata
 | Component | Tests | Command |
 |---|---|---|
 | `clara-ritual` | 40 | `cargo test -p clara-ritual --features rskafka` |
-| `clara-cycle` | 57 unit + 3 integration | `cargo test -p clara-cycle --features ritual` |
+| `clara-cycle` | 59 unit + 3 integration | `cargo test -p clara-cycle --features ritual` |
 | `clara-api` | 26 | `cargo test -p clara-api` |
 | lildaemon (excl. ws) | 738 passed | `python -m pytest --ignore=tests/test_ws_repl.py` |
 
@@ -371,11 +371,12 @@ response to force the timeout in a single cycle.
 Phase 3 tests share the global Coire singleton. Tests use unique session UUIDs but if `cargo test`
 parallelism causes interference, run with `-- --test-threads=1`.
 
-### 4. CLIPS rule stub + integration test (Phase 6, item 8 — deferred)
+### 4. Full live-Kafka round-trip (Phase 6 complete via InMemoryBroker)
 
-A CLIPS rule that writes to the `evaluator/` Coire prefix (triggering `publish_evaluator_events`)
-has not yet been written.  The integration test scenario described in `phase6_implementation_plan.md`
-(§ Part 3) is deferred pending live Kafka availability.
+`run_loop_ritual_chanter_e2e` covers the full CLIPS-rule → `evaluator/` Coire prefix →
+`publish_evaluator_events` → Offering → Hohi → `ingest_tephra` → Prolog assert → convergence
+path, but uses `InMemoryBroker`.  A matching live-Kafka test (connecting a real Dis instance
+to a real lildaemon Chanter over Kafka) is a natural Phase 7 smoke test but is not a blocker.
 
 ---
 
@@ -423,7 +424,7 @@ payloads with a warning.
 | `DELETE /ritual/{id}` (JWT-guarded) | ✓ 200 OK; 404 if not joined |
 | `Chanter` evaluator | ✓ EchoEvaluator subclass tagged with `{"responder": "chanter"}` |
 | `confluent-kafka>=2.3` dependency | ✓ Added to pyproject.toml, setup.cfg, setup.py |
-| CLIPS rule stub + integration test | ✗ Deferred — requires live Kafka environment |
+| CLIPS rule stub + integration test | ✓ `run_loop_ritual_chanter_e2e` — full round-trip via `InMemoryBroker`, no live Kafka required |
 
 ---
 
