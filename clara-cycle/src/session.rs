@@ -58,15 +58,44 @@ impl DeductionSession {
     }
 
     /// Load a `.clp` file into the CLIPS engine by server-side path.
+    ///
+    /// Calls `(reset)` after loading so that any `deffacts` in the file are
+    /// instantiated in working memory.  Session globals (`?*prolog-session-id*`,
+    /// `?*coire-session-id*`) are re-injected afterwards because `(reset)`
+    /// reverts all `defglobal` values to their defaults.
     pub fn seed_clips_file(&mut self, path: &str) -> Result<(), CycleError> {
-        self.clips.load(path).map_err(CycleError::Clips)
+        self.clips.load(path).map_err(CycleError::Clips)?;
+        self.reset_clips_wm()?;
+        Ok(())
     }
 
     /// Load CLIPS constructs (`defrule`, `deftemplate`, etc.) into the CLIPS engine.
+    ///
+    /// After building all constructs, calls `(reset)` to instantiate any
+    /// `deffacts` that were loaded and to assert `(initial-fact)` (enabling
+    /// empty-LHS rules).  Session globals are re-injected afterwards because
+    /// `(reset)` reverts `defglobal` values to their defaults.
     pub fn seed_clips(&mut self, constructs: &[String]) -> Result<(), CycleError> {
         for construct in constructs {
             self.clips.build(construct).map_err(CycleError::Clips)?;
         }
+        if !constructs.is_empty() {
+            self.reset_clips_wm()?;
+        }
+        Ok(())
+    }
+
+    /// Call `(reset)` on the CLIPS engine and re-inject the session globals
+    /// that `(reset)` resets to their `defglobal` defaults.
+    fn reset_clips_wm(&mut self) -> Result<(), CycleError> {
+        self.clips.eval("(reset)").map_err(CycleError::Clips)?;
+        // Re-inject session UUIDs — (reset) reverts defglobal defaults.
+        self.clips
+            .eval(&format!("(bind ?*prolog-session-id* \"{}\")", self.prolog_id))
+            .map_err(CycleError::Clips)?;
+        self.clips
+            .eval(&format!("(bind ?*coire-session-id* \"{}\")", self.clips_id))
+            .map_err(CycleError::Clips)?;
         Ok(())
     }
 

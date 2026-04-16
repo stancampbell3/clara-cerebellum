@@ -125,10 +125,25 @@ impl KafkaBridge for InMemoryBroker {
 /// ```
 #[cfg(feature = "rskafka")]
 pub struct RsKafkaClient {
-    runtime:    tokio::runtime::Runtime,
+    /// Wrapped in Option so we can move it out in Drop and destroy it on a
+    /// background thread.  Dropping a tokio Runtime inside an async context
+    /// panics; handing it off to a plain std thread avoids that.
+    runtime:    Option<tokio::runtime::Runtime>,
     client:     Arc<rskafka::client::Client>,
     /// Cache of `PartitionClient`s keyed by topic name (partition 0 always).
     partitions: Mutex<HashMap<String, Arc<rskafka::client::partition::PartitionClient>>>,
+}
+
+#[cfg(feature = "rskafka")]
+impl Drop for RsKafkaClient {
+    fn drop(&mut self) {
+        if let Some(rt) = self.runtime.take() {
+            // Spawn a non-async thread so the Runtime is dropped outside of any
+            // async context, preventing the tokio "Cannot drop a runtime in a
+            // context where blocking is not allowed" panic.
+            std::thread::spawn(move || drop(rt));
+        }
+    }
 }
 
 #[cfg(feature = "rskafka")]
@@ -145,7 +160,7 @@ impl RsKafkaClient {
                 format!("failed to build tokio runtime for RsKafkaClient: {e}")
             ))?;
 
-        let client = runtime.block_on(async {
+        let client = runtime.block_on(async move {
             rskafka::client::ClientBuilder::new(bootstrap_brokers)
                 .client_id("clara-dis")
                 .build()
@@ -155,7 +170,7 @@ impl RsKafkaClient {
         ))?;
 
         Ok(Self {
-            runtime,
+            runtime: Some(runtime),
             client: Arc::new(client),
             partitions: Mutex::new(HashMap::new()),
         })
@@ -172,7 +187,7 @@ impl RsKafkaClient {
         }
         let client     = self.client.clone();
         let topic_str  = topic.to_string();
-        let pc = self.runtime.block_on(async move {
+        let pc = self.runtime.as_ref().unwrap().block_on(async move {
             client
                 .partition_client(
                     topic_str,
@@ -200,7 +215,7 @@ impl KafkaBridge for RsKafkaClient {
             timestamp: chrono::Utc::now(),
         };
         let pc = self.partition(topic)?;
-        self.runtime.block_on(async move {
+        self.runtime.as_ref().unwrap().block_on(async move {
             pc.produce(
                 vec![record],
                 rskafka::client::partition::Compression::NoCompression,
@@ -217,7 +232,7 @@ impl KafkaBridge for RsKafkaClient {
     ) -> Result<(Vec<TephraEnvelope>, i64), RitualError> {
         let offset = since_offset.max(0);
         let pc = self.partition(topic)?;
-        let (records, _watermark) = self.runtime.block_on(async move {
+        let (records, _watermark) = self.runtime.as_ref().unwrap().block_on(async move {
             // bytes range: request at least 1 byte, at most 1 MiB.
             // max_wait_ms = 100 — short enough for a tight cycle loop.
             pc.fetch_records(offset, 1..1_048_576, 100).await
@@ -248,7 +263,7 @@ impl KafkaBridge for RsKafkaClient {
     ) -> Result<(), RitualError> {
         let client     = self.client.clone();
         let topic_str  = topic.to_string();
-        self.runtime.block_on(async move {
+        self.runtime.as_ref().unwrap().block_on(async move {
             let ctrl = client.controller_client()
                 .map_err(|e| RitualError::BrokerError(
                     format!("controller_client failed: {e}")
@@ -269,7 +284,7 @@ impl KafkaBridge for RsKafkaClient {
 
     fn latest_offset(&self, topic: &str) -> Result<i64, RitualError> {
         let pc = self.partition(topic)?;
-        self.runtime.block_on(async move {
+        self.runtime.as_ref().unwrap().block_on(async move {
             pc.get_offset(rskafka::client::partition::OffsetAt::Latest).await
         }).map_err(|e| RitualError::BrokerError(format!("get_offset failed on '{topic}': {e}")))
     }

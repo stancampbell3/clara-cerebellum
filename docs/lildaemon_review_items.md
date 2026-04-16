@@ -59,6 +59,8 @@ automatically — the bootstrap call will fail with `401` unless a token is pre-
 - `/ritual/*` endpoints are exempted from auth for internal (loopback / VPC) callers
 - Dis sends a pre-shared API key header instead of a JWT
 
+[STAN] Let's have lildaemon issue service to service tokens via a new service-account endpoint.
+
 ---
 
 ## 4. Confirmation: `RitualParticipant` echo-suppression logic
@@ -75,6 +77,8 @@ correctly.  The Dis `TephraEnvelope::new()` constructor does not currently set
 `producer_node` — it defaults to an empty string, which means echo suppression would never
 trigger (not a bug today, but worth aligning on the field semantics).
 
+[STAN] Good point.
+
 ---
 
 ## 5. Confirmation: consumer group ID and offset semantics under restart
@@ -88,9 +92,15 @@ Offset at join: `latest` — the participant intentionally skips history.
 - If a FieryPit process restarts and rejoins the same ritual, does Kafka's committed offset
   for the group cause it to replay messages, or does the `latest` start override the
   committed offset?  (Depends on `auto.offset.reset` setting — worth documenting.)
+
+[STAN] If the evaluator is a new instance (restarted or freshly joined with no context) then we should replay.
+Otherwise, beginning where we left off should keep us at the right point in the evaluator's reasoning.
+
 - If two FieryPit instances share the same `dis_domain` string and join the same ritual,
   they share a consumer group ID and will load-balance Offerings rather than both seeing
   every Offering.  Is that the intended behaviour?
+
+[STAN] Yes.  Individual instances of the same Evaluator class on the FieryPit side should load-balance by default.  We will introduce routing evaluators later.
 
 ---
 
@@ -100,3 +110,5 @@ Offset at join: `latest` — the participant intentionally skips history.
 A `GET /ritual` (or `GET /ritual/active`) would let Dis poll which rituals a FieryPit
 instance is currently participating in — useful for health checks and debugging.  Not a
 blocker for Phase 6 but worth adding before external exposure.
+
+[STAN] This would enable creating dashboards showing in progress deductions.  We should plan for it.
