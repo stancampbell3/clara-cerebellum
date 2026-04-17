@@ -575,7 +575,7 @@ Send a message or `!command` to a session (REST, non-streaming).
 For commands, prefix with `!`:
 ```json
 {
-  "text": "!set ollama"
+  "text": "!summon ollama"
 }
 ```
 
@@ -598,7 +598,21 @@ For commands:
 }
 ```
 
-`session_state` is included when the command mutates session state (`!set`, `!spawn`, `!focus`, `!close`, `!fish`, `!reset`, `!model`).
+`session_state` is included when the command mutates session state (`!summon`, `!invoke`, `!focus`, `!close`, `!fish`, `!reset`, `!model`).
+
+#### `POST /repl/sessions/{session_id}/fish`
+Set the fish (input translator) for the focused slot in a session. Requires `Authorization: Bearer <jwt>`.
+
+**Request:**
+```json
+{
+  "fish": "stick"
+}
+```
+
+**Response:** Updated session state dict (same shape as create response).
+
+Returns `400` if no slot is focused or the fish name is not found.
 
 #### `GET /repl/sessions/{session_id}/history`
 Fetch message history for a slot.
@@ -645,15 +659,28 @@ Closes with code `1008` if the token is missing, invalid/expired, the session is
 | `type` | Fields | Description |
 |--------|--------|-------------|
 | `thinking` | `evaluator`, `slot` | Evaluation started (before result arrives) |
-| `done` | `text`, `slot`, `tephra` | Evaluation completed successfully |
+| `progress` | `stats` | Periodic stats while evaluation is in flight (every 0.5 s) |
+| `done` | `text`, `slot`, `tephra`, `stats`, `elapsed_ms` | Evaluation completed successfully |
 | `command` | `text` | Command output (markdown) |
 | `error` | `text` | Evaluation or command error |
 | `pong` | — | Response to ping |
 | `session_state` | `state` | Updated session state (sent after mutating commands) |
 
+`stats` shape (both `progress` and `done`):
+```json
+{
+  "ctx_messages": 10,
+  "ctx_chars": 4200,
+  "tool_uses_session": 3,
+  "think_last": 512,
+  "think_session": 1024
+}
+```
+
 ```json
 {"type": "thinking", "evaluator": "ollama", "slot": "ollama"}
-{"type": "done", "text": "The answer is 42.", "slot": "ollama", "tephra": {...}}
+{"type": "progress", "stats": {"ctx_messages": 5, "ctx_chars": 2000, "tool_uses_session": 0, "think_last": 0, "think_session": 0}}
+{"type": "done", "text": "The answer is 42.", "slot": "ollama", "tephra": {...}, "stats": {...}, "elapsed_ms": 3241}
 {"type": "session_state", "state": {...}}
 ```
 
@@ -669,9 +696,9 @@ Commands are prefixed with `!` and work identically over both the REST `/send` e
 |---------|-------------|
 | `!help` | Show command reference |
 | `!status` | Current evaluator, fish, slot summary |
-| `!list-evaluators` | List evaluators available to this session |
-| `!set <name>` | Spawn evaluator in new slot and focus it |
-| `!spawn <name>` | Spawn evaluator in new slot (no focus change) |
+| `!list` | List evaluators available to this session |
+| `!summon <name>` | Spawn evaluator in new slot and focus it |
+| `!invoke <name>` | Spawn evaluator in new slot (no focus change) |
 | `!focus <name>` | Switch focus to a spawned slot |
 | `!close <name>` | Close (unload) a slot |
 | `!slots` | List all active slots with fish and history counts |
@@ -723,6 +750,72 @@ List available fish (input translators).
 
 ---
 
+## Ritual: Autonomous Kafka Consumers
+
+Rituals attach a lildaemon to a Kafka topic as an autonomous evaluator. Each Ritual runs a persistent consumer loop that polls for Offering messages, evaluates them, and publishes Tephra responses back to the topic. All endpoints require `Authorization: Bearer <jwt>`.
+
+#### `GET /ritual`
+List all Ritual IDs this server is currently participating in.
+
+**Response:**
+```json
+{
+  "ritual_ids": ["ritual-abc", "ritual-xyz"],
+  "count": 2
+}
+```
+
+#### `POST /ritual/join`
+Register this lildaemon as a participant in a Ritual. Starts an autonomous Kafka consumer. Returns `202 Accepted`.
+
+Returns `409 Conflict` if already joined to `ritual_id`. Returns `400` if the specified evaluator is not registered.
+
+**Request:** `RitualJoinRequest`
+```json
+{
+  "ritual_id": "ritual-abc",
+  "topic": "my-kafka-topic",
+  "bootstrap_servers": "kafka:9092",
+  "dis_domain": "default",
+  "evaluator": "ollama",
+  "session_stateful": false,
+  "eval_timeout_s": 30.0
+}
+```
+
+Fields:
+- `ritual_id` — unique identifier for this ritual participation
+- `topic` — Kafka topic to consume
+- `bootstrap_servers` — Kafka bootstrap server address(es)
+- `dis_domain` — Disdomain context label
+- `evaluator` (optional) — evaluator name; must be registered in Disdomain
+- `session_stateful` (default: `false`) — whether to maintain session state across messages
+- `eval_timeout_s` (default: `30.0`) — per-evaluation timeout in seconds
+
+**Response:**
+```json
+{
+  "ritual_id": "ritual-abc",
+  "status": "joined",
+  "evaluator": "ollama"
+}
+```
+
+#### `DELETE /ritual/{ritual_id}`
+Stop the Kafka consumer for a Ritual and discard its state.
+
+Returns `404` if not currently joined to `ritual_id`.
+
+**Response:**
+```json
+{
+  "ritual_id": "ritual-abc",
+  "status": "left"
+}
+```
+
+---
+
 ## Fish (Input Translator) Endpoints
 
 Fish are input translators that preprocess text before it reaches an evaluator. They are registered in `CrystalBowl` and configured in `config/fish.yaml`.
@@ -759,6 +852,45 @@ Set the fish (input translator) for a specific evaluator.
   "fish": "stick"
 }
 ```
+
+---
+
+## Global WebSocket Evaluation
+
+#### `WS /ws/evaluate`
+Persistent WebSocket connection for multi-turn evaluation against the server's globally-active evaluator (no auth required, no per-user session). Suitable for driving a REPL session from a web frontend when per-user isolation is not needed.
+
+**Connection:** `ws://host/ws/evaluate`
+
+Closes with code `1011` if GoatWrangler is not initialized.
+
+**Client → Server messages:**
+
+| `type` | Fields | Description |
+|--------|--------|-------------|
+| `send` (default) | `offering` | Evaluate an offering dict |
+| `ping` | — | Keepalive ping |
+
+```json
+{"offering": {"prompt": "Hello!"}}
+{"type": "ping"}
+```
+
+**Server → Client messages:**
+
+| `type` | Fields | Description |
+|--------|--------|-------------|
+| `thinking` | `evaluator` | Evaluation started |
+| `done` | `tephra` | Evaluation completed successfully |
+| `error` | `message` | Error occurred |
+| `pong` | — | Response to ping |
+
+```json
+{"type": "thinking", "evaluator": "ollama"}
+{"type": "done", "tephra": {...}}
+```
+
+> **Note:** For per-user isolated sessions with streaming progress, use `WS /repl/sessions/{session_id}/stream` instead.
 
 ---
 
@@ -1205,6 +1337,14 @@ When using `/evaluate`, errors are returned in Tephra format:
 
 ### Changelog
 
+**2026-04 — Ritual support, command renames, WS progress, session fish endpoint**
+- **Ritual endpoints**: `GET /ritual`, `POST /ritual/join`, `DELETE /ritual/{id}` — join/leave autonomous Kafka consumer loops (JWT required)
+- **Global WS evaluator**: `WS /ws/evaluate` — persistent WebSocket for multi-turn evaluation against the global active evaluator
+- **Session fish endpoint**: `POST /repl/sessions/{id}/fish` — set fish on the focused slot via REST (complements `!fish` command)
+- **Command renames**: `!set` → `!summon`, `!spawn` → `!invoke`, `!list-evaluators` → `!list`
+- **WS `progress` messages**: streaming per-slot stats (`ctx_messages`, `ctx_chars`, `tool_uses_session`, `think_last`, `think_session`) emitted every 0.5 s during evaluation
+- **WS `done` enhancements**: `stats` and `elapsed_ms` fields added to all `done` messages over the session stream
+
 **2026-04 — Codex Cobbler web REPL support**
 - **JWT Auth**: `/auth/register`, `/auth/token`, `/auth/me` for user accounts and bearer tokens
 - **Per-user config**: `/auth/me/config`, `/auth/me/evaluator-config`, `/auth/me/fish-config` — store allowed evaluator lists and full YAML configs per user
@@ -1220,4 +1360,4 @@ When using `/evaluate`, errors are returned in Tephra format:
 - **Authentication Configuration**: Pass auth config (bearer/basic tokens) via API when setting evaluators
 - **Client Disconnection Handling**: Evaluations are cancelled when clients disconnect
 
-*Last updated: 2026-04-02*
+*Last updated: 2026-04-16*
