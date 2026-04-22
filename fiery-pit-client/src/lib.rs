@@ -306,6 +306,7 @@ impl Tephra {
 pub struct FieryPitClient {
     base_url: Arc<String>,
     client: Client,
+    service_key: Option<Arc<String>>,
 }
 
 impl FieryPitClient {
@@ -318,15 +319,37 @@ impl FieryPitClient {
         FieryPitClient {
             base_url: Arc::new(base.trim_end_matches('/').to_string()),
             client: Client::new(),
+            service_key: None,
         }
     }
 
-    /// Create a FieryPitClient from the `FIERY_PIT_URL` environment variable.
-    /// Falls back to `http://localhost:6666` if the variable is not set.
+    /// Attach a Bearer service key for lildaemon's JWT auth.
+    ///
+    /// Returns `self` for builder-style chaining:
+    /// ```no_run
+    /// # use fiery_pit_client::FieryPitClient;
+    /// let client = FieryPitClient::new("http://localhost:6666")
+    ///     .with_service_key("my-token");
+    /// ```
+    pub fn with_service_key(mut self, key: impl Into<String>) -> Self {
+        self.service_key = Some(Arc::new(key.into()));
+        self
+    }
+
+    /// Create a FieryPitClient from environment variables.
+    ///
+    /// - `FIERY_PIT_URL` — base URL (default: `http://localhost:6666`)
+    /// - `FIERYPIT_SERVICE_KEY` — Bearer token for lildaemon auth (optional)
     pub fn from_env() -> Self {
         let url = std::env::var("FIERY_PIT_URL")
             .unwrap_or_else(|_| "http://localhost:6666".into());
-        Self::new(url)
+        let mut client = Self::new(url);
+        if let Ok(key) = std::env::var("FIERYPIT_SERVICE_KEY") {
+            if !key.is_empty() {
+                client = client.with_service_key(key);
+            }
+        }
+        client
     }
 
     // =========================================================================
@@ -336,21 +359,33 @@ impl FieryPitClient {
     fn get(&self, path: &str) -> Result<Value, FieryPitError> {
         let url = format!("{}{}", self.base_url, path);
         log::debug!("FieryPitClient GET {}", url);
-        let resp = self.client.get(&url).send()?;
+        let mut req = self.client.get(&url);
+        if let Some(key) = &self.service_key {
+            req = req.bearer_auth(key.as_str());
+        }
+        let resp = req.send()?;
         self.handle_response(resp)
     }
 
     fn post(&self, path: &str, body: &impl Serialize) -> Result<Value, FieryPitError> {
         let url = format!("{}{}", self.base_url, path);
         log::debug!("FieryPitClient POST {}", url);
-        let resp = self.client.post(&url).json(body).send()?;
+        let mut req = self.client.post(&url).json(body);
+        if let Some(key) = &self.service_key {
+            req = req.bearer_auth(key.as_str());
+        }
+        let resp = req.send()?;
         self.handle_response(resp)
     }
 
     fn delete(&self, path: &str) -> Result<Value, FieryPitError> {
         let url = format!("{}{}", self.base_url, path);
         log::debug!("FieryPitClient DELETE {}", url);
-        let resp = self.client.delete(&url).send()?;
+        let mut req = self.client.delete(&url);
+        if let Some(key) = &self.service_key {
+            req = req.bearer_auth(key.as_str());
+        }
+        let resp = req.send()?;
         self.handle_response(resp)
     }
 
@@ -815,12 +850,38 @@ mod tests {
     fn test_client_creation() {
         let client = FieryPitClient::new("http://localhost:8000");
         assert_eq!(client.base_url.as_ref(), "http://localhost:8000");
+        assert!(client.service_key.is_none());
     }
 
     #[test]
     fn test_client_creation_trims_slash() {
         let client = FieryPitClient::new("http://localhost:8000/");
         assert_eq!(client.base_url.as_ref(), "http://localhost:8000");
+    }
+
+    #[test]
+    fn test_with_service_key() {
+        let client = FieryPitClient::new("http://localhost:8000")
+            .with_service_key("my-secret-token");
+        assert_eq!(client.service_key.as_deref().map(|s| s.as_str()), Some("my-secret-token"));
+    }
+
+    #[test]
+    fn test_from_env_reads_service_key() {
+        std::env::set_var("FIERY_PIT_URL", "http://test:6666");
+        std::env::set_var("FIERYPIT_SERVICE_KEY", "env-token");
+        let client = FieryPitClient::from_env();
+        assert_eq!(client.base_url.as_ref(), "http://test:6666");
+        assert_eq!(client.service_key.as_deref().map(|s| s.as_str()), Some("env-token"));
+        std::env::remove_var("FIERY_PIT_URL");
+        std::env::remove_var("FIERYPIT_SERVICE_KEY");
+    }
+
+    #[test]
+    fn test_from_env_no_key_when_unset() {
+        std::env::remove_var("FIERYPIT_SERVICE_KEY");
+        let client = FieryPitClient::new("http://localhost:6666");
+        assert!(client.service_key.is_none());
     }
 
     #[test]

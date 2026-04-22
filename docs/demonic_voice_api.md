@@ -386,8 +386,34 @@ managed by `clara-cycle`. Each cycle run is asynchronous: the caller receives
 a `deduction_id` immediately and polls for completion.
 
 A cycle converges when the Coire mailboxes are empty, the CLIPS agenda is
-empty, and the Dagda tableau has reached a fixed point — or when the root
+empty, the Dagda tableau has reached a fixed point, and (when a Ritual is
+attached) all outstanding peer Offerings have been answered — or when the root
 goal is resolved.
+
+### GET /deduce
+
+List persisted deductions, newest first. Requires persistence.
+
+**Query parameters:** `limit` (optional, default `50`, max `500`)
+
+**Response `200`:**
+```json
+{
+  "deductions": [
+    {
+      "deduction_id":  "f7a3e2b1-...",
+      "status":        "converged",
+      "cycles_run":    3,
+      "initial_goal":  "eligible(alice)",
+      "created_at_ms": 1744286400000
+    }
+  ]
+}
+```
+
+**Response `503`** if no Coire store is configured.
+
+---
 
 ### POST /deduce
 
@@ -424,6 +450,7 @@ Start an asynchronous deduction run. Returns `202 Accepted` immediately.
 | `max_cycles` | `uint\|null` | `100` | Maximum Prolog↔CLIPS cycles before aborting |
 | `persist` | `bool` | `false` | Save a `DeductionSnapshot` at completion (requires Coire store) |
 | `trace` | `bool` | `false` | Record a Dagda tableau snapshot after each relay phase. With a store, written to `tableau_changes` and queryable via `GET /deduce/{id}/trace`. Without a store, returned inline in `DeductionResult.trace`. |
+| `ritual_id` | `uuid\|null` | `null` | Join an existing active Ritual so the evaluator pass publishes outbound Coire events to the Ritual Kafka topic and ingests incoming Tephras from peer FieryPit evaluators. |
 | `context` | `object[]` | `[]` | Conversational context injected into the session; available to Prolog via `current_context/1` and forwarded to LLM evaluate calls |
 
 **Response `202`:**
@@ -444,7 +471,7 @@ Poll the status of a deduction run.
 ```json
 {
   "deduction_id": "f7a3e2b1-...",
-  "status":       "Converged",
+  "status":       "converged",
   "cycles":       4,
   "result": {
     "status":        "Converged",
@@ -456,9 +483,12 @@ Poll the status of a deduction run.
 }
 ```
 
-`result` is `null` while the run is still in progress.
+`result` is absent while the run is still in progress.
 
-**Status values:** `running` · `Converged` · `Interrupted` · `Error(<msg>)`
+Note: `status` at the top level is a lowercase display string (`"converged"`).
+`result.status` is the serialised Rust enum variant name (`"Converged"`).
+
+**Status values:** `running` · `converged` · `interrupted` · `error: <msg>`
 
 **Response `404`** if the `deduction_id` is unknown.
 
@@ -620,6 +650,20 @@ Truth-value fill colors:
 | `#dc3545` (red) | `KnownFalse` |
 | `#ffc107` (amber) | `KnownUnresolved` — mixed entries for the same functor |
 | `#adb5bd` (gray) | `Unknown` |
+
+---
+
+### GET /deduce/{id}/trace/export
+
+Return the complete ordered list of `TableauChange` records for a deduction
+run, including the full `entries_json` payload for each phase. Intended for
+offline replay with `baloroptik replay`.
+
+**Response `200`:** JSON array of `TableauChange` objects (see
+`deduce_endpoint.md` for the full schema).
+
+**Response `404`** if the `deduction_id` is unknown.
+**Response `503`** if no Coire store is configured.
 
 ---
 
@@ -809,6 +853,108 @@ cycle.
 
 ---
 
+## Ritual
+
+A **Ritual** is a named Kafka-backed coordination channel that connects one or
+more FieryPit peer evaluators to a deduction cycle. When a deduction is started
+with a `ritual_id`, the cycle's evaluator pass (step 3) publishes outbound
+evaluator goals as `TephraEnvelope` messages (label `offering`) to the Ritual
+Kafka topic and ingests incoming Tephras from peer evaluators as `ritual/<label>`
+Coire events in the Prolog mailbox.
+
+The deduction will not converge until all outstanding Offerings have received a
+`hohi` (success) or `tabu` (error) response. If a peer is silent for 10
+consecutive cycles (configurable), a synthetic `ritual/tabu-timeout` event is
+injected so the cycle can continue.
+
+### POST /ritual
+
+Create a new Ritual. Optionally bootstraps listed FieryPit evaluators by calling
+`POST /ritual/join` on each provided URL.
+
+**Request:**
+```json
+{
+  "name":         "my-eval-ritual",
+  "participants": ["http://fiery-pit-1:6666"]
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | Yes | Human-readable label |
+| `participants` | `string[]` | No | FieryPit base URLs to bootstrap at creation. Failures are logged as warnings and do not abort the response. |
+
+**Response `201`:**
+```json
+{ "ritual_id": "a2b3c4d5-..." }
+```
+
+**Response `400`** if the `dis_domain` produces an invalid Kafka topic name.
+
+---
+
+### GET /ritual/{id}/join
+
+Join an existing active Ritual. Returns routing information for the caller's
+Kafka consumer/producer.
+
+**Query parameters:**
+
+| Parameter | Description |
+|---|---|
+| `participant` (optional) | Stable key (e.g. FieryPit base URL). Repeated calls with the same key return the same `performance_id` (idempotent). Omitting always generates a fresh `performance_id`. |
+
+**Response `200`:**
+```json
+{
+  "ritual_id":      "a2b3c4d5-...",
+  "performance_id": "f1e2d3c4-...",
+  "topic":          "dis.local.ritual.a2b3c4d5",
+  "dis_domain":     "dis.local"
+}
+```
+
+**Response `404`** if the Ritual is unknown.
+**Response `409 Conflict`** if the Ritual is terminated.
+
+---
+
+### GET /ritual/{id}/status
+
+Inspect the current state of a Ritual.
+
+**Response `200`:**
+```json
+{
+  "ritual_id": "a2b3c4d5-...",
+  "state":     "active"
+}
+```
+
+`state` is `"active"` or `"terminated"`.
+
+**Response `404`** if the Ritual is unknown.
+
+---
+
+### DELETE /ritual/{id}
+
+Terminate a Ritual. Existing handles in running deductions continue to work;
+new `join` calls are rejected with `409 Conflict`.
+
+**Response `200`:**
+```json
+{
+  "ritual_id": "a2b3c4d5-...",
+  "status":    "terminated"
+}
+```
+
+**Response `404`** if the Ritual is unknown.
+
+---
+
 ## Error Responses
 
 All error responses use the following envelope:
@@ -822,8 +968,9 @@ All error responses use the following envelope:
 
 | HTTP status | Meaning |
 |---|---|
-| `400` | Validation error or type mismatch (e.g. session ID belongs to wrong engine) |
-| `404` | Session, deduction, or snapshot not found |
-| `409` | Conflict — session still active |
+| `400` | Validation error or type mismatch (e.g. session ID belongs to wrong engine; invalid Kafka topic name) |
+| `404` | Session, deduction, snapshot, or Ritual not found |
+| `409` | Conflict — session still active, or Ritual is terminated |
+| `422` | Unprocessable — e.g. `GET /deduce/{id}/trace/{change_id}/dot` called with no `prolog_source_id` on the snapshot |
 | `503` | Feature requires persistence (Coire store) which is not configured |
 | `500` | Internal error |

@@ -41,7 +41,18 @@ POST /deduce
  │       into CLIPS's Coire mailbox with a fresh event_id       │
  │     • [trace] record tableau snapshot ("prolog_to_clips")    │
  │                                                              │
- │  3. Evaluator pass  [stub — LilDaemon/FieryPit future]       │
+ │  3. Evaluator pass  [ritual feature — FieryPit peer eval]    │
+ │     • if ritual_handle present:                              │
+ │       – drain Prolog Coire events with evaluator origin      │
+ │         → publish each as an "offering" TephraEnvelope on    │
+ │           the Ritual Kafka topic; increment                  │
+ │           pending_evaluator_responses                        │
+ │       – poll Ritual topic for new TephraEnvelopes            │
+ │         → ingest each as a "ritual/<label>" Coire event in   │
+ │           Prolog's mailbox (Hohi/Tabu decrement counter)     │
+ │       – patience: if peer silent for                         │
+ │         evaluator_patience_cycles (default 10) cycles,       │
+ │         assert "ritual/tabu-timeout" and clear counter       │
  │                                                              │
  │  4. CLIPS pass                                               │
  │     • consume_coire_events() — dispatch relayed events       │
@@ -58,7 +69,8 @@ POST /deduce
  │     • CLIPS agenda empty (no rules ready to fire)            │
  │     • pending-event snapshot unchanged from last cycle       │
  │     • Dagda tableau unchanged since last cycle (fixed point) │
- │     → if all five true: CONVERGED, exit loop                 │
+ │     • pending_evaluator_responses == 0 (when ritual enabled) │
+ │     → if all six true: CONVERGED, exit loop                  │
  │     • [trace] record tableau snapshot ("final_converged")    │
  │                                                              │
  │  7. Interrupt check                                          │
@@ -96,8 +108,8 @@ addressed to the other engine's session UUID. This means:
 
 ### Convergence
 
-The cycle is considered **converged** when five conditions hold simultaneously
-at the end of a cycle:
+The cycle is considered **converged** when all of the following conditions hold
+simultaneously at the end of a cycle:
 
 1. Prolog's Coire mailbox has zero pending events.
 2. CLIPS's Coire mailbox has zero pending events.
@@ -106,12 +118,20 @@ at the end of a cycle:
    previous cycle (delta == 0).
 5. The Dagda tableau has not changed since the start of this cycle
    (truth-value fixed point).
+6. `pending_evaluator_responses == 0` — all Offerings published to the Ritual
+   topic have been answered by a Hohi or Tabu from peer evaluators. (Only
+   evaluated when the `ritual` feature is enabled and a `ritual_id` was
+   supplied; always satisfied otherwise.)
 
 Condition 4 guards against a pathological case where rules continuously produce
 and consume events at equilibrium without making forward progress. Condition 5
 ensures that the truth-value assignments tracked in the Dagda tableau have
 stabilised — necessary because rule firings can change truth values without
-producing Coire events.
+producing Coire events. Condition 6 prevents convergence while outstanding
+Offerings are awaiting peer evaluation responses; if a peer is silent for
+`evaluator_patience_cycles` consecutive cycles (default 10), a synthetic
+`ritual/tabu-timeout` Coire event is injected and the counter is cleared so the
+cycle can continue.
 
 ### Prolog goal failure is non-fatal
 
@@ -181,6 +201,7 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
   "max_cycles":       100,
   "persist":          false,
   "trace":            false,
+  "ritual_id":        "a2b3c4d5-e6f7-4890-ab12-cd3456789012",
   "context": [
     {"role": "user",      "content": "I need help finding the exit."},
     {"role": "assistant", "content": "I can help with that."}
@@ -200,6 +221,7 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 | `persist` | `bool` | `false` | When `true` and persistence is configured, save a full snapshot on completion for later resumption via `POST /deduce/resume`. |
 | `trace` | `bool` | `false` | When `true`, record a Dagda tableau snapshot after each relay phase. With a store configured, snapshots are written to `tableau_changes` and queryable via `GET /deduce/{id}/trace`. Without a store, the trace is returned inline in `DeductionResult.trace`. |
 | `context` | `object[]` | `[]` | Optional conversational context (external message history). Each element is a free-form JSON object — typically `{"role": "...", "content": "..."}`. Made available to Prolog rules via `current_context/1` and forwarded to LLM evaluate calls that accept a `context` field. |
+| `ritual_id` | `uuid \| null` | `null` | Join an existing active Ritual so that step 3 of every cycle publishes outbound evaluator-tagged Coire events to the Ritual Kafka topic and ingests incoming Tephras from peer FieryPit evaluators. When `null` (default), the evaluator pass is a no-op. |
 
 All fields are optional. An empty body `{}` is valid and will run a single
 no-op cycle that converges immediately.
@@ -654,6 +676,101 @@ will pick it up via `consume_coire_events()` on its next cycle pass.
 
 ---
 
+### `POST /ritual` — create a Ritual
+
+Creates a new Ritual, ensures the associated Kafka topic exists, and optionally
+bootstraps listed FieryPit participant URLs by calling `POST /ritual/join` on
+each one. Returns immediately with the new `ritual_id`.
+
+**Request body** (`application/json`)
+
+```json
+{
+  "name":         "my-eval-ritual",
+  "participants": ["http://fiery-pit-1:6666", "http://fiery-pit-2:6666"]
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | Yes | Human-readable label for the Ritual. Not used for routing. |
+| `participants` | `string[]` | No | FieryPit base URLs to bootstrap. Each receives `POST /ritual/join` with the new topic and bootstrap server. Failures are logged as warnings and do not abort the response. |
+
+**Response** `201 Created`
+
+```json
+{ "ritual_id": "a2b3c4d5-e6f7-4890-ab12-cd3456789012" }
+```
+
+**Response** `400 Bad Request` — invalid `dis_domain` produces an invalid Kafka
+topic name.
+
+---
+
+### `GET /ritual/{id}/join` — join a Ritual
+
+Returns routing information for a participant. Pass the result's `topic` and
+`dis_domain` to the FieryPit consumer/producer when connecting to Kafka.
+
+**Query parameters**
+
+| Parameter | Description |
+|---|---|
+| `participant` (optional) | Stable caller-supplied key (e.g. FieryPit base URL). When provided, repeated calls with the same key return the same `performance_id` (idempotent). Omitting always generates a fresh `performance_id`. |
+
+**Response** `200 OK`
+
+```json
+{
+  "ritual_id":      "a2b3c4d5-e6f7-4890-ab12-cd3456789012",
+  "performance_id": "f1e2d3c4-b5a6-4789-0123-456789abcdef",
+  "topic":          "dis.local.ritual.a2b3c4d5",
+  "dis_domain":     "dis.local"
+}
+```
+
+**Response** `404 Not Found` — unknown `ritual_id`.
+**Response** `409 Conflict` — Ritual is terminated.
+
+---
+
+### `GET /ritual/{id}/status` — inspect Ritual state
+
+**Response** `200 OK`
+
+```json
+{
+  "ritual_id": "a2b3c4d5-e6f7-4890-ab12-cd3456789012",
+  "state":     "active"
+}
+```
+
+`state` is `"active"` or `"terminated"`.
+
+**Response** `404 Not Found` — unknown `ritual_id`.
+
+---
+
+### `DELETE /ritual/{id}` — terminate a Ritual
+
+Marks the Ritual as terminated. Existing `RitualHandle`s held by running
+`CycleController` instances continue to work until the Kafka topic is cleaned up
+(future admin API). New `join` calls on a terminated Ritual are rejected with
+`409 Conflict`.
+
+**Response** `200 OK`
+
+```json
+{
+  "ritual_id": "a2b3c4d5-e6f7-4890-ab12-cd3456789012",
+  "status":    "terminated"
+}
+```
+
+**Response** `404 Not Found` — unknown `ritual_id`.
+
+---
+
 ## Walkthrough: basic Prolog-only deduction
 
 ```bash
@@ -809,6 +926,61 @@ session's knowledge base (asserted by `seed_context` before the first cycle).
 
 ---
 
+## Walkthrough: peer evaluation via Ritual
+
+This example shows a deduction that routes an evaluator goal to a peer FieryPit
+evaluator over Kafka and consumes the response in Prolog.
+
+```bash
+# 1. Create a Ritual that bootstraps the FieryPit evaluator
+RITUAL=$(curl -s -X POST http://localhost:8080/ritual \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name":         "eval-demo",
+    "participants": ["http://fiery-pit-1:6666"]
+  }' | jq -r .ritual_id)
+
+# 2. Start a deduction that joins the Ritual
+ID=$(curl -s -X POST http://localhost:8080/deduce \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"prolog_clauses\": [
+      \":- use_module(library(the_coire)).\",
+      \"eval_via_peer(Text, Result) :-\",
+      \"    coire_publish(evaluator/offering, json([text=Text])),\",
+      \"    coire_poll(ritual/hohi, Env),\",
+      \"    get_dict(result, Env, Result).\"
+    ],
+    \"initial_goal\": \"eval_via_peer('is the user lost?', R)\",
+    \"ritual_id\":    \"$RITUAL\"
+  }" | jq -r .deduction_id)
+
+# 3. Poll until done
+curl -s http://localhost:8080/deduce/$ID | jq .status
+
+# 4. Inspect result
+curl -s http://localhost:8080/deduce/$ID | jq .result.prolog_solutions
+
+# 5. Terminate the Ritual
+curl -s -X DELETE http://localhost:8080/ritual/$RITUAL | jq .
+```
+
+**What happens:**
+
+- Cycle 0: Prolog runs `eval_via_peer/2`, which calls `coire_publish/2` with
+  origin `evaluator/offering`. The evaluator pass picks this up and publishes a
+  `TephraEnvelope` (label `offering`) to the Ritual Kafka topic.
+- The bootstrapped FieryPit evaluator receives the Offering, evaluates it, and
+  publishes a Hohi response (label `hohi`) back on the same topic.
+- On the next cycle, the evaluator pass polls the topic, ingests the Hohi as a
+  `ritual/hohi` Coire event in Prolog's mailbox, and decrements
+  `pending_evaluator_responses` to 0.
+- `coire_poll(ritual/hohi, Env)` unifies with the ingested event, binding
+  `Result`.
+- Convergence: all six conditions satisfied → `converged`.
+
+---
+
 ## Walkthrough: cancel a long-running deduction
 
 To demonstrate cancellation, seed a CLIPS rule that continuously re-asserts
@@ -904,13 +1076,41 @@ of a running deduction. This is useful for:
   full Prolog side.
 - Simulating LilDaemon/LilDevil output ahead of the evaluator-pass integration.
 
-### Evaluator pass (coming)
+### Evaluator pass (Ritual)
 
-Step 3 of each cycle is currently a no-op stub logged as
-`CycleController: evaluator_pass (stub)`. When the FieryPit evaluator
-integration lands, this step will invoke registered CycleMember LilDaemons
-(LLM-based) and LilDevils (logic-based) between the Prolog and CLIPS passes,
-allowing neural and symbolic reasoning to interleave within a single cycle.
+Step 3 of each cycle is the **evaluator pass**. When a `ritual_id` is supplied
+and the `ritual` feature is compiled in, the pass does two things:
+
+1. **Drain outbound** — reads Prolog Coire events whose `origin` starts with
+   `evaluator/` and publishes each as a `TephraEnvelope` (label `offering`) on
+   the Ritual Kafka topic. Each published Offering increments an internal
+   `pending_evaluator_responses` counter.
+2. **Ingest inbound** — polls the Ritual Kafka topic for new `TephraEnvelope`s
+   and writes each as a `ritual/<label>` Coire event into Prolog's mailbox
+   (accessible via `coire_poll/2` in Prolog rules). A `hohi` or `tabu` envelope
+   decrements the counter; a `tabu` signals an error response from the peer.
+
+If no `ritual_id` is set the pass is a no-op (logged at `debug` level).
+
+#### Patience timeout
+
+If `pending_evaluator_responses > 0` and the peer has been silent for
+`evaluator_patience_cycles` consecutive cycles (default 10), the controller
+injects a synthetic `ritual/tabu-timeout` Coire event and resets the counter to
+zero so the cycle can proceed. Prolog/CLIPS rules may pattern-match on this
+event to implement recovery logic or declare the goal unresolvable.
+
+#### Well-known Tephra labels
+
+| Label | Direction | Meaning |
+|---|---|---|
+| `offering` | outbound (clara-api → peer) | Evaluator request published from a Prolog rule via `coire_publish/2` with origin `evaluator/...` |
+| `hohi` | inbound (peer → clara-api) | Successful evaluator response; decrements `pending_evaluator_responses` |
+| `tabu` | inbound (peer → clara-api) | Error evaluator response; also decrements `pending_evaluator_responses` |
+| `prolog_fact` | inbound | Peer asserts a Prolog fact into the session |
+| `clips_fire` | inbound | Peer triggers a CLIPS rule by name |
+| `clara_fy_hit` | inbound | Peer reports a classification result |
+| `deduction_event` | inbound | Generic structured event for rule consumption |
 
 ### Debug logging
 
@@ -1022,7 +1222,34 @@ function or type definition start.
 | `GET /deduce/{id}/trace/{change_id}/entries` | `clara-api/src/handlers/trace_handler.rs` | `trace_entries()` |
 | `GET /cycle/coire/snapshot` | `clara-api/src/handlers/coire_handler.rs` | `snapshot()` |
 | `POST /cycle/coire/push` | `clara-api/src/handlers/coire_handler.rs` | `push()` |
+| `POST /ritual` | `clara-api/src/handlers/ritual_handler.rs` | `create_ritual()` |
+| `GET /ritual/{id}/join` | `clara-api/src/handlers/ritual_handler.rs` | `join_ritual()` |
+| `GET /ritual/{id}/status` | `clara-api/src/handlers/ritual_handler.rs` | `ritual_status()` |
+| `DELETE /ritual/{id}` | `clara-api/src/handlers/ritual_handler.rs` | `terminate_ritual()` |
 | Route registration | `clara-api/src/routes/mod.rs` | `configure()` |
+
+### Ritual (evaluator pass integration)
+
+| Symbol / Topic | File | Notes |
+|---|---|---|
+| `CycleController::with_ritual()` | `clara-cycle/src/controller.rs` | Attaches a `RitualHandle`; compiled only with `ritual` feature |
+| `evaluator_pass_ritual()` | `clara-cycle/src/controller.rs` | Drains outbound Offerings + ingests inbound Tephras |
+| `ingest_tephra()` | `clara-cycle/src/controller.rs` | Writes a Tephra payload as `ritual/<label>` Coire event into Prolog mailbox |
+| `publish_evaluator_events()` | `clara-cycle/src/controller.rs` | Publishes evaluator-origin Coire events as `offering` Tephras |
+| `assert_evaluator_timeout_tabu()` | `clara-cycle/src/controller.rs` | Synthesises a `ritual/tabu-timeout` Coire event after patience timeout |
+| `RitualRegistry` | `clara-ritual/src/registry.rs` | Server-level registry; owns broker; lives in `AppState` |
+| `RitualHandle` | `clara-ritual/src/handle.rs` | Lightweight per-performance handle for publish/poll; cheap to clone |
+| `TephraEnvelope` | `clara-ritual/src/envelope.rs` | Kafka message wrapper: `tephra_id`, `ritual_id`, `performance_id`, `label`, `ttl_ms`, `payload` |
+| `TephraPayload` | `clara-ritual/src/envelope.rs` | `Plaintext { body }` or `Encrypted { … }` (Phase 7 stub) |
+| `RitualConfig` | `clara-ritual/src/envelope.rs` | `{ name, participants }` — POST /ritual request body |
+| `label::*` | `clara-ritual/src/envelope.rs` | Well-known label constants: `OFFERING`, `HOHI`, `TABU`, `PROLOG_FACT`, `CLIPS_FIRE`, `CLARA_FY_HIT`, `DEDUCTION_EVENT` |
+| `KafkaBridge` | `clara-ritual/src/broker.rs` | Trait: `ensure_topic`, `publish`, `poll`, `latest_offset` |
+| `InMemoryBroker` | `clara-ritual/src/broker.rs` | In-process broker for tests and dev (no Kafka required) |
+| `topic_name()` | `clara-ritual/src/topic.rs` | Derives Kafka topic from `dis_domain` + `ritual_id` |
+| `AppState::ritual_registry` | `clara-api/src/handlers/session_handler.rs` | `Arc<RitualRegistry>` — shared across all handlers |
+| `AppState::dis_domain` | `clara-api/src/handlers/session_handler.rs` | Passed to `topic_name()` and forwarded to FieryPit participants at bootstrap |
+| `AppState::kafka_bootstrap` | `clara-api/src/handlers/session_handler.rs` | Kafka broker address forwarded to FieryPit at bootstrap; `None` in dev/test |
+| `DeduceRequest::ritual_id` | `clara-api/src/models/request.rs` | `Option<Uuid>` — join ritual for evaluator pass |
 
 ### Prolog library predicates (context-related)
 

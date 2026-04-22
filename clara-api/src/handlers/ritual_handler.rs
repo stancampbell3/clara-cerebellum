@@ -59,8 +59,13 @@ pub async fn create_ritual(
                 }
             };
             let bootstrap = kafka_bootstrap.as_deref().unwrap_or("localhost:9092");
+            // Attach service key if configured so lildaemon's JWT auth accepts us.
+            let service_key = std::env::var("FIERYPIT_SERVICE_KEY").ok();
             for url in &participants {
-                let client = FieryPitClient::new(url.as_str());
+                let mut client = FieryPitClient::new(url.as_str());
+                if let Some(ref key) = service_key {
+                    client = client.with_service_key(key.as_str());
+                }
                 match client.ritual_join(
                     ritual_id,
                     &topic,
