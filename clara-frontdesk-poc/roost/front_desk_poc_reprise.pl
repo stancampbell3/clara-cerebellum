@@ -3,7 +3,7 @@
 :- use_module(library(the_rabbit)).
 :- use_module(library(the_rat)).
 
-%% Facts that must be visible to Coire
+%% Dynamic facts that may be asserted via coire relay.
 :- dynamic(visitor/1).
 :- dynamic(summoned_by/2).
 :- dynamic(has_artifact/2).
@@ -15,31 +15,20 @@
 :- dynamic(performed_task/1).
 :- dynamic(lost_or_confused/1).
 :- dynamic(greeted/1).
-:- dynamic(where_to_go/1).
 
-%% POC entry point
+%% Application entry point — called once per conversation turn.
+%% Decision ∈ { admitted, redirected, pending }.
+%% Suggestions is a list of guidance atoms for Agent Minos.
+%% Reason and Where carry the grounds for the decision.
 daemonic_turn(Visitor, Suggestions, Decision, Reason, Where) :-
     visitor(Visitor),
     findall(S, suggestion(Visitor, S), Suggestions),
-    (   admit(Visitor, Reason)
-    ->  true
-    ;   Reason = 'Entry denied.'
-    ),
-    effective_decision(Decision, Where).
-
-%% Priority order: admitted/redirected/denied beat pending.
-%% 'redirected' maps to a human-readable destination for the outcome screen.
-effective_decision(Decision, Where) :-
-    (   where_to_go(admitted)
-    ->  Decision = admitted,   Where = ''
-    ;   where_to_go(redirected)
-    ->  Decision = redirected, Where = 'Nearest Map Kiosk'
-    ;   where_to_go(denied)
-    ->  Decision = denied,     Where = ''
-    ;   Decision = pending,    Where = ''
+    (   admit(Visitor, R)        -> Decision = admitted,   Reason = R, Where = ''
+    ;   redirect(Visitor, R, W)  -> Decision = redirected, Reason = R, Where = W
+    ;                               Decision = pending,    Reason = '', Where = ''
     ).
 
-%% Helper: ask Clara whether a condition is satisfied in context.
+%% Ask the LLM whether a condition holds, given conversation context.
 meets_condition(Visitor, Question) :-
     visitor(Visitor),
     the_rabbit:current_context(Context),
@@ -48,96 +37,58 @@ meets_condition(Visitor, Question) :-
     R == true.
 
 %% ----------------------------------------------------------------------
-%%  Admittance Rules (LLM‑augmented)
+%%  Admittance Rules (LLM-augmented, pure — no side effects)
+%%  First matching rule wins via -> in daemonic_turn/5.
 %% ----------------------------------------------------------------------
 
-%% Rule 1: Summoned visitors with 3 artifacts OR who *claim* they have them.
-admit(Visitor, Reason) :-
+%% Rule 1: Summoned visitors with 3 artifacts OR who claim to have them.
+admit(Visitor, 'Summoned visitor bearing the required artifacts.') :-
     visitor(Visitor),
     summoned_by(Visitor, _Official),
-    (
-        % symbolic check
-        findall(A, has_artifact(Visitor, A), Artifacts),
-        length(Artifacts, N),
-        N >= 3
-    ;
-        % LLM‑mediated check
-        meets_condition(
-            Visitor,
-            "Does the visitor claim to possess the three required artifacts for their summons?"
-        )
-    ),
-    Reason = 'Summoned visitor with required artifacts (verified or claimed). Grant entry.',
-    assertz(where_to_go('admitted')).
+    (   findall(A, has_artifact(Visitor, A), Arts), length(Arts, N), N >= 3
+    ;   meets_condition(Visitor, "Does the visitor claim to possess the three required artifacts for their summons?")
+    ).
 
-%% Rule 2: Urgent message + no prior stops (symbolic or LLM‑verified).
-admit(Visitor, Reason) :-
+%% Rule 2: Urgent message + came directly, without prior stops.
+admit(Visitor, 'Bearer of an urgent message who came directly, without prior stops.') :-
     visitor(Visitor),
     urgent_message(Visitor),
-    (
-        \+ stopped_elsewhere(Visitor)
-    ;
-        meets_condition(
-            Visitor,
-            "Does the visitor assert that they came directly here without stopping elsewhere?"
-        )
-    ),
-    Reason = 'Visitor carries an urgent message and came directly. Grant entry.',
-    assertz(where_to_go('admitted')).
+    (   \+ stopped_elsewhere(Visitor)
+    ;   meets_condition(Visitor, "Does the visitor assert they came directly here without stopping elsewhere?")
+    ).
 
-%% Rule 3: Flamefruit carriers before sundown (symbolic or LLM‑verified).
-admit(Visitor, Reason) :-
+%% Rule 3: Flamefruit carrier, arriving before sundown.
+admit(Visitor, 'Flamefruit carrier arriving before sundown.') :-
     visitor(Visitor),
-    (
-        carries_flamefruit(Visitor)
-    ;
-        meets_condition(
-            Visitor,
-            "Is the visitor carrying the rare Flamefruit?"
-        )
+    (   carries_flamefruit(Visitor)
+    ;   meets_condition(Visitor, "Is the visitor carrying the rare Flamefruit?")
     ),
-    \+ after_sundown,
-    Reason = 'Flamefruit carrier before sundown. Grant entry.',
-    assertz(where_to_go('admitted')).
+    \+ after_sundown.
 
-%% Rule 4: Critical info + reliability task (symbolic or LLM‑verified).
-admit(Visitor, Reason) :-
+%% Rule 4: Critical intelligence + demonstrated reliability.
+admit(Visitor, 'Bearer of critical intelligence who has proven reliability.') :-
     visitor(Visitor),
-    (
-        has_critical_info(Visitor)
-    ;
-        meets_condition(
-            Visitor,
-            "Does the visitor claim to possess critical information for the City?"
-        )
+    (   has_critical_info(Visitor)
+    ;   meets_condition(Visitor, "Does the visitor claim to possess critical information for the City?")
     ),
-    (
-        performed_task(Visitor)
-    ;
-        meets_condition(
-            Visitor,
-            "Has the visitor demonstrated reliability by completing the requested task?"
-        )
-    ),
-    Reason = 'Visitor proved reliability and carries critical information. Grant entry.',
-    assertz(where_to_go('admitted')).
-
-%% Rule 5: Lost or confused visitors are never admitted.
-admit(Visitor, Reason) :-
-    visitor(Visitor),
-    (
-        lost_or_confused(Visitor)
-    ;
-        meets_condition(
-            Visitor,
-            "Does the visitor appear lost or confused about where they are?"
-        )
-    ),
-    Reason = 'Visitor appears lost or confused. Do not admit; direct to map kiosk.',
-    assertz(where_to_go('redirected')).
+    (   performed_task(Visitor)
+    ;   meets_condition(Visitor, "Has the visitor demonstrated reliability by completing the requested task?")
+    ).
 
 %% ----------------------------------------------------------------------
-%%  Suggestions (LLM‑augmented)
+%%  Redirect Rules (LLM-augmented, pure — no side effects)
+%%  Checked after all admit rules fail.
+%% ----------------------------------------------------------------------
+
+%% Lost or confused visitors cannot proceed; send to the map kiosk.
+redirect(Visitor, 'This visitor appears lost or confused and cannot proceed.', 'nearest map kiosk') :-
+    visitor(Visitor),
+    (   lost_or_confused(Visitor)
+    ;   meets_condition(Visitor, "Does the visitor appear lost or confused about where they are or why they are here?")
+    ).
+
+%% ----------------------------------------------------------------------
+%%  Suggestion Rules (pure queries — inform Agent Minos, do not affect Decision)
 %% ----------------------------------------------------------------------
 
 suggestion(Visitor, 'Greet the visitor.') :-
@@ -146,23 +97,16 @@ suggestion(Visitor, 'Greet the visitor.') :-
 
 suggestion(Visitor, 'Direct the visitor to the nearest map kiosk.') :-
     visitor(Visitor),
-    (
-        lost_or_confused(Visitor)
-    ;
-        meets_condition(
-            Visitor,
-            "Based on the conversation so far, does the visitor seem lost or confused?"
-        )
-    ),
-    assertz(where_to_go('redirected')).
+    (   lost_or_confused(Visitor)
+    ;   meets_condition(Visitor, "Based on the conversation so far, does the visitor seem lost or confused?")
+    ).
 
 suggestion(Visitor, 'Request the three required artifacts for summoned visitors.') :-
     visitor(Visitor),
     summoned_by(Visitor, _),
     findall(A, has_artifact(Visitor, A), Artifacts),
     length(Artifacts, N),
-    N < 3,
-    assertz(where_to_go('pending')).
+    N < 3.
 
 suggestion(Visitor, 'Verify that the visitor made no prior stops before delivering their urgent message.') :-
     visitor(Visitor),
@@ -177,6 +121,4 @@ suggestion(Visitor, 'Ask the visitor to perform a simple reliability task.') :-
 suggestion(Visitor, 'Advise the visitor to wait until dawn before entry.') :-
     visitor(Visitor),
     carries_flamefruit(Visitor),
-    after_sundown,
-    assertz(where_to_go('pending')).
-
+    after_sundown.
