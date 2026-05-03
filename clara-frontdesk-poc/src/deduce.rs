@@ -24,6 +24,8 @@ pub fn run_deduce(
     max_cycles: u32,
     persist: bool,
 ) -> Result<Value, DeduceError> {
+    // we'll just treat trace as persist at this point, TODO: add a switch
+    let trace = persist;
     let body = json!({
         "prolog_clauses":   prolog_clauses,
         "clips_constructs": [],
@@ -31,7 +33,8 @@ pub fn run_deduce(
         "initial_goal":     initial_goal,
         "context":          context,
         "max_cycles":       max_cycles,
-        "persist":          persist
+        "persist":          persist,
+        "trace":            trace,
     });
 
     let start_url = format!("{}/deduce", clara_api_url);

@@ -23,7 +23,7 @@ If the visitor has not provided enough information to answer the question, respo
 model = "gemma3:latest"
 
 [deduction]
-persist = false
+persist = true
 
 [server]
 port = 8088
