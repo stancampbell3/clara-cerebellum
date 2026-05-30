@@ -1,0 +1,71 @@
+To build an effective training dataset for a CalFresh (California’s SNAP) eligibility agent, you will need to map a complex set of branching rules that involve household composition, immigration status, income thresholds, and work requirements.
+
+The following synthesis of current 2026 regulations provides the foundational logic for your dataset.
+
+### 1. Primary Eligibility Gatekeepers
+
+Your agent should first filter for these high-level criteria:
+
+* **Citizenship/Immigration:** As of April 1, 2026, eligibility is restricted to U.S. Citizens, U.S. Nationals, Lawful Permanent Residents (Green Card holders), Cuban/Haitian entrants, and those under COFA agreements. Many previously eligible categories (asylees, refugees, parolees, etc.) are currently excluded.
+* **Household Composition:** Defined as individuals who purchase and prepare meals together. This includes all occupants (e.g., spouses, children under 22).
+
+### 2. Income Thresholds (Through September 2026)
+
+California utilizes "Modified Categorical Eligibility" (MCE), allowing most households to have a gross monthly income up to **200% of the Federal Poverty Level (FPL)**.
+
+| Household Size | Gross Monthly Income Limit (200% FPL) |
+| --- | --- |
+| 1 | $2,610 |
+| 2 | $3,526 |
+| 3 | $4,442 |
+| 4 | $5,360 |
+| 5 | $6,276 |
+| 6 | $7,192 |
+| 7 | $8,110 |
+| 8 | $9,026 |
+| *Each addtl.* | *+$918* |
+
+* **Exceptions:** Households with a member aged 60+ or disabled may have higher effective income limits and are not subject to asset limits in many scenarios.
+
+### 3. Work Requirements (ABAWD)
+
+Starting **June 1, 2026**, Able-Bodied Adults Without Dependents (ABAWDs)—defined as ages 18–64—are subject to stricter time limits.
+
+* **The Rule:** Benefits are limited to 3 months within a 36-month period unless the individual works, volunteers, or participates in approved training for at least **20 hours per week** (or averages 80 hours monthly).
+* **Exemptions:** Caring for a child under 14, disability, or living in a county with a current waiver.
+
+### 4. Student Eligibility
+
+Students (ages 18–49, enrolled half-time) are generally ineligible unless they meet **one** exemption:
+
+* Awarded federal work-study.
+* Working 20 hours/week.
+* Have a dependent under age 12.
+* Enrolled in a state/local program that increases employability.
+* Receiving TANF-funded financial aid.
+
+### 5. Expedited Service Logic
+
+Your agent should flag "Expedited Service" eligibility, which provides benefits within 3 business days if:
+
+* Gross monthly income is <$150 and liquid resources are <$100.
+* Monthly income/resources are less than monthly rent/utilities combined.
+* The applicant is a migrant or seasonal farmworker with <$100 in liquid resources.
+
+### Suggested Dataset Structure
+
+To train your agent, I recommend structuring your JSON or CSV samples using these input features:
+
+* household_size: Integer
+* gross_monthly_income: Float
+* immigration_status: Enum (Citizen, LPR, Other)
+* student_status: Boolean
+* has_senior_or_disabled_member: Boolean
+* aba_status: Boolean (Able-bodied adult)
+* dependent_children_under_14: Boolean
+* liquid_assets: Float (for expedited flags)
+
+---
+
+**Next Step for our Agent Development:**
+Would you like me to generate a series of synthetic "User Profiles" and "Expected Eligibility Outcomes" in a specific format (e.g., CSV, JSON, or a Prolog-ready fact base) to begin testing the logic of your agent?

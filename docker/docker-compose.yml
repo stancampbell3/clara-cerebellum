@@ -8,6 +8,33 @@
 #   docker compose --env-file .env up -d
 
 services:
+  kafka:
+    image: apache/kafka:latest
+    ports:
+      # 9094 is the external listener — used by cargo run / ./Dis on the host
+      - "127.0.0.1:9094:9094"
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      # INTERNAL: for containers on clara-net; EXTERNAL: for host processes; CONTROLLER: KRaft
+      - KAFKA_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - clara-net
 
   clara-api:
     build:
@@ -22,6 +49,10 @@ services:
       - RUST_LOG=info
       - JWT_SECRET=${JWT_SECRET}
       - FIERYPIT_URL=http://lildaemon:6666
+      - KAFKA_BOOTSTRAP=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
     volumes:
       # FastText model files (860 MB) mounted read-only — not baked into image
       - ../models:/etc/clara/models:ro
@@ -92,7 +123,14 @@ services:
       - "127.0.0.1:6666:6666"
     environment:
       - CEREBELLUM_URL=http://clara-api:8080
+      - LILDAEMON_JWT_SECRET=${LILDAEMON_JWT_SECRET}
+      - LILDAEMON_BASE_URL=http://lildaemon:6666
+      - LILDAEMON_DB_PATH=/app/data/lildaemon.duc
+      - LILDAEMON_OUTPUT_DIR=/app/output
       - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      - ../lildaemon/data:/app/data
+      - ../lildaemon/output:/app/output
     depends_on:
       clara-api:
         condition: service_healthy

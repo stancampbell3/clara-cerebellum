@@ -32,9 +32,16 @@ fn main() -> std::io::Result<()> {
     // RsKafkaClient owns a dedicated tokio runtime; constructing it inside
     // an existing async runtime panics ("Cannot start a runtime from within
     // a runtime"). This mirrors the FieryPitClient / ToolboxManager pattern.
-    let config = ConfigLoader::from_env(None)
+    let mut config = ConfigLoader::from_env(None)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other,
             format!("Failed to load config: {}", e)))?;
+
+    // KAFKA_BOOTSTRAP env var wins over config file (used by Docker deployments)
+    if let Ok(val) = std::env::var("KAFKA_BOOTSTRAP") {
+        if !val.is_empty() {
+            config.server.kafka_bootstrap = Some(val);
+        }
+    }
 
     let ritual_broker: Arc<dyn KafkaBridge> = if let Some(ref bootstrap) = config.server.kafka_bootstrap {
         let brokers: Vec<String> = bootstrap
