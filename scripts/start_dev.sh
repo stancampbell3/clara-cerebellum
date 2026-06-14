@@ -37,6 +37,33 @@ set +a
 
 echo "-- ♖ Dis tower erecting --" | tee -a /tmp/dis.log
 
+ensure_kafka() {
+    if bash -c "echo > /dev/tcp/localhost/9094" 2>/dev/null; then
+        log "Kafka already listening on :9094."
+        return 0
+    fi
+
+    log "Kafka not reachable — starting docker-kafka-1..."
+    if ! docker start docker-kafka-1 >> /tmp/dis.log 2>&1; then
+        log "docker start failed; attempting docker compose up..."
+        docker compose -f docker/docker-compose.yml up -d kafka >> /tmp/dis.log 2>&1
+    fi
+
+    log "Waiting for Kafka on :9094..."
+    for i in $(seq 1 30); do
+        if bash -c "echo > /dev/tcp/localhost/9094" 2>/dev/null; then
+            log "Kafka is up. ♟"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log "Kafka did not come up in time. Aborting."
+    exit 1
+}
+
+ensure_kafka
+
 # Stop any running instances.
 stop_pid_file "Dis.pid"          "Clara API"
 stop_pid_file "first_gate.pid"   "First Gate (clips-mcp-adapter)"
