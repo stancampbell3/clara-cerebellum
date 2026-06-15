@@ -1,17 +1,12 @@
-%% chain_of_reasoning.pl - Example 4 : chain of reasoning, refining deductions
+%% chain_of_reasoning.pl - Example 4 : chain of reasoning, reasonable generation
 
-% deduction_request(
-% 	prolog_clauses([]),
-%	clips_constructs([]),
-%	initial_goal('reasoned_response(Response)'),
-%	Max_cycles,
-%	Trace_flag,
-%	Persist_flag)
+:- use_module(library(the_rabbit)).
+:- use_module(library(http/json)).
 
-:- dynamic(prolog_clauses/1).
-:- dynamic(clips_constructs/1).
-:- dynamic(initial_goal/1).
-:- dynamic(deduction_request/6).
+:- dynamic(prompt/1).
+:- dynamic(current_context/1).
 
-deduction_request(prolog_clauses([]),clips_constructs([]),initial_goal('reasoned_response(Prompt, Context, Response)'),5,true,true).
+reasoned_response(prompt(Prompt), Response) :- current_context(Context), 
+	clara_fy(Prompt, Context, TruthValue)
+
 
