@@ -1,0 +1,147 @@
+# Clara PoC Stack — Production (EC2)
+#
+# Uses pre-built images only; no source code required on the server.
+# Run from /home/ec2-user/clara/ on EC2:
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+#
+# Required host directories (created by deploy_clara.sh):
+#   ~/clara/data/clara/          → clara-api DuckDB
+#   ~/clara/data/lildaemon/      → lildaemon DuckDB
+#   ~/clara/data/lildaemon-output/ → lildaemon session output
+#   ~/clara/models/              → dagda-0.2.bin + dagda-0.2.vec (deployed once via rsync)
+
+services:
+  kafka:
+    image: apache/kafka:latest
+    ports:
+      - "127.0.0.1:9094:9094"
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [clara-net]
+    restart: unless-stopped
+
+  clara-api:
+    image: clara-api:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+    environment:
+      - RUST_LOG=info
+      - JWT_SECRET=${JWT_SECRET}
+      - FIERYPIT_URL=http://lildaemon:6666
+      - KAFKA_BOOTSTRAP=kafka:9092
+    volumes:
+      - ./data/clara:/app/data
+      - ./models:/etc/clara/models:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
+    networks: [clara-net]
+
+  prolog-mcp:
+    image: clara-prolog-mcp:latest
+    ports:
+      - "127.0.0.1:1968:1968"
+    environment:
+      - REST_API_URL=http://clara-api:8080
+    depends_on:
+      clara-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [clara-net]
+
+  clips-mcp:
+    image: clara-clips-mcp:latest
+    ports:
+      - "127.0.0.1:1951:1951"
+    environment:
+      - REST_API_URL=http://clara-api:8080
+    depends_on:
+      clara-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [clara-net]
+
+  lildaemon:
+    image: lildaemon:latest
+    ports:
+      - "127.0.0.1:6666:6666"
+    environment:
+      - CEREBELLUM_URL=http://clara-api:8080
+      - LILDAEMON_JWT_SECRET=${LILDAEMON_JWT_SECRET}
+      - LILDAEMON_BASE_URL=http://lildaemon:6666
+      - LILDAEMON_DB_PATH=/app/data/lildaemon.duc
+      - LILDAEMON_OUTPUT_DIR=/app/output
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
+      - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
+    volumes:
+      - ./data/lildaemon:/app/data
+      - ./data/lildaemon-output:/app/output
+    depends_on:
+      clara-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6666/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    networks: [clara-net]
+
+  clara-frontdesk:
+    image: clara-frontdesk:latest
+    ports:
+      - "127.0.0.1:8088:8088"
+    depends_on:
+      clara-api:
+        condition: service_healthy
+      lildaemon:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [clara-net]
+
+  cobbler:
+    image: cobbler:latest
+    ports:
+      - "127.0.0.1:5001:5001"
+    environment:
+      - LILDAEMON_URL=http://lildaemon:6666
+      - DIS_URL=http://clara-api:8080
+      - COBBLER_CORS_ORIGINS=https://www.seashellanalytics.com
+    depends_on:
+      lildaemon:
+        condition: service_healthy
+      clara-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [clara-net]
+
+networks:
+  clara-net:
+    driver: bridge
