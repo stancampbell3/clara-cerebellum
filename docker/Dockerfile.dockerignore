@@ -7,6 +7,8 @@
 edgequake/
 seashell/
 dagda/
+!dagda/cobbler/
+!dagda/assets/
 fastText/
 huggingface/
 llama.cpp/
