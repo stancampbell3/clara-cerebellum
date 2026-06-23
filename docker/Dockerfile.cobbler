@@ -1,0 +1,40 @@
+# Cobbler — dagda web UI
+#
+# Build context: Development/ (two levels up from this file)
+# Run from Development/:
+#   docker build -f clara-cerebrum/docker/Dockerfile.cobbler -t cobbler:latest .
+
+# Stage 1 — build React frontend
+FROM node:20-slim AS frontend-builder
+WORKDIR /build/frontend
+COPY dagda/cobbler/frontend/package*.json ./
+RUN npm ci
+COPY dagda/cobbler/frontend/ ./
+# VITE_API_BASE is baked in via .env.production (base='/cobbler/', API_BASE='/cobbler')
+# Use vite build directly — tsc type-checking is a dev/CI step, not a build gate here
+RUN npx vite build
+
+# Stage 2 — Python runtime
+FROM python:3.11-slim
+WORKDIR /app
+
+# Copy FastAPI backend
+COPY dagda/cobbler/backend/ ./
+
+# main.py resolves frontend dist as: Path(__file__).parent.parent / "frontend" / "dist"
+# With WORKDIR=/app and main.py at /app/main.py that resolves to /frontend/dist
+COPY --from=frontend-builder /build/frontend/dist /frontend/dist
+
+# Merge dagda icon SVGs into the frontend dist assets so they're served by the
+# single "/" static mount at the same /assets/ path the frontend references.
+COPY dagda/assets/*.svg /frontend/dist/assets/
+COPY dagda/assets/*.png /frontend/dist/assets/
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+EXPOSE 5001
+
+ENV LILDAEMON_URL=http://lildaemon:6666
+ENV DIS_URL=http://clara-api:8080
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5001"]

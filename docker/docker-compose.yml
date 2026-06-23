@@ -144,6 +144,30 @@ services:
     networks:
       - clara-net
 
+  cobbler:
+    build:
+      context: ../..
+      dockerfile: clara-cerebrum/docker/Dockerfile.cobbler
+    image: cobbler:latest
+    ports:
+      - "127.0.0.1:5001:5001"
+    environment:
+      - LILDAEMON_URL=http://lildaemon:6666
+      - DIS_URL=http://clara-api:8080
+      - LILD_SESSIONS_DIR=/lild-output/sessions
+      - LILD_SESSION_GLOB=/lild-output/context/mu_*.json
+      - COBBLER_BASE_PATH=/cobbler
+    volumes:
+      - ../lildaemon/output:/lild-output
+    depends_on:
+      lildaemon:
+        condition: service_healthy
+      clara-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - clara-net
+
   clara-frontdesk:
     build:
       context: ../..

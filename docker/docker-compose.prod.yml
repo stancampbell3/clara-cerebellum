@@ -134,6 +134,10 @@ services:
       - LILDAEMON_URL=http://lildaemon:6666
       - DIS_URL=http://clara-api:8080
       - COBBLER_CORS_ORIGINS=https://www.seashellanalytics.com
+      - LILD_SESSIONS_DIR=/lild-output/sessions
+      - LILD_SESSION_GLOB=/lild-output/context/mu_*.json
+    volumes:
+      - ./data/lildaemon-output:/lild-output
     depends_on:
       lildaemon:
         condition: service_healthy
