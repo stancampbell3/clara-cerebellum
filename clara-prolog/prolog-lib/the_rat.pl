@@ -55,9 +55,17 @@ top_status(Text, Status) :-
 %% clara_fy/2 : classify a text query into a truth value using the top prediction
 %% from the Ember Devil model.
 %% -----------------------------------------------------------------------------------
-clara_fy(Text, TruthValue) :- top_status(Text, B1),
+clara_fy(Text, TruthValue) :-
+    top_status(Text, B1),
     format('B1: ~w~n', [B1]),
-    TruthValue = B1.
+    ( B1 = unresolved ->
+        format(atom(DirectQ), 'Answer yes or no: ~w', [Text]),
+        top_status(DirectQ, B2),
+        format('B2: ~w~n', [B2]),
+        TruthValue = B2
+    ;
+        TruthValue = B1
+    ).
 
 %% -----------------------------------------------------------------------------------
 %% clara_fy/3 : like clara_fy/2 but grounds the LLM call with a conversation context.
@@ -68,7 +76,14 @@ clara_fy(Text, TruthValue) :- top_status(Text, B1),
 clara_fy(Text, Context, TruthValue) :-
     top_status_with_context(Text, Context, B1),
     format('B1: ~w~n', [B1]),
-    TruthValue = B1.
+    ( B1 = unresolved ->
+        format(atom(DirectQ), 'Answer yes or no: ~w', [Text]),
+        top_status_with_context(DirectQ, Context, B2),
+        format('B2: ~w~n', [B2]),
+        TruthValue = B2
+    ;
+        TruthValue = B1
+    ).
 
 top_status_with_context(Text, Context, Status) :-
     extract_top_k_labels_with_context(Text, 1, Context, [Status]).

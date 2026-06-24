@@ -510,3 +510,47 @@ fn test_reasoned_response() {
 
     println!("=== reasoned_response/2 Test PASSED ===");
 }
+
+/// Test that clara_fy/2 retries with an explicit "Answer yes or no:" prefix when
+/// the first classification returns unresolved.
+///
+/// The mock returns "unresolved" for the plain validation question and "yes" for
+/// the prefixed retry, verifying that the retry path resolves to true.
+#[test]
+fn test_clara_fy_unresolved_retry() {
+    println!("=== Testing clara_fy/2 unresolved retry ===");
+
+    clara_toolbox::ToolboxManager::init_global();
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    env.query_once("use_module(library(the_rat))").expect("Failed to load the_rat");
+
+    // Mock ponder_text/2: plain questions return "unresolved"; questions prefixed
+    // with "Answer yes or no:" return "yes" to simulate the retry succeeding.
+    env.query_once("abolish(the_rabbit:ponder_text/2)").ok();
+    env.query_once(
+        r#"assertz((the_rabbit:ponder_text(Prompt, Result) :-
+            (   sub_atom(Prompt, 0, _, _, 'Answer yes or no:')
+            ->  atom_json_dict(Result, _{hohi:_{response:_{response:"yes"}}}, [])
+            ;   atom_json_dict(Result, _{hohi:_{response:_{response:"unresolved"}}}, [])
+            )))"#,
+    )
+    .expect("Failed to assert ponder_text mock");
+
+    let result = env.query_with_bindings(
+        "the_rat:clara_fy('Is the sky blue?', TruthValue)"
+    );
+    match &result {
+        Ok(r) => {
+            println!("    Result: {}", r);
+            assert!(
+                r.contains("true"),
+                "TruthValue should be true after retry resolves unresolved: {}",
+                r
+            );
+        }
+        Err(e) => panic!("clara_fy/2 retry failed: {}", e),
+    }
+
+    println!("=== clara_fy/2 unresolved retry Test PASSED ===");
+}
