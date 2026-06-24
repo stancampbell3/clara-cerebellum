@@ -5,6 +5,11 @@
 
 use clara_prolog::PrologEnvironment;
 use clara_prolog::register_clara_evaluate;
+use std::sync::Mutex;
+
+// Tests that abolish and reassert global Prolog predicates must not run
+// concurrently — they share the module database across all engines.
+static PROLOG_MOCK_LOCK: Mutex<()> = Mutex::new(());
 
 /// Test that we can create a Prolog environment
 #[test]
@@ -474,6 +479,7 @@ fn test_quoted_strings_in_query_with_bindings() {
 ///   2. All other prompts return the canned answer "Four".
 #[test]
 fn test_reasoned_response() {
+    let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
     println!("=== Testing reasoned_response/2 ===");
 
     clara_toolbox::ToolboxManager::init_global();
@@ -518,6 +524,7 @@ fn test_reasoned_response() {
 /// the prefixed retry, verifying that the retry path resolves to true.
 #[test]
 fn test_clara_fy_unresolved_retry() {
+    let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
     println!("=== Testing clara_fy/2 unresolved retry ===");
 
     clara_toolbox::ToolboxManager::init_global();
@@ -553,4 +560,55 @@ fn test_clara_fy_unresolved_retry() {
     }
 
     println!("=== clara_fy/2 unresolved retry Test PASSED ===");
+}
+
+/// Test that reasoned_response_with_context/3 threads context through both the
+/// LLM call and the adequacy validation via clara_fy/3.
+///
+/// Mocks ponder_text_with_context/3 — the context argument is verified to be
+/// passed through by asserting it is a non-empty list before responding.
+#[test]
+fn test_reasoned_response_with_context() {
+    let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
+    println!("=== Testing reasoned_response_with_context/3 ===");
+
+    clara_toolbox::ToolboxManager::init_global();
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    env.query_once("use_module(library(the_rat))").expect("Failed to load the_rat");
+
+    // Mock ponder_text_with_context/3: verify context is non-empty, then behave
+    // like the reasoned_response mock — validation questions return "yes", others
+    // return the canned answer "Green".
+    env.query_once("abolish(the_rabbit:ponder_text_with_context/3)").ok();
+    env.query_once(
+        r#"assertz((the_rabbit:ponder_text_with_context(Prompt, Context, Result) :-
+            Context = [_|_],
+            (   sub_atom(Prompt, _, _, _, 'adequately answer')
+            ->  atom_json_dict(Result, _{hohi:_{response:_{response:"yes"}}}, [])
+            ;   atom_json_dict(Result, _{hohi:_{response:_{response:"Green"}}}, [])
+            )))"#,
+    )
+    .expect("Failed to assert ponder_text_with_context mock");
+
+    let result = env.query_with_bindings(concat!(
+        "the_rat:reasoned_response_with_context(",
+        "  'What colour do you get mixing blue and yellow?',",
+        "  [_{role:user, content:\"what colour is the sky?\"}],",
+        "  RR",
+        ")"
+    ));
+    match &result {
+        Ok(r) => {
+            println!("    Result: {}", r);
+            assert!(
+                r.contains("Green"),
+                "RR should be bound to the canned answer 'Green': {}",
+                r
+            );
+        }
+        Err(e) => panic!("reasoned_response_with_context/3 failed: {}", e),
+    }
+
+    println!("=== reasoned_response_with_context/3 Test PASSED ===");
 }

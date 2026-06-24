@@ -11,7 +11,8 @@
     extract_top_k_labels_with_context/4,
     top_status/2,
     top_status_with_context/3,
-    reasoned_response/2
+    reasoned_response/2,
+    reasoned_response_with_context/3
 ]).
 
 :- use_module(library(the_rabbit)).
@@ -99,6 +100,18 @@ reasoned_response(Prompt, RR) :-
     extract_nested(LLMRaw, [hohi, response, response], RR),
     format(atom(ValidationQ), 'Does "~w" adequately answer the prompt: ~w?', [RR, Prompt]),
     clara_fy(ValidationQ, true).
+
+%% -----------------------------------------------------------------------------------
+%% reasoned_response_with_context/3 : like reasoned_response/2 but grounds both the
+%%   LLM call and the adequacy check with a conversation context list.
+%%   Typical use:
+%%     current_context(Ctx), reasoned_response_with_context('explain gravity', Ctx, RR).
+%% -----------------------------------------------------------------------------------
+reasoned_response_with_context(Prompt, Context, RR) :-
+    ponder_text_with_context(Prompt, Context, LLMRaw),
+    extract_nested(LLMRaw, [hohi, response, response], RR),
+    format(atom(ValidationQ), 'Does "~w" adequately answer the prompt: ~w?', [RR, Prompt]),
+    clara_fy(ValidationQ, Context, true).
 
 extract_top_k_labels_with_context(Text, K, Context, SimpleLabels) :-
     descriminate_k_with_context(Text, K, Context, RawJson),
