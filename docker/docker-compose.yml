@@ -121,6 +121,8 @@ services:
     image: lildaemon:latest
     ports:
       - "127.0.0.1:6666:6666"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - CEREBELLUM_URL=http://clara-api:8080
       - LILDAEMON_JWT_SECRET=${LILDAEMON_JWT_SECRET}
@@ -128,6 +130,7 @@ services:
       - LILDAEMON_DB_PATH=/app/data/lildaemon.duc
       - LILDAEMON_OUTPUT_DIR=/app/output
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output

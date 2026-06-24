@@ -64,7 +64,7 @@ ponder_text(Text, Result) :-
     dict_to_json(_{tool: splinteredmind,
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
-                                         model: 'gemma3:latest'}}}, Json),
+                                         model: 'gemma4:latest'}}}, Json),
     clara_evaluate(Json, Result).
 
 %% ponder_text_with_context/3 - Evaluate a prompt using the LLM with conversation context.
@@ -74,7 +74,7 @@ ponder_text_with_context(Text, Context, Result) :-
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
                                         context: Context,
-                                        model: 'gemma3:latest'}}}, Json),
+                                        model: 'gemma4:latest'}}}, Json),
     clara_evaluate(Json, Result).
 
 %% current_context/1 - Retrieve the conversational context injected at deduce time.
