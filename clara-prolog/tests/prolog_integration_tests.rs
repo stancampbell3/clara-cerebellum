@@ -463,3 +463,50 @@ fn test_quoted_strings_in_query_with_bindings() {
 
     println!("\n=== Quoted strings test PASSED ===");
 }
+
+/// Test that reasoned_response/2 binds RR to the LLM's text response when
+/// clara_fy validates it as adequate.
+///
+/// Avoids live LLM calls by replacing ponder_text/2 in the_rabbit with a
+/// Prolog-level mock after abolishing the original static clause.  Two cases:
+///   1. Validation questions (contain "adequately answer") return "yes" so
+///      response_shortcut fires inside descriminate_k and skips the classifier.
+///   2. All other prompts return the canned answer "Four".
+#[test]
+fn test_reasoned_response() {
+    println!("=== Testing reasoned_response/2 ===");
+
+    clara_toolbox::ToolboxManager::init_global();
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    // Load the_rat; the :- enable_evaluator directive runs but its result is ignored
+    env.query_once("use_module(library(the_rat))").expect("Failed to load the_rat");
+
+    // Swap out the live ponder_text/2 for a deterministic mock.
+    // abolish removes the static definition; assertz installs a dynamic replacement
+    // in the_rabbit so that unqualified calls from the_rat resolve to the mock.
+    env.query_once("abolish(the_rabbit:ponder_text/2)").ok();
+    env.query_once(
+        r#"assertz((the_rabbit:ponder_text(Prompt, Result) :-
+            (   sub_atom(Prompt, _, _, _, 'adequately answer')
+            ->  atom_json_dict(Result, _{hohi:_{response:_{response:"yes"}}}, [])
+            ;   atom_json_dict(Result, _{hohi:_{response:_{response:"Four"}}}, [])
+            )))"#,
+    )
+    .expect("Failed to assert ponder_text mock");
+
+    let result = env.query_with_bindings("the_rat:reasoned_response('What is 2 + 2?', RR)");
+    match &result {
+        Ok(r) => {
+            println!("    Result: {}", r);
+            assert!(
+                r.contains("Four"),
+                "RR should be bound to the canned LLM answer 'Four': {}",
+                r
+            );
+        }
+        Err(e) => panic!("reasoned_response/2 failed: {}", e),
+    }
+
+    println!("=== reasoned_response/2 Test PASSED ===");
+}

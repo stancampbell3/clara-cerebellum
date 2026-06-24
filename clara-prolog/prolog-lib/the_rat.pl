@@ -10,7 +10,8 @@
     extract_top_k_labels/3,
     extract_top_k_labels_with_context/4,
     top_status/2,
-    top_status_with_context/3
+    top_status_with_context/3,
+    reasoned_response/2
 ]).
 
 :- use_module(library(the_rabbit)).
@@ -71,6 +72,18 @@ clara_fy(Text, Context, TruthValue) :-
 
 top_status_with_context(Text, Context, Status) :-
     extract_top_k_labels_with_context(Text, 1, Context, [Status]).
+
+%% -----------------------------------------------------------------------------------
+%% reasoned_response/2 : generate a response to Prompt and verify it adequately
+%%   answers the prompt before binding RR. Fails if clara_fy does not validate
+%%   the response as true, leaving the door open for callers to apply reasoning
+%%   strategies (retry, refinement, chain-of-thought, etc.) on failure.
+%% -----------------------------------------------------------------------------------
+reasoned_response(Prompt, RR) :-
+    ponder_text(Prompt, LLMRaw),
+    extract_nested(LLMRaw, [hohi, response, response], RR),
+    format(atom(ValidationQ), 'Does "~w" adequately answer the prompt: ~w?', [RR, Prompt]),
+    clara_fy(ValidationQ, true).
 
 extract_top_k_labels_with_context(Text, K, Context, SimpleLabels) :-
     descriminate_k_with_context(Text, K, Context, RawJson),
