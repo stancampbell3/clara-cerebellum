@@ -47,6 +47,7 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - FIERYPIT_URL=http://lildaemon:6666
       - KAFKA_BOOTSTRAP=kafka:9092
+      - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
     volumes:
       - ./data/clara:/app/data
       - ./models:/etc/clara/models:ro
@@ -99,6 +100,7 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
       - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
+      - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
     volumes:
       - ./data/lildaemon:/app/data
       - ./data/lildaemon-output:/app/output

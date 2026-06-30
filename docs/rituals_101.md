@@ -311,41 +311,55 @@ receives.
 ### Auto-bootstrap: token provisioning
 
 When you pass `"participants": ["http://fiery-pit-1:6666"]` to `POST /ritual`,
-Dis calls `POST /ritual/join` on lildaemon via `FieryPitClient`. The client
-now sends a `Authorization: Bearer` header when `FIERYPIT_SERVICE_KEY` is set
-in Dis's environment. lildaemon's `/ritual/join` requires a valid JWT, so both
-sides must be configured:
+Dis calls `POST /ritual/join` on lildaemon via `FieryPitClient`. lildaemon's
+`/ritual/join` requires a valid Bearer JWT. Dis handles this automatically
+through **lazy token acquisition** — no manual JWT copying required.
 
-**Dis side** — set `FIERYPIT_SERVICE_KEY` to a lildaemon service JWT:
+#### Normal setup (automated)
+
+Set the same `LILDAEMON_SERVICE_SECRET` value on both services:
 
 ```bash
-export FIERYPIT_SERVICE_KEY="<long-lived JWT from lildaemon>"
+# docker/.env (same secret on both sides)
+LILDAEMON_SERVICE_SECRET=change-me-to-a-strong-shared-secret
 ```
 
-**lildaemon side** — issue the JWT once using the service-token endpoint:
+At bootstrap time Dis calls `POST /auth/service-token` on the participant URL
+using this secret, caches the returned JWT, and attaches it to every
+`POST /ritual/join`. On a `401` response (e.g. stale cached token), Dis clears
+the cache and re-acquires a fresh token before retrying once. The service
+account (`dis-bootstrap`) is upserted on first call — no prior registration
+required.
+
+**Token lifetime**: 30 days by default (configurable via
+`LILDAEMON_SERVICE_TOKEN_TTL_DAYS`). Dis re-acquires automatically whenever
+the cached token is absent or has expired, so there is no rotation burden.
+
+#### Static override (operator-managed)
+
+If `FIERYPIT_SERVICE_KEY` is set in Dis's environment, it is used as-is and
+lazy acquisition is skipped. This is useful for tightly controlled production
+deployments where a human operator manages the token lifecycle:
 
 ```bash
-# 1. Set LILDAEMON_SERVICE_SECRET in lildaemon's environment (any strong secret)
-export LILDAEMON_SERVICE_SECRET="change-me-in-prod"
+# Dis side: set FIERYPIT_SERVICE_KEY to a pre-issued JWT
+export FIERYPIT_SERVICE_KEY="<long-lived JWT from lildaemon>"
 
-# 2. Issue a 30-day service token for the Dis service account
+# lildaemon side: issue the JWT once
 curl -s -X POST http://localhost:6666/auth/service-token \
   -H "Content-Type: application/json" \
   -d '{"service_name":"dis-bootstrap","service_secret":"change-me-in-prod"}' \
   | jq -r .access_token
-# → paste the returned JWT into FIERYPIT_SERVICE_KEY on the Dis side
 ```
 
-The service account (`dis-bootstrap`) is upserted on first call — no prior
-registration is required. The token is valid for 30 days (configurable via
-`LILDAEMON_SERVICE_TOKEN_TTL_DAYS`).
+#### Fallback when no credentials are configured
 
-**If `FIERYPIT_SERVICE_KEY` is not set**, bootstrap silently falls back to
-unauthenticated calls, which `401` immediately. Pass `"participants": []` and
-join manually in that case.
-
-**Automated token refresh** (lazy acquisition from Dis at bootstrap time) is
-planned; see `docs/fierypit_auth_plan.md` in `dagda` for details.
+If neither `LILDAEMON_SERVICE_SECRET` nor `FIERYPIT_SERVICE_KEY` is set, Dis
+attempts unauthenticated bootstrap calls, which `401` immediately. The Ritual
+is still created; participants can join manually via
+`GET /ritual/{id}/join?participant=<url>` and their own `POST /ritual/join`.
+Pass `"participants": []` to skip bootstrap entirely and avoid the logged
+warnings.
 
 ### Consumer group semantics
 

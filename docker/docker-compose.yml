@@ -50,6 +50,9 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - FIERYPIT_URL=http://lildaemon:6666
       - KAFKA_BOOTSTRAP=kafka:9092
+      # Shared secret used to acquire a lildaemon service JWT at Ritual bootstrap.
+      # Must match LILDAEMON_SERVICE_SECRET in the lildaemon service below.
+      - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
     depends_on:
       kafka:
         condition: service_healthy
@@ -131,6 +134,9 @@ services:
       - LILDAEMON_OUTPUT_DIR=/app/output
       - GROQ_API_KEY=${GROQ_API_KEY}
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # Shared secret gating POST /auth/service-token.
+      # Must match LILDAEMON_SERVICE_SECRET in the clara-api service above.
+      - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output

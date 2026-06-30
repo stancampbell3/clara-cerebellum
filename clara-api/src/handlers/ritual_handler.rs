@@ -309,6 +309,130 @@ pub async fn terminate_ritual(
 }
 
 // ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::session_handler::CachedToken;
+    use reqwest::StatusCode;
+    use std::sync::Mutex as StdMutex;
+    use std::time::{Duration, Instant};
+
+    // Serialise tests that touch env vars so parallel test runs don't interfere.
+    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+
+    // ------------------------------------------------------------------
+    // is_unauthorized
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_is_unauthorized_true_for_401() {
+        let err: Result<serde_json::Value, FieryPitError> =
+            Err(FieryPitError::Status(StatusCode::UNAUTHORIZED, serde_json::json!({})));
+        assert!(is_unauthorized(&err));
+    }
+
+    #[test]
+    fn test_is_unauthorized_false_for_500() {
+        let err: Result<serde_json::Value, FieryPitError> = Err(FieryPitError::Status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({}),
+        ));
+        assert!(!is_unauthorized(&err));
+    }
+
+    #[test]
+    fn test_is_unauthorized_false_for_ok() {
+        let ok: Result<serde_json::Value, FieryPitError> = Ok(serde_json::json!({}));
+        assert!(!is_unauthorized(&ok));
+    }
+
+    // ------------------------------------------------------------------
+    // get_bootstrap_token — no-HTTP paths
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_get_bootstrap_token_returns_static_key_when_env_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FIERYPIT_SERVICE_KEY", "static-override-key");
+        std::env::remove_var("LILDAEMON_SERVICE_SECRET");
+        let cache: Arc<Mutex<Option<CachedToken>>> = Arc::new(Mutex::new(None));
+        let result = get_bootstrap_token("http://nowhere.invalid", &cache);
+        std::env::remove_var("FIERYPIT_SERVICE_KEY");
+        assert_eq!(result.as_deref(), Some("static-override-key"));
+    }
+
+    #[test]
+    fn test_get_bootstrap_token_uses_warm_cache_when_no_static_key() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("FIERYPIT_SERVICE_KEY");
+        std::env::set_var("LILDAEMON_SERVICE_SECRET", "any-secret");
+        let cache: Arc<Mutex<Option<CachedToken>>> = Arc::new(Mutex::new(Some(CachedToken {
+            token:      "cached-jwt".to_string(),
+            expires_at: Instant::now() + Duration::from_secs(3600),
+        })));
+        let result = get_bootstrap_token("http://nowhere.invalid", &cache);
+        std::env::remove_var("LILDAEMON_SERVICE_SECRET");
+        assert_eq!(result.as_deref(), Some("cached-jwt"));
+    }
+
+    #[test]
+    fn test_get_bootstrap_token_returns_none_when_no_secret_and_empty_cache() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("FIERYPIT_SERVICE_KEY");
+        std::env::remove_var("LILDAEMON_SERVICE_SECRET");
+        let cache: Arc<Mutex<Option<CachedToken>>> = Arc::new(Mutex::new(None));
+        let result = get_bootstrap_token("http://nowhere.invalid", &cache);
+        assert!(result.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // acquire_and_cache — uses a real mock HTTP server
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_acquire_and_cache_success() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("FIERYPIT_TOKEN_MARGIN_S");
+
+        let mut srv = mockito::Server::new();
+        let _m = srv
+            .mock("POST", "/auth/service-token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"access_token":"svc-jwt","expires_in":2592000,"token_type":"bearer"}"#)
+            .create();
+
+        let cache: Arc<Mutex<Option<CachedToken>>> = Arc::new(Mutex::new(None));
+        let result = acquire_and_cache(&srv.url(), "test-secret", &cache);
+
+        assert_eq!(result.as_deref(), Some("svc-jwt"));
+        // Token should now be cached.
+        let guard = cache.lock().unwrap();
+        assert!(guard.is_some());
+        assert_eq!(guard.as_ref().unwrap().token, "svc-jwt");
+    }
+
+    #[test]
+    fn test_acquire_and_cache_returns_none_on_server_error() {
+        let mut srv = mockito::Server::new();
+        let _m = srv
+            .mock("POST", "/auth/service-token")
+            .with_status(503)
+            .with_body(r#"{"error":"unavailable"}"#)
+            .create();
+
+        let cache: Arc<Mutex<Option<CachedToken>>> = Arc::new(Mutex::new(None));
+        let result = acquire_and_cache(&srv.url(), "test-secret", &cache);
+
+        assert!(result.is_none());
+        assert!(cache.lock().unwrap().is_none(), "Cache should remain empty on failure");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GET /ritual/{id}/status — inspect Ritual state
 // ---------------------------------------------------------------------------
 
