@@ -12,6 +12,6 @@ pub use broker::RsKafkaClient;
 pub use envelope::{label, RitualConfig, TephraEnvelope, TephraPayload};
 pub use error::RitualError;
 pub use handle::RitualHandle;
-pub use registry::RitualRegistry;
+pub use registry::{RitualRegistry, RitualSummary};
 pub use ritual::RitualState;
 pub use topic::topic_name;

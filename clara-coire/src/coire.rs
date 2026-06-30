@@ -1,10 +1,21 @@
 use std::sync::{Arc, Mutex};
 
 use duckdb::Connection;
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::{CoireError, CoireResult};
 use crate::event::{ClaraEvent, EventStatus};
+
+/// Per-session event counts returned by `list_sessions`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    pub session_id: Uuid,
+    pub total:      usize,
+    pub pending:    usize,
+    pub processed:  usize,
+    pub drained:    usize,
+}
 
 #[derive(Clone)]
 pub struct Coire {
@@ -233,6 +244,44 @@ impl Coire {
         }
 
         Ok(events)
+    }
+
+    /// Return one `SessionSummary` per session that has any events in Coire,
+    /// regardless of deduction state.  Useful for debugging failed deductions
+    /// whose sessions never appear in the `/cycle/coire/snapshot` endpoint.
+    pub fn list_sessions(&self) -> CoireResult<Vec<SessionSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT session_id,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status = 'pending'   THEN 1 ELSE 0 END) AS pending,
+                    SUM(CASE WHEN status = 'processed' THEN 1 ELSE 0 END) AS processed,
+                    SUM(CASE WHEN status = 'drained'   THEN 1 ELSE 0 END) AS drained
+             FROM coire_events
+             GROUP BY session_id
+             ORDER BY session_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        let mut summaries = Vec::new();
+        for row in rows {
+            let (sid, total, pending, processed, drained) = row?;
+            summaries.push(SessionSummary {
+                session_id: Uuid::parse_str(&sid).unwrap_or_default(),
+                total:      total    as usize,
+                pending:    pending  as usize,
+                processed:  processed as usize,
+                drained:    drained  as usize,
+            });
+        }
+        Ok(summaries)
     }
 
     pub fn drain_session(&self, session_id: Uuid) -> CoireResult<usize> {
@@ -480,5 +529,57 @@ mod tests {
         assert_eq!(events[0].origin, "first");
         assert_eq!(events[1].origin, "second");
         assert_eq!(events[2].origin, "third");
+    }
+
+    #[test]
+    fn list_sessions_empty() {
+        let coire = Coire::new().unwrap();
+        assert!(coire.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_sessions_counts_by_status() {
+        let coire = Coire::new().unwrap();
+        let s1 = Uuid::new_v4();
+        let s2 = Uuid::new_v4();
+
+        // s1: 2 pending, 1 processed (via mark_processed), 0 drained
+        let e1 = make_event(s1, "a", json!(1));
+        let e2 = make_event(s1, "b", json!(2));
+        let e3 = make_event(s1, "c", json!(3));
+        coire.write_event(&e1).unwrap();
+        coire.write_event(&e2).unwrap();
+        coire.write_event(&e3).unwrap();
+        coire.mark_processed(e1.event_id).unwrap();
+
+        // s2: 0 pending, 0 processed, 1 drained
+        let e4 = make_event(s2, "x", json!(4));
+        coire.write_event(&e4).unwrap();
+        coire.drain_session(s2).unwrap();
+
+        let summaries = coire.list_sessions().unwrap();
+        assert_eq!(summaries.len(), 2);
+
+        let sum1 = summaries.iter().find(|s| s.session_id == s1).unwrap();
+        assert_eq!(sum1.total,     3);
+        assert_eq!(sum1.pending,   2);
+        assert_eq!(sum1.processed, 1);
+        assert_eq!(sum1.drained,   0);
+
+        let sum2 = summaries.iter().find(|s| s.session_id == s2).unwrap();
+        assert_eq!(sum2.total,     1);
+        assert_eq!(sum2.pending,   0);
+        assert_eq!(sum2.processed, 0);
+        assert_eq!(sum2.drained,   1);
+    }
+
+    #[test]
+    fn list_sessions_cleared_session_absent() {
+        let coire = Coire::new().unwrap();
+        let sid = Uuid::new_v4();
+        let e = make_event(sid, "x", json!(1));
+        coire.write_event(&e).unwrap();
+        coire.clear_session(sid).unwrap();
+        assert!(coire.list_sessions().unwrap().is_empty());
     }
 }

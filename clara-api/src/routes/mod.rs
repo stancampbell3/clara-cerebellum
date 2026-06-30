@@ -60,8 +60,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/source/{id}",                                    web::delete().to(source::delete_source))
             // Coire observability / push hooks
             .route("/cycle/coire/snapshot", web::get().to(coire::snapshot))
+            .route("/cycle/coire/sessions", web::get().to(coire::list_sessions))
             .route("/cycle/coire/push",     web::post().to(coire::push))
             // Ritual coordination (literal sub-paths before parameterised)
+            .route("/ritual",               web::get().to(ritual::list_rituals))
             .route("/ritual",               web::post().to(ritual::create_ritual))
             .route("/ritual/{id}/join",     web::get().to(ritual::join_ritual))
             .route("/ritual/{id}/status",   web::get().to(ritual::ritual_status))

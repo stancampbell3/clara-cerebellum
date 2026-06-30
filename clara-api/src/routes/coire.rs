@@ -1,1 +1,1 @@
-pub use crate::handlers::coire_handler::{snapshot, push};
+pub use crate::handlers::coire_handler::{snapshot, push, list_sessions};

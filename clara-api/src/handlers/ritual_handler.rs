@@ -7,6 +7,21 @@ use uuid::Uuid;
 
 use crate::handlers::session_handler::AppState;
 
+// ---------------------------------------------------------------------------
+// GET /ritual — list active Rituals
+// ---------------------------------------------------------------------------
+
+/// Return all currently active Rituals.
+///
+/// Terminated Rituals are excluded. For post-mortem analysis of terminated
+/// Rituals, consult application logs or the Coire sessions endpoint.
+///
+/// Response 200: `{ "rituals": [{ "ritual_id", "name", "state", "topic" }] }`
+pub async fn list_rituals(state: web::Data<AppState>) -> HttpResponse {
+    let summaries = state.ritual_registry.list_active();
+    HttpResponse::Ok().json(serde_json::json!({ "rituals": summaries }))
+}
+
 /// Optional query parameters for `GET /ritual/{id}/join`.
 #[derive(Debug, Deserialize)]
 pub struct JoinQuery {

@@ -11,7 +11,7 @@ pub mod clips_bridge;
 
 pub use cache_eviction::EvaluateCacheEviction;
 pub use carrion_picker::CarrionPicker;
-pub use coire::Coire;
+pub use coire::{Coire, SessionSummary};
 pub use error::{CoireError, CoireResult};
 pub use event::{ClaraEvent, EventStatus};
 pub use source::{ArtifactEntry, SourceEntry, SourceRegistry};

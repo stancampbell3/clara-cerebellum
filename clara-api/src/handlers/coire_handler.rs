@@ -30,6 +30,20 @@ pub async fn snapshot(state: web::Data<AppState>) -> HttpResponse {
     HttpResponse::Ok().json(json!({ "sessions": sessions }))
 }
 
+/// GET /cycle/coire/sessions
+///
+/// Returns event counts for every session that has any events in Coire,
+/// regardless of deduction state.  Includes sessions from failed or
+/// in-progress deductions that do not appear in `/cycle/coire/snapshot`.
+pub async fn list_sessions(_state: web::Data<AppState>) -> HttpResponse {
+    let coire = clara_coire::global();
+    match coire.list_sessions() {
+        Ok(sessions) => HttpResponse::Ok().json(serde_json::json!({ "sessions": sessions })),
+        Err(e) => HttpResponse::InternalServerError()
+            .json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 /// POST /cycle/coire/push
 ///
 /// Inject a synthetic event into a known Coire session.  Useful for

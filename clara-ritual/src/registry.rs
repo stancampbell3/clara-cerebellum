@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::broker::KafkaBridge;
@@ -9,6 +10,15 @@ use crate::error::RitualError;
 use crate::handle::RitualHandle;
 use crate::ritual::{Ritual, RitualState};
 use crate::topic::topic_name;
+
+/// Snapshot of one active Ritual returned by `list_active`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RitualSummary {
+    pub ritual_id: Uuid,
+    pub name:      String,
+    pub state:     String,
+    pub topic:     String,
+}
 
 /// Server-level registry of all active and terminated Rituals.
 ///
@@ -118,6 +128,23 @@ impl RitualRegistry {
 
     pub fn get_status(&self, ritual_id: Uuid) -> Option<RitualState> {
         self.rituals.read().unwrap().get(&ritual_id).map(|r| r.state.clone())
+    }
+
+    /// Return a snapshot of all currently active Rituals.
+    ///
+    /// Terminated Rituals are excluded; callers that need post-mortem
+    /// analysis should consult logs or Coire session events instead.
+    pub fn list_active(&self) -> Vec<RitualSummary> {
+        self.rituals.read().unwrap()
+            .values()
+            .filter(|r| r.state == RitualState::Active)
+            .map(|r| RitualSummary {
+                ritual_id: r.ritual_id,
+                name:      r.config.name.clone(),
+                state:     "active".to_string(),
+                topic:     r.topic.clone(),
+            })
+            .collect()
     }
 
     /// Ensure the Kafka topic for `ritual_id` exists, creating it if necessary.
@@ -262,5 +289,36 @@ mod tests {
     fn ensure_topic_on_nonexistent_ritual_errors() {
         let registry = make_registry();
         assert!(registry.ensure_topic(Uuid::new_v4(), 1, 1).is_err());
+    }
+
+    // ── list_active ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_active_empty_registry() {
+        let registry = make_registry();
+        assert!(registry.list_active().is_empty());
+    }
+
+    #[test]
+    fn list_active_includes_active_excludes_terminated() {
+        let registry = make_registry();
+        let id_a = registry.create(make_config("alpha")).unwrap();
+        let id_b = registry.create(make_config("beta")).unwrap();
+        registry.terminate(id_b).unwrap();
+
+        let active = registry.list_active();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].ritual_id, id_a);
+        assert_eq!(active[0].name, "alpha");
+        assert_eq!(active[0].state, "active");
+        assert!(active[0].topic.contains(&id_a.to_string()));
+    }
+
+    #[test]
+    fn list_active_all_terminated_returns_empty() {
+        let registry = make_registry();
+        let id = registry.create(make_config("r")).unwrap();
+        registry.terminate(id).unwrap();
+        assert!(registry.list_active().is_empty());
     }
 }
