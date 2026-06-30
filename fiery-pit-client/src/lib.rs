@@ -186,6 +186,14 @@ pub struct EvaluatorAuthStatus {
     pub auth_token_env_set: Option<bool>,
 }
 
+/// Response from POST /auth/service-token
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServiceTokenResponse {
+    pub access_token: String,
+    /// Token lifetime in seconds.
+    pub expires_in: u64,
+}
+
 /// A single evaluation entry from the monitoring endpoints
 #[derive(Debug, Clone, Deserialize)]
 pub struct EvaluationEntry {
@@ -795,6 +803,33 @@ impl FieryPitClient {
     }
 
     // =========================================================================
+    // Auth — /auth/*
+    // =========================================================================
+
+    /// Acquire a long-lived service JWT — POST /auth/service-token.
+    ///
+    /// `service_name` is the service account name in lildaemon's user store
+    /// (upserted automatically on first call).  `secret` must match the
+    /// `LILDAEMON_SERVICE_SECRET` environment variable on the target lildaemon.
+    ///
+    /// Returns the JWT and its lifetime in seconds.  Callers should cache the
+    /// token and refresh it before it expires.
+    pub fn auth_service_token(
+        &self,
+        service_name: &str,
+        secret: &str,
+    ) -> Result<ServiceTokenResponse, FieryPitError> {
+        let v = self.post(
+            "/auth/service-token",
+            &json!({
+                "service_name":   service_name,
+                "service_secret": secret,
+            }),
+        )?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    // =========================================================================
     // Ritual coordination — /ritual/*
     // =========================================================================
 
@@ -929,5 +964,13 @@ mod tests {
         let json = serde_json::to_string(&cfg).unwrap();
         // All fields None → empty object
         assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn test_service_token_response_deserializes() {
+        let raw = r#"{"access_token":"tok.123","expires_in":2592000,"token_type":"bearer"}"#;
+        let resp: ServiceTokenResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(resp.access_token, "tok.123");
+        assert_eq!(resp.expires_in, 2_592_000);
     }
 }

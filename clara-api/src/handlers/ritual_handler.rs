@@ -1,11 +1,13 @@
 use actix_web::{web, HttpResponse};
 use clara_ritual::{RitualConfig, RitualError, RitualState};
-use fiery_pit_client::FieryPitClient;
+use fiery_pit_client::{FieryPitClient, FieryPitError};
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
-use crate::handlers::session_handler::AppState;
+use crate::handlers::session_handler::{AppState, CachedToken};
 
 // ---------------------------------------------------------------------------
 // GET /ritual — list active Rituals
@@ -33,6 +35,81 @@ pub struct JoinQuery {
 }
 
 // ---------------------------------------------------------------------------
+// Service-token helpers for FieryPit auto-bootstrap
+// ---------------------------------------------------------------------------
+
+/// Try to acquire a service JWT from `url/auth/service-token` using `secret`,
+/// cache it, and return the token string.  Logs a warning and returns `None`
+/// on failure so callers can fall back gracefully.
+fn acquire_and_cache(
+    url: &str,
+    secret: &str,
+    cache: &Arc<Mutex<Option<CachedToken>>>,
+) -> Option<String> {
+    let client = FieryPitClient::new(url);
+    match client.auth_service_token("dis-bootstrap", secret) {
+        Ok(resp) => {
+            let margin_s: u64 = std::env::var("FIERYPIT_TOKEN_MARGIN_S")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(300);
+            let live_s = resp.expires_in.saturating_sub(margin_s);
+            let token = resp.access_token.clone();
+            *cache.lock().unwrap() = Some(CachedToken {
+                token:      resp.access_token,
+                expires_at: Instant::now() + Duration::from_secs(live_s),
+            });
+            Some(token)
+        }
+        Err(e) => {
+            log::warn!("create_ritual: service-token acquisition from {} failed: {}", url, e);
+            None
+        }
+    }
+}
+
+/// Return a Bearer token to use when bootstrapping a FieryPit participant.
+///
+/// Priority:
+/// 1. Static `FIERYPIT_SERVICE_KEY` env var (operator-managed, skips cache).
+/// 2. Cached token, if it has not yet passed its expiry `Instant`.
+/// 3. Fresh acquisition via `POST /auth/service-token` on `fiery_pit_url`
+///    using `LILDAEMON_SERVICE_SECRET`.
+///
+/// Returns `None` when no static key is set, no secret is configured, and
+/// acquisition fails — bootstrap will proceed unauthenticated (and likely `401`).
+fn get_bootstrap_token(
+    fiery_pit_url: &str,
+    cache: &Arc<Mutex<Option<CachedToken>>>,
+) -> Option<String> {
+    if let Ok(key) = std::env::var("FIERYPIT_SERVICE_KEY") {
+        if !key.is_empty() {
+            return Some(key);
+        }
+    }
+    let secret = std::env::var("LILDAEMON_SERVICE_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+
+    // Return the cached token if it is still fresh.
+    {
+        let guard = cache.lock().unwrap();
+        if let Some(ref tok) = *guard {
+            if tok.expires_at > Instant::now() {
+                return Some(tok.token.clone());
+            }
+        }
+    }
+
+    acquire_and_cache(fiery_pit_url, &secret, cache)
+}
+
+/// Returns `true` when `result` is a `401 Unauthorized` FieryPit error.
+fn is_unauthorized(result: &Result<serde_json::Value, FieryPitError>) -> bool {
+    matches!(result, Err(FieryPitError::Status(s, _)) if s.as_u16() == 401)
+}
+
+// ---------------------------------------------------------------------------
 // POST /ritual — create a new Ritual
 // ---------------------------------------------------------------------------
 
@@ -47,10 +124,11 @@ pub async fn create_ritual(
     state: web::Data<AppState>,
     req:   web::Json<RitualConfig>,
 ) -> HttpResponse {
-    let registry         = state.ritual_registry.clone();
-    let dis_domain       = state.dis_domain.clone();
-    let kafka_bootstrap  = state.kafka_bootstrap.clone();
-    let config           = req.into_inner();
+    let registry          = state.ritual_registry.clone();
+    let dis_domain        = state.dis_domain.clone();
+    let kafka_bootstrap   = state.kafka_bootstrap.clone();
+    let token_cache_arc   = state.fiery_pit_token_cache.clone();
+    let config            = req.into_inner();
 
     // `registry.create()` calls `broker.ensure_topic()` which internally does
     // `runtime.block_on(...)`. That panics when called from an async thread.
@@ -73,23 +151,33 @@ pub async fn create_ritual(
                     return Ok(ritual_id);
                 }
             };
-            let bootstrap = kafka_bootstrap.as_deref().unwrap_or("localhost:9092");
-            // Attach service key if configured so lildaemon's JWT auth accepts us.
-            let service_key = std::env::var("FIERYPIT_SERVICE_KEY").ok();
+            let bootstrap   = kafka_bootstrap.as_deref().unwrap_or("localhost:9092");
+            let token_cache = token_cache_arc.clone();
             for url in &participants {
-                let mut client = FieryPitClient::new(url.as_str());
-                if let Some(ref key) = service_key {
-                    client = client.with_service_key(key.as_str());
-                }
-                match client.ritual_join(
-                    ritual_id,
-                    &topic,
-                    bootstrap,
-                    &dis_domain,
-                    None,   // evaluator: None → use currently focused evaluator
-                    false,  // session_stateful: default
-                    30.0,   // eval_timeout_s: default
-                ) {
+                // Attempt 1 — use cached / static token.
+                let token1 = get_bootstrap_token(url.as_str(), &token_cache);
+                let mut c = FieryPitClient::new(url.as_str());
+                if let Some(ref t) = token1 { c = c.with_service_key(t.as_str()); }
+                let r = c.ritual_join(ritual_id, &topic, bootstrap, &dis_domain, None, false, 30.0);
+
+                // Attempt 2 — on 401, clear cache and acquire a fresh token from
+                // this specific participant URL (handles per-instance user stores).
+                let final_result = if is_unauthorized(&r) {
+                    log::debug!("create_ritual: 401 from {}; refreshing service token", url);
+                    *token_cache.lock().unwrap() = None;
+                    let secret_opt = std::env::var("LILDAEMON_SERVICE_SECRET")
+                        .ok()
+                        .filter(|s| !s.is_empty());
+                    let token2 = secret_opt
+                        .and_then(|sec| acquire_and_cache(url.as_str(), &sec, &token_cache));
+                    let mut c2 = FieryPitClient::new(url.as_str());
+                    if let Some(ref t) = token2 { c2 = c2.with_service_key(t.as_str()); }
+                    c2.ritual_join(ritual_id, &topic, bootstrap, &dis_domain, None, false, 30.0)
+                } else {
+                    r
+                };
+
+                match final_result {
                     Ok(_) => log::info!(
                         "create_ritual: bootstrapped participant {} for ritual {}",
                         url, ritual_id

@@ -13,7 +13,7 @@ use serde_json::json;
 /// Create test app state
 fn create_test_state() -> web::Data<AppState> {
     use std::collections::{HashMap, HashSet};
-    use std::sync::{Arc, RwLock};
+    use std::sync::{Arc, Mutex, RwLock};
     use clara_ritual::{InMemoryBroker, RitualRegistry};
     web::Data::new(AppState {
         session_manager: SessionManager::new(ManagerConfig::default()),
@@ -31,6 +31,7 @@ fn create_test_state() -> web::Data<AppState> {
         )),
         dis_domain: "dis.test".to_string(),
         kafka_bootstrap: None,
+        fiery_pit_token_cache: Arc::new(Mutex::new(None)),
     })
 }
 

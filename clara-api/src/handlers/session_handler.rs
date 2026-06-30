@@ -3,8 +3,9 @@ use clara_session::SessionManager;
 use clara_ritual::RitualRegistry;
 use crate::subprocess::SubprocessPool;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 use uuid::Uuid;
 use clara_cycle::{CycleStatus, DeductionResult};
 
@@ -12,6 +13,16 @@ use crate::models::{
     ApiError, CreateSessionRequest, SaveSessionRequest, ResourceInfo, SessionResponse,
     TerminateResponse, LoadRulesRequest, LoadFactsRequest, RunRequest, RunResponse, QueryFactsResponse
 };
+
+/// A cached FieryPit service JWT with its expiry `Instant`.
+///
+/// Stored in `AppState::fiery_pit_token_cache` and refreshed lazily when the
+/// token is within `FIERYPIT_TOKEN_MARGIN_S` seconds of expiry, or immediately
+/// when a participant returns `401 Unauthorized` during auto-bootstrap.
+pub struct CachedToken {
+    pub token:      String,
+    pub expires_at: Instant,
+}
 
 /// In-flight or completed deduction run tracked in `AppState::deductions`.
 pub struct DeductionEntry {
@@ -52,6 +63,10 @@ pub struct AppState {
     /// FieryPit participants at Ritual creation so they can connect to the
     /// same broker. `None` when using the in-memory broker (tests / dev).
     pub kafka_bootstrap: Option<String>,
+    /// Cached service JWT for calling `POST /ritual/join` on FieryPit
+    /// participants during auto-bootstrap.  Populated lazily; invalidated on
+    /// `401 Unauthorized` from any participant.
+    pub fiery_pit_token_cache: Arc<Mutex<Option<CachedToken>>>,
 }
 
 /// Convert a clara-session::Session to API SessionResponse

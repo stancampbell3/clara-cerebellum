@@ -9,7 +9,7 @@ use clara_ritual::{KafkaBridge, RitualRegistry};
 use clara_ritual::InMemoryBroker;
 use log::info;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use crate::handlers::AppState;
@@ -139,6 +139,7 @@ pub async fn start_server(
         ritual_registry,
         dis_domain,
         kafka_bootstrap,
+        fiery_pit_token_cache: Arc::new(Mutex::new(None)),
     });
 
     // Create and start server
@@ -179,6 +180,7 @@ mod tests {
             ritual_registry,
             dis_domain: "dis.test".to_string(),
             kafka_bootstrap: None,
+            fiery_pit_token_cache: Arc::new(Mutex::new(None)),
         };
         // Just verify it can be created
         let _cloned = state.clone();
