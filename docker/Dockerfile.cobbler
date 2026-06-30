@@ -2,7 +2,7 @@
 #
 # Build context: Development/ (two levels up from this file)
 # Run from Development/:
-#   docker build -f clara-cerebrum/docker/Dockerfile.cobbler -t cobbler:latest .
+#   docker build -f clara-cerebellum/docker/Dockerfile.cobbler -t cobbler:latest .
 
 # Stage 1 — build React frontend
 FROM node:20-slim AS frontend-builder

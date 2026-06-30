@@ -1,5 +1,5 @@
 # .dockerignore for Clara PoC Docker build
-# Build context is Development/ (parent of clara-cerebrum/ and lildaemon/)
+# Build context is Development/ (parent of clara-cerebellum/ and lildaemon/)
 # This file must be placed at the build context root: Development/.dockerignore
 # The deploy script copies it there automatically.
 
@@ -22,7 +22,7 @@ target/
 *.gguf
 
 # Exclude Rust build artifacts (very large)
-clara-cerebrum/target/
+clara-cerebellum/target/
 
 # Exclude dev-only overrides (production uses config/evaluators.yaml and config/fish.yaml)
 lildaemon/wok/

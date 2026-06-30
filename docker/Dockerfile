@@ -1,7 +1,7 @@
 # Clara Cerebrum — Multi-stage Docker build
 #
-# Build context: Development/ (parent of clara-cerebrum/ and lildaemon/)
-# Usage: docker compose -f clara-cerebrum/docker/docker-compose.yml build
+# Build context: Development/ (parent of clara-cerebellum/ and lildaemon/)
+# Usage: docker compose -f clara-cerebellum/docker/docker-compose.yml build
 #
 # Stages:
 #   builder      — compiles all Rust binaries + SWI-Prolog + CLIPS from source
@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY clara-cerebrum/ .
+COPY clara-cerebellum/ .
 
 # Build all four Rust binaries in one pass.
 # SWI-Prolog compiles from swipl-src/ via build.rs (~30-45 min first run).
@@ -79,7 +79,7 @@ COPY --from=builder /build/target/release/clara-api /usr/local/bin/
 COPY --from=builder /swipl/lib/                     /usr/local/lib/
 COPY --from=builder /swipl/home                     /opt/swipl/home
 # Copy config into /app/config/ so the binary finds it at config/default.toml
-COPY clara-cerebrum/config                           /app/config/
+COPY clara-cerebellum/config                           /app/config/
 
 RUN ldconfig
 
@@ -151,9 +151,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/clara-frontdesk        /usr/local/bin/
-COPY clara-cerebrum/clara-frontdesk-poc/static                    /app/static
-COPY clara-cerebrum/clara-frontdesk-poc/roost                     /app/roost
-COPY clara-cerebrum/clara-frontdesk-poc/config/city_of_dis.toml  /etc/frontdesk/city_of_dis.toml
+COPY clara-cerebellum/clara-frontdesk-poc/static                    /app/static
+COPY clara-cerebellum/clara-frontdesk-poc/roost                     /app/roost
+COPY clara-cerebellum/clara-frontdesk-poc/config/city_of_dis.toml  /etc/frontdesk/city_of_dis.toml
 
 ENV FRONTDESK_CONFIG=/etc/frontdesk/city_of_dis.toml
 ENV RUST_LOG=info

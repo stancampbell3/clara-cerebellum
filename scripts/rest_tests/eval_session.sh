@@ -17,6 +17,6 @@ fi
 
 # Build payload: script and timeout
 payload=$(jq -n --arg script "$SCRIPT" --argjson t $TIMEOUT_MS '{script: $script, timeout_ms: $t}')
-resp=$(http_request POST "$BASE/sessions/$SESSION_ID/eval" "$payload") || exit $?
+resp=$(http_request POST "$BASE/sessions/$SESSION_ID/evaluate" "$payload") || exit $?
 
 echo "$resp" | jq . || echo "$resp"
