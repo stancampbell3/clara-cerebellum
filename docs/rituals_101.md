@@ -308,16 +308,44 @@ Echo suppression works by checking `producer_node == self.dis_domain`. If you
 pass Dis's domain, lildaemon thinks Dis is itself and drops every Offering it
 receives.
 
-### Auto-bootstrap is currently auth-gated
+### Auto-bootstrap: token provisioning
 
 When you pass `"participants": ["http://fiery-pit-1:6666"]` to `POST /ritual`,
-Dis tries to call `POST /ritual/join` on lildaemon automatically via
-`FieryPitClient`. The client does not yet send a Bearer JWT, so lildaemon
-rejects it with `401 Unauthorized`.
+Dis calls `POST /ritual/join` on lildaemon via `FieryPitClient`. The client
+now sends a `Authorization: Bearer` header when `FIERYPIT_SERVICE_KEY` is set
+in Dis's environment. lildaemon's `/ritual/join` requires a valid JWT, so both
+sides must be configured:
 
-**Workaround for now:** Pass `"participants": []` and have lildaemon join
-manually with a valid JWT. Fixing `FieryPitClient` to support
-`with_bearer(token)` is on the backlog.
+**Dis side** — set `FIERYPIT_SERVICE_KEY` to a lildaemon service JWT:
+
+```bash
+export FIERYPIT_SERVICE_KEY="<long-lived JWT from lildaemon>"
+```
+
+**lildaemon side** — issue the JWT once using the service-token endpoint:
+
+```bash
+# 1. Set LILDAEMON_SERVICE_SECRET in lildaemon's environment (any strong secret)
+export LILDAEMON_SERVICE_SECRET="change-me-in-prod"
+
+# 2. Issue a 30-day service token for the Dis service account
+curl -s -X POST http://localhost:6666/auth/service-token \
+  -H "Content-Type: application/json" \
+  -d '{"service_name":"dis-bootstrap","service_secret":"change-me-in-prod"}' \
+  | jq -r .access_token
+# → paste the returned JWT into FIERYPIT_SERVICE_KEY on the Dis side
+```
+
+The service account (`dis-bootstrap`) is upserted on first call — no prior
+registration is required. The token is valid for 30 days (configurable via
+`LILDAEMON_SERVICE_TOKEN_TTL_DAYS`).
+
+**If `FIERYPIT_SERVICE_KEY` is not set**, bootstrap silently falls back to
+unauthenticated calls, which `401` immediately. Pass `"participants": []` and
+join manually in that case.
+
+**Automated token refresh** (lazy acquisition from Dis at bootstrap time) is
+planned; see `docs/fierypit_auth_plan.md` in `dagda` for details.
 
 ### Consumer group semantics
 
