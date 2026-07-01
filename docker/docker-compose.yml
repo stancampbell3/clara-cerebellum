@@ -43,8 +43,8 @@ services:
       target: clara-api
     image: clara-api:latest
     ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:9090:9090"
+      - "0.0.0.0:8080:8080"
+      - "0.0.0.0:9090:9090"
     environment:
       - RUST_LOG=info
       - JWT_SECRET=${JWT_SECRET}
@@ -78,7 +78,7 @@ services:
       target: prolog-mcp
     image: clara-prolog-mcp:latest
     ports:
-      - "127.0.0.1:1968:1968"
+      - "0.0.0.0:1968:1968"
     environment:
       - REST_API_URL=http://clara-api:8080
     depends_on:
@@ -101,7 +101,7 @@ services:
       target: clips-mcp
     image: clara-clips-mcp:latest
     ports:
-      - "127.0.0.1:1951:1951"
+      - "0.0.0.0:1951:1951"
     environment:
       - REST_API_URL=http://clara-api:8080
     depends_on:
@@ -159,7 +159,7 @@ services:
       dockerfile: clara-cerebellum/docker/Dockerfile.cobbler
     image: cobbler:latest
     ports:
-      - "127.0.0.1:5001:5001"
+      - "0.0.0.0:5001:5001"
     environment:
       - LILDAEMON_URL=http://lildaemon:6666
       - DIS_URL=http://clara-api:8080
@@ -184,7 +184,7 @@ services:
       target: frontdesk
     image: clara-frontdesk:latest
     ports:
-      - "127.0.0.1:8088:8088"
+      - "0.0.0.0:8088:8088"
     depends_on:
       clara-api:
         condition: service_healthy
