@@ -55,8 +55,8 @@ if [ "$USE_COMPOSE" = true ]; then
     echo "docker-compose file not found at $COMPOSE_FILE" >&2
     exit 3
   fi
-  echo "Running: docker-compose -f $COMPOSE_FILE build ${SERVICES[*]:-}"
-  docker-compose -f "$COMPOSE_FILE" build "${SERVICES[@]}"
+  echo "Running: docker compose -f $COMPOSE_FILE build ${SERVICES[*]:-}"
+  docker compose -f "$COMPOSE_FILE" build "${SERVICES[@]}"
   exit $?
 fi
 
