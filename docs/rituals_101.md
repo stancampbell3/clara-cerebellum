@@ -244,23 +244,25 @@ functioning until the Kafka topic is cleaned up. New `join` calls return
 ## The smoke test, end to end
 
 The current smoke test at `scripts/smoke_test.sh` exercises the Ritual
-lifecycle on the Dis side. It does **not** require a live lildaemon or Kafka —
-it uses Dis's `InMemoryBroker` (the default in dev/test mode) so all messages
-stay in-process.
+lifecycle on the Dis side, including starting a performance (a deduction
+attached via `ritual_id`). It does **not** require a live lildaemon or
+Kafka — it uses Dis's `InMemoryBroker` (the default in dev/test mode) so all
+messages stay in-process. The deduction's clauses never call
+`coire_publish(evaluator/...)`, so the cycle converges on its own without
+needing a live FieryPit participant.
 
 ```bash
 #!/bin/bash
-set -e
+source rest_tests/_common.sh  # http_request() with retry/backoff
+BASE=http://localhost:8080
 
 # 1. Create a Ritual (no participants — skip auto-bootstrap)
-CREATE_RESPONSE=$(curl -s -X POST http://localhost:8080/ritual \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"smoke-test","participants":[]}')
+CREATE_RESPONSE=$(http_request POST "$BASE/ritual" '{"name":"smoke-test","participants":[]}')
 RITUAL_ID=$(echo "$CREATE_RESPONSE" | jq -r '.ritual_id')
 
 # 2. Join with a stable participant key
-JOIN_1=$(curl -s "http://localhost:8080/ritual/$RITUAL_ID/join?participant=http://fiery-pit-1:8080")
-JOIN_2=$(curl -s "http://localhost:8080/ritual/$RITUAL_ID/join?participant=http://fiery-pit-1:8080")
+JOIN_1=$(http_request GET "$BASE/ritual/$RITUAL_ID/join?participant=http://fiery-pit-1:8080")
+JOIN_2=$(http_request GET "$BASE/ritual/$RITUAL_ID/join?participant=http://fiery-pit-1:8080")
 
 # Idempotency check — same key must return same performance_id
 PID_1=$(echo "$JOIN_1" | jq -r '.performance_id')
@@ -268,14 +270,20 @@ PID_2=$(echo "$JOIN_2" | jq -r '.performance_id')
 [ "$PID_1" = "$PID_2" ] || { echo "ERROR: performance_id changed"; exit 1; }
 
 # 3. Check status
-curl -s http://localhost:8080/ritual/$RITUAL_ID/status | jq .
+http_request GET "$BASE/ritual/$RITUAL_ID/status"
 
-# 4. Terminate
-curl -s -X DELETE http://localhost:8080/ritual/$RITUAL_ID | jq .
+# 4. Start a performance — attach a deduction to the Ritual and poll to convergence
+DEDUCE_PAYLOAD=$(jq -n --arg rid "$RITUAL_ID" \
+  '{prolog_clauses: ["man(stan).", "mortal(X) :- man(X)."], initial_goal: "mortal(X)", ritual_id: $rid}')
+DEDUCTION_ID=$(http_request POST "$BASE/deduce" "$DEDUCE_PAYLOAD" | jq -r '.deduction_id')
+# poll GET /deduce/$DEDUCTION_ID until status != "running", assert "converged"
 
-# 5. Confirm join is rejected after termination (expect 409)
+# 5. Terminate
+http_request DELETE "$BASE/ritual/$RITUAL_ID"
+
+# 6. Confirm join is rejected after termination (expect 409)
 HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
-  "http://localhost:8080/ritual/$RITUAL_ID/join")
+  "$BASE/ritual/$RITUAL_ID/join")
 [ "$HTTP" = "409" ] || { echo "ERROR: Expected 409, got $HTTP"; exit 1; }
 
 echo "Smoke test passed."
