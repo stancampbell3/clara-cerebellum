@@ -124,8 +124,8 @@ dev/test default) and persistence temporarily enabled (reverted after).
 
 - **No automated visual/interactive QA of the Cobbler-side fix (Part 0)** — same sandbox limitation as Phase 1 (no headless browser available); it's a one-line template string change, low risk, but not clicked-through.
 - **Reactivation of a terminated config isn't supported by the existing API** (`_require_draft` gate — `draft → active → terminated` has no reverse arrow today, matching `rituals_101.md`'s documented lifecycle). Verification step 8 in the plan assumed reactivation would work; it doesn't, so idempotency was instead verified via two separate configs sharing identical source content — a stronger test of the dedup mechanism anyway, but worth knowing this isn't a code gap, it's existing, documented behavior.
-- **`ClaraFish`'s constructed `Query` includes the raw `¿...?`/`??...??` wrapping punctuation**, not the stripped inner text — cosmetic, likely harmless to the LLM, but not something this pass corrected since the original code never stripped it either (no prior behavior to preserve or regress).
-- **Housekeeping from verification, not the feature itself**: two test ritual configs and a `verify_bot` lildaemon user from this session's manual testing remain in the respective stores (harmless, but exist); a `tests/lildaemon.duc` file appeared as a test-run artifact and is currently untracked/not gitignored.
+- ~~**`ClaraFish`'s constructed `Query` includes the raw `¿...?`/`??...??` wrapping punctuation**, not the stripped inner text.~~ **Resolved (2026-07-04):** added `strip_question_wrapper()` in `goat/repl/fishes/clara_fish.py`, which strips the `??...??` or `¿...?` markers (and surrounding whitespace) before the text is spliced into the goal via `prolog_quote_atom`. 12 new tests in `tests/test_clara_fish.py` cover both marker styles, whitespace handling, unwrapped passthrough, and the end-to-end `translate()` goal string. Full repl/fish + deduce test set (43 tests) re-run clean.
+- ~~**Housekeeping from verification, not the feature itself**: two test ritual configs and a `verify_bot` lildaemon user from this session's manual testing remain in the respective stores; a `tests/lildaemon.duc` file appeared as a test-run artifact and is currently untracked/not gitignored.~~ **Resolved (2026-07-04):** removed the `verify_bot` user and the two `deduce-e2e`/`deduce-e2e-2` terminated test configs directly from `lildaemon.duc`; deleted the stray `tests/lildaemon.duc` artifact; added `*.duc`/`*.duc.wal` to `lildaemon/.gitignore` so this class of artifact won't show up as untracked again.
 - Nothing in this phase changes edge qualifier (`none`/`assertion`/`boolean`) *evaluation* — Phase 1's qualifiers still don't gate or transform anything at runtime; only the node-level `reasoned_response/3` path is wired.
 
 ## Explicitly out of scope (unchanged from the plan)
@@ -151,6 +151,7 @@ lildaemon/
   goat/utils/prolog_escape.py                  (new)
   tests/test_prolog_escape.py                  (new)
   tests/test_deduce_poll_to_completion.py      (new)
+  tests/test_clara_fish.py                     (new)
 
 dagda/
   cobbler/frontend/src/components/GraphCanvas/deduceCapable.ts
