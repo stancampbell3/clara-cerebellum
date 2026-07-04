@@ -1,7 +1,8 @@
 # Cobbler Ritual Editor: Deduce Source & Edge Qualifier Authoring (Plan)
 
-**Status:** Proposed — pending team review
-**Date:** 2026-07-03 (revised)
+**Status:** Implemented (Cobbler frontend) — pending human visual QA, see
+"Implementation status" below
+**Date:** 2026-07-03 (revised); implemented 2026-07-04
 **Scope:** Cobbler editor authoring only (no runtime execution wiring yet)
 
 ---
@@ -292,6 +293,67 @@ unambiguous target:
    edgehandles' ghost/preview edges lacking the new fields (the existing
    codebase is careful about this — see the `edge[envelopeLabel]` vs bare
    `edge` note in `phase_d_checkpoint.md`).
+
+## Implementation status (2026-07-04)
+
+All six data-model/UI changes above were implemented in
+`dagda/cobbler/frontend/src/components/GraphCanvas/` (`deduceCapable.ts` new,
+`types.ts`, `GraphCanvas.tsx`, `NodePropertiesPanel.tsx`,
+`EdgeQualifierPanel.tsx` new, `graphSerializer.ts`, `RitualEditorCanvas.tsx`,
+`cytoscapeStyles.ts`/`GraphCanvas.css`).
+
+**Verified:**
+- `tsc -b` and `npm run build` (full Vite production build) both clean.
+- `eslint` on every touched/new file: zero new warnings or errors.
+- Live integration against the real stack: started lildaemon (`:6666`) and
+  the Cobbler backend (`:5001`), confirmed `GET /repl/evaluators` reports
+  `clara_mind_splinter → ClaraMindSplinter` and
+  `groq_evaluator → GroqEvaluator` — an exact match for
+  `DEDUCE_CAPABLE_EVALUATOR_CLASSES`.
+- Full persistence round-trip: created a real `ritual_config`, `PUT` a
+  `graph_layout` containing `prologSource`/`clipsSource` on a
+  `clara_mind_splinter` node and `qualifierKind`/`qualifierValue` on an edge,
+  then did a **fresh `GET`** (not the `PUT` echo) and confirmed all four
+  fields survived, backed by the real `lildaemon.duc` store. Test config
+  deleted afterward.
+
+### Known gap: no automated visual/interactive QA
+
+No headless browser was available to drive this verification —
+Playwright/chromium-cli aren't installed, and `pip install` is blocked by
+Python's externally-managed-environment guard in this sandbox (no `.venv`
+already provisioned for that purpose). So the panels themselves were never
+screenshotted or clicked through by an automated agent. What backs the
+"this works" claim instead is: (a) static verification (typecheck, lint,
+production build) and (b) live data-round-trip verification against the
+real backend, as above — but neither proves the panel *renders correctly*,
+that the mutual-exclusion tap handlers behave as expected in a real
+cytoscape canvas, or that the prefill/stylesheet logic looks right to a
+human eye.
+
+**Outstanding — needs a human pass before considering this fully closed:**
+the manual walkthrough in the "Verification" section above (steps 1–8),
+using the three dev servers left running (lildaemon `:6666`, Cobbler
+backend `:5001`, Vite dev server `:5173`).
+
+### Other outstanding items noticed during implementation
+
+- No "reset to default" affordance if a user clears the prefilled
+  `reasoned_response/3` template from a node's Prolog source — the prefill
+  only fires once, when the panel first opens on an empty field.
+- `EdgeQualifierPanel`/`NodePropertiesPanel` share the existing 200px-wide
+  `.gce-props` panel, which may feel tight for longer boolean-guard
+  expressions — untested without a visual pass.
+- No input validation on `qualifierValue`/`prologSource`/`clipsSource` —
+  by design, per the "out of scope" section above (parsing/evaluation is a
+  runtime-phase concern), but worth remembering these fields accept
+  arbitrary text today.
+- **Housekeeping from verification, not from the feature itself:** a
+  throwaway `verify_bot` user was registered on lildaemon during testing
+  (harmless, but exists in the user store); and `cat`-ing `dagda/.env` for
+  config context printed live API keys (GitHub, Google, Groq) and
+  lildaemon credentials into the session transcript — worth rotating those
+  if this transcript isn't fully trusted.
 
 ## Follow-on work (not in this plan)
 
