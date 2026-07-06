@@ -5,7 +5,7 @@ use clara_coire::ClaraEvent;
 use uuid::Uuid;
 
 use crate::broker::KafkaBridge;
-use crate::envelope::{TephraEnvelope, TephraPayload};
+use crate::envelope::{Routing, TephraEnvelope, TephraPayload};
 use crate::error::RitualError;
 
 /// A lightweight handle to an active Ritual Performance.
@@ -56,7 +56,34 @@ impl RitualHandle {
         label:  &str,
         ttl_ms: Option<u64>,
     ) -> Result<(), RitualError> {
-        let body    = serde_json::to_value(event)?;
+        self.publish_event_routed(event, label, ttl_ms, Routing::default())
+    }
+
+    /// Like [`publish_event`](Self::publish_event), but stamps routing
+    /// metadata (addressing, correlation id, logical topic path) onto the
+    /// envelope. An empty `Routing` is equivalent to `publish_event`.
+    pub fn publish_event_routed(
+        &self,
+        event:   &ClaraEvent,
+        label:   &str,
+        ttl_ms:  Option<u64>,
+        routing: Routing,
+    ) -> Result<(), RitualError> {
+        let body = serde_json::to_value(event)?;
+        self.publish_body_routed(body, label, ttl_ms, routing)
+    }
+
+    /// Publish an arbitrary JSON body (not a wrapped `ClaraEvent`) with
+    /// routing metadata. Used for caws Offerings, whose body must be exactly
+    /// the payload the target evaluator's `_validate_input` expects (e.g.
+    /// `{"prompt": ...}`), with the transport metadata on the envelope.
+    pub fn publish_body_routed(
+        &self,
+        body:    serde_json::Value,
+        label:   &str,
+        ttl_ms:  Option<u64>,
+        routing: Routing,
+    ) -> Result<(), RitualError> {
         let payload = TephraPayload::Plaintext { body };
         let envelope = TephraEnvelope::new(
             self.ritual_id,
@@ -65,7 +92,8 @@ impl RitualHandle {
             ttl_ms.unwrap_or(60_000),
             &self.dis_domain,
             payload,
-        );
+        )
+        .with_routing(routing);
         self.broker.publish(&self.topic, &envelope)
     }
 
@@ -163,14 +191,16 @@ mod tests {
 
         // Publish one stale envelope directly to bypass TephraEnvelope::new()
         let stale = TephraEnvelope {
-            tephra_id:      Uuid::new_v4(),
-            ritual_id,
-            performance_id: handle.performance_id,
-            label:          label::OFFERING.into(),
-            ts_ms:          1_000_000, // epoch + 1000 s — definitely expired
-            ttl_ms:         1_000,
-            producer_node:  "dis.test".into(),
-            payload:        TephraPayload::Plaintext { body: json!({"stale": true}) },
+            ts_ms:  1_000_000, // epoch + 1000 s — definitely expired
+            ttl_ms: 1_000,
+            ..TephraEnvelope::new(
+                ritual_id,
+                handle.performance_id,
+                label::OFFERING,
+                1_000,
+                "dis.test",
+                TephraPayload::Plaintext { body: json!({"stale": true}) },
+            )
         };
         broker.publish(&topic, &stale).unwrap();
 
@@ -192,14 +222,16 @@ mod tests {
 
         for _ in 0..3 {
             let stale = TephraEnvelope {
-                tephra_id:      Uuid::new_v4(),
-                ritual_id,
-                performance_id: handle.performance_id,
-                label:          label::OFFERING.into(),
-                ts_ms:          1_000_000,
-                ttl_ms:         1_000,
-                producer_node:  "dis.test".into(),
-                payload:        TephraPayload::Plaintext { body: json!(null) },
+                ts_ms:  1_000_000,
+                ttl_ms: 1_000,
+                ..TephraEnvelope::new(
+                    ritual_id,
+                    handle.performance_id,
+                    label::OFFERING,
+                    1_000,
+                    "dis.test",
+                    TephraPayload::Plaintext { body: json!(null) },
+                )
             };
             broker.publish(&topic, &stale).unwrap();
         }

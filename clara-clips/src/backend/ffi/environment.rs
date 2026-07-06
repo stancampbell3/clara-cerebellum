@@ -215,11 +215,35 @@ impl ClipsEnvironment {
                     }
                 }
                 _ => {
-                    // Assert as (coire-event ...) template fact for rule-based dispatch
-                    let escaped = data.replace('\\', "\\\\").replace('"', "\\\"");
+                    // Assert as (coire-event ...) template fact for rule-based dispatch.
+                    // Events without a "data" string field (e.g. ingested Ritual
+                    // Hohi/Tabu bodies) carry their whole payload as JSON in `data`.
+                    let data_str = if event.payload.get("data").is_some() {
+                        data
+                    } else {
+                        event.payload.to_string()
+                    };
+                    let escaped = data_str.replace('\\', "\\\\").replace('"', "\\\"");
+
+                    // Routing slots from the payload's `_routing` block (stamped
+                    // by ingest_tephra on correlated Ritual messages).
+                    let routing_field = |key: &str| {
+                        event
+                            .payload
+                            .get("_routing")
+                            .and_then(|r| r.get(key))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string()
+                    };
+                    let topic       = routing_field("topic_path");
+                    let correlation = routing_field("correlation_id");
+                    let source_node = routing_field("source_node_id");
+
                     let assert_str = format!(
-                        r#"(assert (coire-event (event-id "{}") (origin "{}") (ev-type "{}") (data "{}")))"#,
-                        event.event_id, event.origin, ev_type, escaped
+                        r#"(assert (coire-event (event-id "{}") (origin "{}") (ev-type "{}") (data "{}") (topic "{}") (correlation "{}") (source-node "{}")))"#,
+                        event.event_id, event.origin, ev_type, escaped,
+                        topic, correlation, source_node
                     );
                     if let Err(e) = self.eval(&assert_str) {
                         log::warn!("consume_coire_events: coire-event assert failed: {}", e);
@@ -291,7 +315,7 @@ unsafe impl Sync for ClipsEnvironment {}
 /// - `;` line comments
 /// - quoted strings (skips content, handles `\"` escapes)
 /// - balanced parentheses to find construct boundaries
-fn split_clips_constructs(source: &str) -> Vec<String> {
+pub fn split_clips_constructs(source: &str) -> Vec<String> {
     let mut constructs = Vec::new();
     let mut depth: i32 = 0;
     let mut start: Option<usize> = None;

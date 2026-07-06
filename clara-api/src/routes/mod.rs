@@ -8,6 +8,7 @@ pub mod coire;
 pub mod trace;
 pub mod source;
 pub mod ritual;
+pub mod transduce;
 
 use actix_web::web;
 
@@ -53,6 +54,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/deduce/{id}/trace/export",                       web::get().to(trace::export_trace))
             .route("/deduce/{id}/trace/{change_id}/dot",              web::get().to(trace::trace_dot))
             .route("/deduce/{id}/trace/{change_id}/entries",          web::get().to(trace::trace_entries))
+            // Graph (edge) transduction
+            .route("/transduce/graph",                                web::post().to(transduce::transduce_graph))
             // Source registry
             .route("/source",                                         web::post().to(source::register_source))
             .route("/source/{id}",                                    web::get().to(source::get_source))

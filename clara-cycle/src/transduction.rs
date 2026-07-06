@@ -260,7 +260,223 @@ pub fn decorate_source(prolog_source: &str) -> String {
     let rules = parse_prolog_rules(prolog_source);
     let synthetic_groups = detect_multi_clause_groups(&rules, &indicators);
     let preamble = generate_listen_preamble(&indicators, &synthetic_groups);
-    format!("{}\n{}", preamble, prolog_source)
+    let imports = missing_module_imports(prolog_source);
+    format!("{}{}\n{}", imports, preamble, prolog_source)
+}
+
+/// Standard Clara library imports (`the_rabbit`, `the_rat`, `the_coire`)
+/// not already present in the source — prepended by `decorate_source` so
+/// hand-authored/transduced rules can always reach `ponder_text_with_context/3`,
+/// `clara_fy/3`, `current_context/1`, `caws_consult/4`, etc.
+fn missing_module_imports(prolog_source: &str) -> String {
+    let mut out = String::new();
+    for lib in ["the_rabbit", "the_rat", "the_coire"] {
+        let directive = format!("use_module(library({}))", lib);
+        if !prolog_source.contains(&directive) {
+            out.push_str(&format!(":- {}.\n", directive));
+        }
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+// ── Graph (edge) transduction ─────────────────────────────────────────────────
+
+/// Generated Prolog/CLIPS snippets for one graph node.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct NodeSnippets {
+    pub prolog: String,
+    pub clips: String,
+}
+
+/// Per-node code generated from a Ritual graph's edges.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct GraphTransduction {
+    /// Keyed by graph node id.
+    pub per_node: HashMap<String, NodeSnippets>,
+}
+
+/// Generate per-node Prolog/CLIPS from a Ritual graph's edges
+/// (docs/deduction_redux.md: an edge is an originating push from the source
+/// and an asynchronous event on the target).
+///
+/// Input is the Cobbler `graph_layout` JSON: `nodes` with
+/// `id`/`type`/`evaluatorName`/`label`/`prologSource`/`clipsSource`, `edges`
+/// with `id`/`source`/`target`/`msgType` (or legacy `envelopeLabel`)/
+/// `qualifierKind`/`qualifierValue`/`topicSuffix`.
+///
+/// For each `offering` edge S → T between evaluator-bearing daemon nodes:
+///
+/// - **S Prolog**: a `consult_<target>/2` helper wrapping
+///   `caws_consult/4` — addressed to T's node id on logical channel
+///   `consults/<edge-id>` (or the edge's `topicSuffix`). A `boolean`
+///   qualifier compiles to a guard on the helper: a natural-language value
+///   (contains whitespace) goes through `clara_fy/2`, anything else is
+///   spliced as a literal Prolog goal.
+/// - **S CLIPS**: a reaction rule matching the correlated reply
+///   `(coire-event (origin "ritual/hohi") (topic ...))` that asserts
+///   `edge_replied('<edge-id>')` into Prolog — a forward-chaining hook.
+/// - **T Prolog** (an `assertion` qualifier): the declared fact is emitted
+///   as a ground clause in T's snippet, seeding its deductions with the
+///   edge's "dynamic incoming declaration".
+///
+/// Edges with other message types are recorded as comments only (their
+/// runtime semantics ride on the envelope label; no code is generated yet).
+pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
+    let graph: serde_json::Value =
+        serde_json::from_str(graph_json).map_err(|e| format!("invalid graph JSON: {}", e))?;
+
+    let nodes: Vec<&serde_json::Value> = graph
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .map(|a| {
+            a.iter()
+                .filter(|n| {
+                    n.get("type").and_then(|t| t.as_str()) == Some("daemon")
+                        && n.get("evaluatorName").and_then(|e| e.as_str()).is_some()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let node_by_id: HashMap<&str, &serde_json::Value> = nodes
+        .iter()
+        .filter_map(|n| n.get("id").and_then(|i| i.as_str()).map(|id| (id, *n)))
+        .collect();
+
+    let mut result = GraphTransduction::default();
+    let empty = Vec::new();
+    let edges = graph
+        .get("edges")
+        .and_then(|e| e.as_array())
+        .unwrap_or(&empty);
+
+    for edge in edges {
+        let str_field =
+            |key: &str| edge.get(key).and_then(|v| v.as_str()).map(|s| s.to_string());
+        let (Some(edge_id), Some(source_id), Some(target_id)) =
+            (str_field("id"), str_field("source"), str_field("target"))
+        else {
+            continue;
+        };
+        if source_id == target_id {
+            continue;
+        }
+        let (Some(_source), Some(target)) = (
+            node_by_id.get(source_id.as_str()),
+            node_by_id.get(target_id.as_str()),
+        ) else {
+            continue; // edge into/out of a non-evaluator node — nothing to run
+        };
+
+        let msg_type = str_field("msgType")
+            .or_else(|| str_field("envelopeLabel"))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "offering".to_string());
+
+        let source_snippets = result.per_node.entry(source_id.clone()).or_default();
+        if msg_type != "offering" {
+            source_snippets.prolog.push_str(&format!(
+                "% Edge {} carries '{}' messages — no consult helper generated \
+                 (typed listener semantics ride on the envelope label).\n",
+                edge_id, msg_type
+            ));
+            continue;
+        }
+
+        let target_label = target
+            .get("label")
+            .and_then(|l| l.as_str())
+            .filter(|l| !l.is_empty())
+            .unwrap_or(target_id.as_str());
+        let helper = format!("consult_{}", sanitize_identifier(target_label));
+        let topic = str_field("topicSuffix")
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("consults/{}", sanitize_topic(&s)))
+            .unwrap_or_else(|| format!("consults/{}", sanitize_topic(&edge_id)));
+
+        let qualifier_kind = str_field("qualifierKind").unwrap_or_else(|| "none".into());
+        let qualifier_value = str_field("qualifierValue").unwrap_or_default();
+
+        // ── Source Prolog: consult helper (+ boolean guard) ──────────────
+        source_snippets.prolog.push_str(&format!(
+            "% Edge {}: offering {} -> {} ({})\n",
+            edge_id, source_id, target_id, target_label
+        ));
+        match (qualifier_kind.as_str(), qualifier_value.trim()) {
+            ("boolean", guard) if !guard.is_empty() => {
+                let guard_goal = if guard.split_whitespace().count() > 1 {
+                    // Natural-language claim — classify via Clara LLM.
+                    format!("clara_fy(\"{}\", true)", guard.replace('"', "\\\""))
+                } else {
+                    guard.trim_end_matches('.').to_string()
+                };
+                source_snippets.prolog.push_str(&format!(
+                    "{}(Payload, Result) :-\n    {},\n    caws_consult('{}', '{}', Payload, Result).\n\n",
+                    helper, guard_goal, target_id, topic
+                ));
+            }
+            _ => {
+                source_snippets.prolog.push_str(&format!(
+                    "{}(Payload, Result) :-\n    caws_consult('{}', '{}', Payload, Result).\n\n",
+                    helper, target_id, topic
+                ));
+            }
+        }
+
+        // ── Source CLIPS: forward-chaining hook on the correlated reply ──
+        source_snippets.clips.push_str(&format!(
+            "; Edge {}: react to {}'s reply on {}\n\
+             (defrule edge-{}-on-reply\n    \
+             (coire-event (origin \"ritual/hohi\") (topic \"{}\"))\n    \
+             =>\n    \
+             (coire-publish-assert \"edge_replied('{}')\"))\n\n",
+            edge_id, target_label, topic,
+            sanitize_identifier(&edge_id), topic, edge_id
+        ));
+
+        // ── Target Prolog: assertion qualifier seeds ground truth ────────
+        if qualifier_kind == "assertion" && !qualifier_value.trim().is_empty() {
+            let target_snippets = result.per_node.entry(target_id.clone()).or_default();
+            let mut fact = qualifier_value.trim().to_string();
+            if !fact.ends_with('.') {
+                fact.push('.');
+            }
+            target_snippets.prolog.push_str(&format!(
+                "% Edge {}: dynamic incoming declaration from {}\n{}\n\n",
+                edge_id, source_id, fact
+            ));
+        }
+    }
+
+    Ok(result)
+}
+
+/// Lowercase alphanumerics/underscores only — safe as a Prolog functor
+/// fragment or CLIPS rule-name fragment.
+fn sanitize_identifier(raw: &str) -> String {
+    let mut out: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    if out.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true) {
+        out.insert(0, 'e');
+    }
+    out
+}
+
+/// Topic-path fragment: keep alphanumerics, `.`, `_`, `-`; replace the rest.
+fn sanitize_topic(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 /// Detect predicates defined with 2+ rule clauses that are not already declared dynamic.
@@ -1589,5 +1805,129 @@ mod tests {
             !clp.contains(",Greet the visitor.)"),
             "atom was emitted bare (unquoted) in goal string:\n{clp}"
         );
+    }
+
+    // ── decorate_source module imports ────────────────────────────────────────
+
+    #[test]
+    fn decorate_injects_missing_module_imports() {
+        let pl = decorate_source("fire(W) :- smoke(W).\n");
+        assert!(pl.contains(":- use_module(library(the_rabbit))."));
+        assert!(pl.contains(":- use_module(library(the_rat))."));
+        assert!(pl.contains(":- use_module(library(the_coire))."));
+    }
+
+    #[test]
+    fn decorate_does_not_duplicate_existing_imports() {
+        let src = ":- use_module(library(the_rat)).\nfire(W) :- smoke(W).\n";
+        let pl = decorate_source(src);
+        assert_eq!(pl.matches("use_module(library(the_rat))").count(), 1);
+        assert!(pl.contains(":- use_module(library(the_rabbit))."));
+    }
+
+    // ── transduce_graph (edge transduction) ───────────────────────────────────
+
+    fn two_node_graph(edge_extra: &str) -> String {
+        format!(
+            r#"{{
+              "version": 1,
+              "nodes": [
+                {{"id": "n1", "type": "daemon", "evaluatorName": "clara_mind_splinter", "label": "Clara"}},
+                {{"id": "n2", "type": "daemon", "evaluatorName": "groq_evaluator", "label": "Clara/Groq"}}
+              ],
+              "edges": [
+                {{"id": "e1", "source": "n1", "target": "n2", "flowKind": "unicast"{}}}
+              ]
+            }}"#,
+            edge_extra
+        )
+    }
+
+    #[test]
+    fn graph_offering_edge_generates_consult_helper() {
+        let result = transduce_graph(&two_node_graph("")).unwrap();
+        let source = &result.per_node["n1"];
+        assert!(
+            source.prolog.contains("consult_clara_groq(Payload, Result) :-"),
+            "helper named from target label, got:\n{}", source.prolog
+        );
+        assert!(source.prolog.contains("caws_consult('n2', 'consults/e1', Payload, Result)"));
+        // Reply hook on the source's CLIPS side
+        assert!(source.clips.contains("(defrule edge-e1-on-reply"));
+        assert!(source.clips.contains("(coire-event (origin \"ritual/hohi\") (topic \"consults/e1\"))"));
+        assert!(source.clips.contains("edge_replied('e1')"));
+        // No target snippet without an assertion qualifier
+        assert!(!result.per_node.contains_key("n2"));
+    }
+
+    #[test]
+    fn graph_boolean_nl_qualifier_guards_with_clara_fy() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "qualifierKind": "boolean", "qualifierValue": "the antimatter core is critical""#,
+        ))
+        .unwrap();
+        let prolog = &result.per_node["n1"].prolog;
+        assert!(
+            prolog.contains("clara_fy(\"the antimatter core is critical\", true)"),
+            "NL guard must classify via clara_fy, got:\n{prolog}"
+        );
+    }
+
+    #[test]
+    fn graph_boolean_literal_qualifier_spliced_as_goal() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "qualifierKind": "boolean", "qualifierValue": "core_temp(T),T>9000""#,
+        ))
+        .unwrap();
+        let prolog = &result.per_node["n1"].prolog;
+        assert!(prolog.contains("core_temp(T),T>9000,\n"), "literal guard spliced:\n{prolog}");
+        assert!(!prolog.contains("clara_fy"));
+    }
+
+    #[test]
+    fn graph_assertion_qualifier_seeds_target_fact() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "qualifierKind": "assertion", "qualifierValue": "core_temp(9500)""#,
+        ))
+        .unwrap();
+        let target = &result.per_node["n2"];
+        assert!(target.prolog.contains("core_temp(9500)."), "fact with period:\n{}", target.prolog);
+    }
+
+    #[test]
+    fn graph_non_offering_edge_generates_comment_only() {
+        let result = transduce_graph(&two_node_graph(r#", "msgType": "event""#)).unwrap();
+        let source = &result.per_node["n1"];
+        assert!(source.prolog.contains("carries 'event' messages"));
+        assert!(!source.prolog.contains("caws_consult"));
+        assert!(source.clips.is_empty());
+    }
+
+    #[test]
+    fn graph_topic_suffix_overrides_edge_id_channel() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "topicSuffix": "psych evals""#,
+        ))
+        .unwrap();
+        let prolog = &result.per_node["n1"].prolog;
+        assert!(prolog.contains("'consults/psych-evals'"), "sanitized suffix:\n{prolog}");
+    }
+
+    #[test]
+    fn graph_edges_to_unknown_or_self_are_ignored() {
+        let graph = r#"{
+          "nodes": [{"id": "n1", "type": "daemon", "evaluatorName": "clara_mind_splinter"}],
+          "edges": [
+            {"id": "e1", "source": "n1", "target": "ghost"},
+            {"id": "e2", "source": "n1", "target": "n1"}
+          ]
+        }"#;
+        let result = transduce_graph(graph).unwrap();
+        assert!(result.per_node.is_empty());
+    }
+
+    #[test]
+    fn graph_invalid_json_errors() {
+        assert!(transduce_graph("{nope").is_err());
     }
 }

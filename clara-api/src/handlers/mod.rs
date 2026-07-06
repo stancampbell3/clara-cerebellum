@@ -7,6 +7,7 @@ pub mod coire_handler;
 pub mod trace_handler;
 pub mod source_handler;
 pub mod ritual_handler;
+pub mod transduce_handler;
 
 pub use session_handler::{create_session, get_session, list_user_sessions,
                           terminate_session, save_session, AppState};

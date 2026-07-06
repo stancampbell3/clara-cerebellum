@@ -150,6 +150,82 @@ pub extern "C" fn pl_coire_poll_inbound(t_session: term_t, t_events: term_t) -> 
     }
 }
 
+/// `coire_poll_ritual(+SessionId, -EventsJSON)`
+///
+/// Like `coire_poll/2` but only drains events whose origin starts with
+/// `"ritual/"` (peer Hohi/Tabu responses and timeout Tabus written by
+/// `ingest_tephra`). Used by `caws_await/2`; leaves relay and self-emitted
+/// events untouched so it can never starve the Prolog↔CLIPS relay.
+#[no_mangle]
+pub extern "C" fn pl_coire_poll_ritual(t_session: term_t, t_events: term_t) -> c_int {
+    let result = (|| -> Result<String, String> {
+        let session_str = unsafe { term_to_string(t_session) }
+            .ok_or("failed to read SessionId")?;
+        let session_id = Uuid::parse_str(&session_str)
+            .map_err(|e| format!("invalid session_id: {}", e))?;
+
+        let events = global_coire()
+            .poll_pending_with_origin_prefix(session_id, "ritual/")
+            .map_err(|e| format!("poll_pending_with_origin_prefix: {}", e))?;
+
+        let json = serde_json::to_string(&events)
+            .map_err(|e| format!("JSON serialization: {}", e))?;
+        if !events.is_empty() {
+            log::debug!(
+                "coire_poll_ritual/2: session={} drained {} event(s)",
+                session_id,
+                events.len()
+            );
+        }
+        Ok(json)
+    })();
+
+    match result {
+        Ok(json) => {
+            let c_str = match CString::new(json) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("coire_poll_ritual/2: CString creation failed: {}", e);
+                    return 0;
+                }
+            };
+            unsafe {
+                if PL_unify_string_chars(t_events, c_str.as_ptr()) != 0 {
+                    1
+                } else {
+                    log::error!("coire_poll_ritual/2: unification failed");
+                    0
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("coire_poll_ritual/2: {}", e);
+            0
+        }
+    }
+}
+
+/// `caws_uuid(-Uuid)` — unify with a fresh v4 UUID atom (correlation ids).
+#[no_mangle]
+pub extern "C" fn pl_caws_uuid(t_uuid: term_t) -> c_int {
+    let uuid = Uuid::new_v4().to_string();
+    let c_str = match CString::new(uuid) {
+        Ok(s) => s,
+        Err(e) => {
+            log::error!("caws_uuid/1: CString creation failed: {}", e);
+            return 0;
+        }
+    };
+    unsafe {
+        if PL_unify_atom_chars(t_uuid, c_str.as_ptr()) != 0 {
+            1
+        } else {
+            log::error!("caws_uuid/1: unification failed");
+            0
+        }
+    }
+}
+
 /// `coire_mark(+EventId)`
 #[no_mangle]
 pub extern "C" fn pl_coire_mark(t_event_id: term_t) -> c_int {
@@ -219,6 +295,8 @@ pub fn register_coire_predicates() -> bool {
                 ("coire_emit", 3, pl_coire_emit as *const std::ffi::c_void),
                 ("coire_poll", 2, pl_coire_poll as *const std::ffi::c_void),
                 ("coire_poll_inbound", 2, pl_coire_poll_inbound as *const std::ffi::c_void),
+                ("coire_poll_ritual", 2, pl_coire_poll_ritual as *const std::ffi::c_void),
+                ("caws_uuid", 1, pl_caws_uuid as *const std::ffi::c_void),
                 ("coire_mark", 1, pl_coire_mark as *const std::ffi::c_void),
                 ("coire_count", 2, pl_coire_count as *const std::ffi::c_void),
             ];

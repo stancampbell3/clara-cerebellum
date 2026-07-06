@@ -38,4 +38,4 @@ pub use result::{CoireSnapshot, CycleStatus, DeductionResult, InMemoryTraceEntry
 pub use session::DeductionSession;
 pub use clara_coire::CoireStore;
 pub use clara_dagda::{Binding, Dagda, Kind, PredicateEntry, TruthValue};
-pub use transduction::{coloring_from_entries, extract_consulted_files, generate_dot, propagate_rule_coloring, DotOptions, NodeColoring, PrologRule, parse_prolog_rules};
+pub use transduction::{coloring_from_entries, extract_consulted_files, generate_dot, propagate_rule_coloring, transduce_graph, DotOptions, GraphTransduction, NodeColoring, NodeSnippets, PrologRule, parse_prolog_rules};

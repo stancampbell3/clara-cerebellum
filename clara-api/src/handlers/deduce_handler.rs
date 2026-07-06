@@ -45,6 +45,7 @@ pub async fn start_deduce(
     let req_prolog_src_id = req.prolog_source_id;
     let req_clips_src_id  = req.clips_source_id;
     let ritual_id_req     = req.ritual_id;
+    let patience_req      = req.evaluator_patience_cycles;
 
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
@@ -108,6 +109,7 @@ pub async fn start_deduce(
                     .with_deduction_id(deduction_id);
                 let c = if let Some(store) = store_bg { c.with_store(store) } else { c };
                 let c = c.with_trace(trace);
+                let c = if let Some(p) = patience_req { c.with_evaluator_patience(p) } else { c };
                 // Attach a RitualHandle when the caller supplied a ritual_id.
                 // Each deduction run joins anonymously (fresh performance_id).
                 if let Some(rid) = ritual_id_req {
@@ -650,16 +652,13 @@ fn resolve_clips_source(
     // Case 1: caller supplied a pre-registered clips source_id.
     // For CLIPS we register for identity/dedup only — no artifact generation.
     // The content is returned as inline constructs rather than a file path.
+    // Constructs are balanced-paren s-expressions (a defrule spans many
+    // lines and `;` comments must be dropped) — never split by line.
     if let Some(sid) = source_id {
         if let Some(s) = store {
             match s.sources.get(sid) {
                 Ok(Some(entry)) => {
-                    let loaded: Vec<String> = entry.content
-                        .lines()
-                        .map(str::trim)
-                        .filter(|l| !l.is_empty())
-                        .map(str::to_string)
-                        .collect();
+                    let loaded = clara_clips::ffi::split_clips_constructs(&entry.content);
                     return (None, loaded, Some(sid));
                 }
                 Ok(None) => log::warn!("clips_source_id {} not found; falling back", sid),

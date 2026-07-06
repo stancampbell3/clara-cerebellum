@@ -105,26 +105,49 @@ pub struct CycleController {
     /// evaluator-tagged Coire events to the Ritual topic.
     #[cfg(feature = "ritual")]
     ritual_handle: Option<clara_ritual::RitualHandle>,
-    /// Count of Offerings published to the Ritual topic that have not yet
-    /// been answered by a Hohi (or Tabu) from a peer evaluator.
+    /// Offerings published to the Ritual topic that have not yet been
+    /// answered by a Hohi (or Tabu) from a peer evaluator, keyed by
+    /// correlation id.
     ///
-    /// Convergence is blocked while this is non-zero so the cycle does not
-    /// terminate before peer responses arrive. The counter is decremented
-    /// each time `ingest_tephra` processes a Hohi- or Tabu-labelled envelope.
-    /// Max-cycles termination is NOT blocked — the cycle will still exhaust
-    /// its budget and return `Err(MaxCyclesExceeded)` if responses never
-    /// arrive, matching the existing no-solution convergence behaviour.
+    /// Convergence is blocked while this is non-empty so the cycle does not
+    /// terminate before peer responses arrive. Entries are removed when
+    /// `ingest_tephra` matches a Hohi/Tabu to them, or when their per-offer
+    /// patience expires. Max-cycles termination is NOT blocked — the cycle
+    /// will still exhaust its budget and return `Err(MaxCyclesExceeded)` if
+    /// responses never arrive.
     #[cfg(feature = "ritual")]
-    pending_evaluator_responses: usize,
-    /// How many consecutive cycles without any peer response before we
-    /// synthesise a Tabu and clear `pending_evaluator_responses`.
+    pending_offers: std::collections::HashMap<Uuid, PendingOffer>,
+    /// How many cycles a single outstanding Offering may wait before a
+    /// synthetic timeout Tabu is injected for it and it is dropped.
     /// Default: 10.
     #[cfg(feature = "ritual")]
     evaluator_patience_cycles: u32,
-    /// Cycles elapsed since `pending_evaluator_responses` last changed.
-    /// Reset to 0 whenever `pending_evaluator_responses` decrements.
-    #[cfg(feature = "ritual")]
-    cycles_without_response: u32,
+}
+
+/// Parsed `_caws` transport block from an outbound caws event.
+#[cfg(feature = "ritual")]
+struct CawsDirective {
+    routing: clara_ritual::Routing,
+    correlation_id: Uuid,
+    /// False for fire-and-forget squawks — no pending offer is registered
+    /// and convergence is never blocked on a reply.
+    expects_reply: bool,
+}
+
+/// A published Offering awaiting its correlated Hohi/Tabu.
+#[cfg(feature = "ritual")]
+#[derive(Debug)]
+struct PendingOffer {
+    /// Cycles spent waiting; at `evaluator_patience_cycles` a synthetic
+    /// `ritual/tabu-timeout` event carrying this offer's correlation id is
+    /// injected and the offer is dropped (timeout-to-false).
+    cycles_waiting: u32,
+    /// True when the Offering was published with a `_caws` correlation id
+    /// the reply is expected to echo. Legacy offers (plain `coire_publish`
+    /// with an `evaluator/` origin) are matched by arrival order instead.
+    expects_correlation: bool,
+    /// Logical channel the Offering was published on, if any.
+    topic_path: Option<String>,
 }
 
 impl CycleController {
@@ -147,11 +170,9 @@ impl CycleController {
             #[cfg(feature = "ritual")]
             ritual_handle: None,
             #[cfg(feature = "ritual")]
-            pending_evaluator_responses: 0,
+            pending_offers: std::collections::HashMap::new(),
             #[cfg(feature = "ritual")]
             evaluator_patience_cycles: 10,
-            #[cfg(feature = "ritual")]
-            cycles_without_response: 0,
         }
     }
 
@@ -507,12 +528,14 @@ impl CycleController {
         };
 
         // 1. Drain incoming Tephras from peer evaluators → Prolog mailbox
+        let mut ingested_any = false;
         match handle.poll_incoming() {
             Ok(tephras) => {
+                ingested_any = !tephras.is_empty();
                 for tephra in &tephras {
                     self.ingest_tephra(tephra);
                 }
-                if !tephras.is_empty() {
+                if ingested_any {
                     log::debug!(
                         "CycleController: evaluator_pass ingested {} tephra(s)",
                         tephras.len()
@@ -524,17 +547,32 @@ impl CycleController {
 
         // 2. Drain outbound evaluator-tagged Coire events → Ritual topic
         self.publish_evaluator_events(&handle);
+
+        // 3. Pace the wait for outstanding replies. An otherwise-idle cycle
+        //    completes in tens of milliseconds, so unpaced patience cycles
+        //    would burn through in ~1s — far less than typical Kafka
+        //    consumer delivery latency. Sleeping only while offers are
+        //    pending (and nothing just arrived) makes patience roughly a
+        //    wall-clock budget of ~EVALUATOR_WAIT_MS per cycle without
+        //    slowing active flows. Runs on the dedicated blocking thread.
+        if !self.pending_offers.is_empty() && !ingested_any {
+            const EVALUATOR_WAIT_MS: u64 = 250;
+            std::thread::sleep(std::time::Duration::from_millis(EVALUATOR_WAIT_MS));
+        }
     }
 
     /// Unpack a [`TephraEnvelope`] and write its payload as a new [`ClaraEvent`]
     /// into the Prolog Coire mailbox with origin `"ritual/{label}"`.
     ///
-    /// A `Hohi`-labelled envelope decrements `pending_evaluator_responses`,
-    /// allowing convergence to proceed once all outstanding Offerings have
-    /// been answered.  Encrypted payloads are logged and skipped until Phase 7.
+    /// A Hohi/Tabu envelope resolves the matching entry in `pending_offers`:
+    /// by echoed `correlation_id` when present, otherwise (legacy peers) the
+    /// oldest order-matched offer. Responses for a different performance, or
+    /// with an unknown correlation id, are logged and dropped — they answer
+    /// someone else's Offering. Encrypted payloads are logged and skipped
+    /// until Phase 7.
     #[cfg(feature = "ritual")]
     fn ingest_tephra(&mut self, tephra: &clara_ritual::TephraEnvelope) {
-        let body = match &tephra.payload {
+        let mut body = match &tephra.payload {
             clara_ritual::TephraPayload::Plaintext { body } => body.clone(),
             clara_ritual::TephraPayload::Encrypted { .. } => {
                 log::warn!(
@@ -546,18 +584,32 @@ impl CycleController {
             }
         };
 
-        // A Hohi or Tabu means a peer evaluator has responded to one of our Offerings.
+        // A Hohi or Tabu means a peer evaluator has responded to an Offering.
         // Both count as "responded" — Tabu is an error response, not silence.
         if tephra.label == clara_ritual::label::HOHI
             || tephra.label == clara_ritual::label::TABU
         {
-            self.pending_evaluator_responses =
-                self.pending_evaluator_responses.saturating_sub(1);
-            self.cycles_without_response = 0;
-            log::debug!(
-                "CycleController: ingest_tephra {} received — pending now {}",
-                tephra.label, self.pending_evaluator_responses
-            );
+            if !self.resolve_pending_offer(tephra) {
+                return; // not an answer to any of our outstanding Offerings
+            }
+        }
+
+        // Surface routing metadata to rules (e.g. caws_await matching on the
+        // echoed correlation id) by merging it into the event payload.
+        if let Some(obj) = body.as_object_mut() {
+            let mut routing = serde_json::Map::new();
+            if let Some(cid) = tephra.correlation_id {
+                routing.insert("correlation_id".into(), serde_json::json!(cid.to_string()));
+            }
+            if let Some(src) = &tephra.source_node_id {
+                routing.insert("source_node_id".into(), serde_json::json!(src));
+            }
+            if let Some(tp) = &tephra.topic_path {
+                routing.insert("topic_path".into(), serde_json::json!(tp));
+            }
+            if !routing.is_empty() {
+                obj.insert("_routing".into(), serde_json::Value::Object(routing));
+            }
         }
 
         let coire = clara_coire::global();
@@ -572,8 +624,8 @@ impl CycleController {
         match coire.write_event(&prolog_event) {
             Ok(()) => log::debug!(
                 "CycleController: ingest_tephra wrote tephra {} (label={}) \
-                 to Prolog mailbox as event {}",
-                tephra.tephra_id, tephra.label, prolog_event.event_id
+                 to Prolog mailbox (session {}) as event {}",
+                tephra.tephra_id, tephra.label, self.session.prolog_id, prolog_event.event_id
             ),
             Err(e) => log::warn!(
                 "CycleController: ingest_tephra failed to write tephra {} \
@@ -604,17 +656,99 @@ impl CycleController {
         }
     }
 
-    /// Write a synthetic `ritual/tabu` Coire event indicating that a peer
-    /// evaluator timed out (was silent for `evaluator_patience_cycles` cycles).
+    /// Match an incoming Hohi/Tabu to an outstanding Offering in
+    /// `pending_offers` and remove that entry.
     ///
-    /// CLIPS/Prolog rules can pattern-match on this event to implement recovery
-    /// logic or declare the goal unresolvable.
+    /// Returns `true` when the response resolved one of this controller's
+    /// offers (the caller should ingest it into the mailboxes), `false` when
+    /// it belongs to a different performance or an unknown correlation id —
+    /// i.e. it answers someone else's Offering — and must be dropped.
     #[cfg(feature = "ritual")]
-    fn assert_evaluator_timeout_tabu(&self) {
+    fn resolve_pending_offer(&mut self, tephra: &clara_ritual::TephraEnvelope) -> bool {
+        let own_performance = self
+            .ritual_handle
+            .as_ref()
+            .map(|h| h.performance_id == tephra.performance_id)
+            .unwrap_or(true);
+        if !own_performance {
+            log::debug!(
+                "CycleController: ingest_tephra {} for performance {} is not \
+                 ours — dropping",
+                tephra.label, tephra.performance_id
+            );
+            return false;
+        }
+
+        match tephra.correlation_id {
+            Some(cid) => {
+                if self.pending_offers.remove(&cid).is_some() {
+                    log::debug!(
+                        "CycleController: ingest_tephra {} resolved offer {} — \
+                         {} still pending",
+                        tephra.label, cid, self.pending_offers.len()
+                    );
+                    true
+                } else {
+                    log::warn!(
+                        "CycleController: ingest_tephra {} with unknown \
+                         correlation id {} (late or foreign reply) — dropping",
+                        tephra.label, cid
+                    );
+                    false
+                }
+            }
+            None => {
+                // Legacy peer with no correlation echo: resolve the oldest
+                // outstanding offer that was published without a correlation
+                // id (order-matched, single-outstanding-request semantics).
+                let key = self
+                    .pending_offers
+                    .iter()
+                    .filter(|(_, offer)| !offer.expects_correlation)
+                    .max_by_key(|(_, offer)| offer.cycles_waiting)
+                    .map(|(k, _)| *k);
+                match key {
+                    Some(k) => {
+                        self.pending_offers.remove(&k);
+                        log::debug!(
+                            "CycleController: ingest_tephra {} (uncorrelated) \
+                             resolved legacy offer — {} still pending",
+                            tephra.label, self.pending_offers.len()
+                        );
+                        true
+                    }
+                    None => {
+                        log::warn!(
+                            "CycleController: ingest_tephra {} with no \
+                             correlation id and no legacy offer outstanding — \
+                             dropping",
+                            tephra.label
+                        );
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    /// Write a synthetic `ritual/tabu` Coire event indicating that a peer
+    /// evaluator timed out (was silent for `evaluator_patience_cycles` cycles
+    /// on one Offering).
+    ///
+    /// The event carries the timed-out offer's correlation id (when it had
+    /// one) so rules — e.g. `caws_await/2` — can fail exactly the operation
+    /// that timed out (timeout-to-false) while other outstanding consults
+    /// keep waiting.
+    #[cfg(feature = "ritual")]
+    fn assert_evaluator_timeout_tabu(&self, correlation_id: Option<Uuid>) {
+        let mut body = serde_json::json!({ "error": "evaluator_timeout" });
+        if let Some(cid) = correlation_id {
+            body["_routing"] = serde_json::json!({ "correlation_id": cid.to_string() });
+        }
         let event = clara_coire::ClaraEvent::new(
             self.session.prolog_id,
             "ritual/tabu-timeout",
-            serde_json::json!({ "error": "evaluator_timeout" }),
+            body,
         );
         match clara_coire::global().write_event(&event) {
             Ok(()) => log::debug!(
@@ -631,11 +765,13 @@ impl CycleController {
     /// Drain all pending Coire events whose origin starts with `"evaluator/"`
     /// and publish each as a Tephra to the Ritual topic.
     ///
-    /// Each successfully published Offering increments
-    /// `pending_evaluator_responses` so that convergence is blocked until a
-    /// matching Hohi (or Tabu) arrives via `ingest_tephra`.  Events with other
-    /// origins are left untouched so the Prolog and CLIPS passes can consume
-    /// them normally.
+    /// Routing metadata embedded in the event payload's reserved `_caws`
+    /// object (`{correlation_id, target_node_id, topic_path, tags}` — written
+    /// by `caws_offer/4` and friends) is lifted onto the envelope. Every
+    /// published Offering registers a `PendingOffer` so that convergence is
+    /// blocked until the matching Hohi/Tabu arrives via `ingest_tephra` (or
+    /// its patience expires). Events with other origins are left untouched so
+    /// the Prolog and CLIPS passes can consume them normally.
     #[cfg(feature = "ritual")]
     fn publish_evaluator_events(&mut self, handle: &clara_ritual::RitualHandle) {
         let coire = clara_coire::global();
@@ -652,13 +788,54 @@ impl CycleController {
 
         let mut published = 0usize;
         for event in &events {
-            match handle.publish_event(event, clara_ritual::label::OFFERING, None) {
+            let caws = Self::caws_directive(event, handle);
+            let publish_result = match &caws {
+                // caws event: publish the clean user payload (minus the
+                // `_caws` transport block) so the target evaluator's
+                // `_validate_input` sees exactly the authored payload.
+                Some(directive) => {
+                    let mut body = event.payload.clone();
+                    if let Some(obj) = body.as_object_mut() {
+                        obj.remove("_caws");
+                    }
+                    handle.publish_body_routed(
+                        body,
+                        clara_ritual::label::OFFERING,
+                        None,
+                        directive.routing.clone(),
+                    )
+                }
+                // Legacy event: whole-ClaraEvent body, broadcast (unchanged
+                // pre-caws behavior).
+                None => handle.publish_event(event, clara_ritual::label::OFFERING, None),
+            };
+            match publish_result {
                 Ok(()) => {
                     published += 1;
+                    let (correlation_id, expects_correlation, expects_reply, topic_path) =
+                        match caws {
+                            Some(d) => (
+                                d.correlation_id,
+                                true,
+                                d.expects_reply,
+                                d.routing.topic_path,
+                            ),
+                            None => (Uuid::new_v4(), false, true, None),
+                        };
+                    if expects_reply {
+                        self.pending_offers.insert(
+                            correlation_id,
+                            PendingOffer {
+                                cycles_waiting: 0,
+                                expects_correlation,
+                                topic_path,
+                            },
+                        );
+                    }
                     log::debug!(
                         "CycleController: publish_evaluator_events published event {} \
-                         (origin={}) as Tephra",
-                        event.event_id, event.origin
+                         (origin={}, correlation={}) as Tephra",
+                        event.event_id, event.origin, correlation_id
                     );
                 }
                 Err(e) => log::warn!(
@@ -670,13 +847,61 @@ impl CycleController {
         }
 
         if published > 0 {
-            self.pending_evaluator_responses += published;
             log::info!(
                 "CycleController: publish_evaluator_events published {} Offering(s) — \
-                 pending_evaluator_responses now {}",
-                published, self.pending_evaluator_responses
+                 {} offer(s) now pending",
+                published, self.pending_offers.len()
             );
         }
+    }
+
+    /// Extract the routing directive from an outbound event's reserved
+    /// `_caws` payload object (written by `caws_offer/4` / `caws_squawk/3`).
+    /// `None` for legacy events (plain `coire_publish` with an `evaluator/`
+    /// origin) — those keep the pre-caws broadcast behavior.
+    #[cfg(feature = "ritual")]
+    fn caws_directive(
+        event: &clara_coire::ClaraEvent,
+        handle: &clara_ritual::RitualHandle,
+    ) -> Option<CawsDirective> {
+        let caws = event.payload.get("_caws").and_then(|v| v.as_object())?;
+
+        let str_field = |key: &str| {
+            caws.get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
+        let correlation_id = str_field("correlation_id")
+            .and_then(|s| Uuid::parse_str(&s).ok())
+            .unwrap_or_else(Uuid::new_v4);
+        let topic_path = str_field("topic_path").or_else(|| {
+            // Default logical channel: {dis_domain}/ritual/{performance_id}
+            Some(format!(
+                "{}/ritual/{}",
+                handle.dis_domain, handle.performance_id
+            ))
+        });
+        let tags = caws.get("tags").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        });
+        let expects_reply = caws
+            .get("expects_reply")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        Some(CawsDirective {
+            routing: clara_ritual::Routing {
+                source_node_id: str_field("source_node_id"),
+                target_node_id: str_field("target_node_id"),
+                correlation_id: Some(correlation_id),
+                topic_path,
+                tags,
+            },
+            correlation_id,
+            expects_reply,
+        })
     }
 
     fn clips_pass(&mut self) -> Result<(), CycleError> {
@@ -747,28 +972,39 @@ impl CycleController {
         // peer evaluators. This prevents the cycle from declaring a fixed point
         // before peer responses arrive.  Max-cycles termination is unaffected.
         //
-        // Patience timeout: if the peer is silent for `evaluator_patience_cycles`
-        // consecutive cycles, synthesise a Tabu event and clear the counter so
-        // the cycle can continue (CLIPS/Prolog rules may fire on it).
+        // Patience timeout, per offer: each outstanding Offering ages every
+        // cycle; one that reaches `evaluator_patience_cycles` gets a synthetic
+        // timeout Tabu carrying its correlation id and is dropped, so exactly
+        // that operation fails (timeout-to-false) while others keep waiting.
         #[cfg(feature = "ritual")]
         {
-            if self.pending_evaluator_responses > 0 {
-                self.cycles_without_response += 1;
-                if self.cycles_without_response >= self.evaluator_patience_cycles {
-                    log::warn!(
-                        "CycleController: evaluator patience exhausted after {} cycles \
-                         — asserting timeout Tabu and clearing {} pending response(s)",
-                        self.evaluator_patience_cycles,
-                        self.pending_evaluator_responses,
-                    );
-                    self.assert_evaluator_timeout_tabu();
-                    self.pending_evaluator_responses = 0;
-                    self.cycles_without_response = 0;
+            let mut timed_out: Vec<Uuid> = Vec::new();
+            for (cid, offer) in self.pending_offers.iter_mut() {
+                offer.cycles_waiting += 1;
+                if offer.cycles_waiting >= self.evaluator_patience_cycles {
+                    timed_out.push(*cid);
                 }
+            }
+            for cid in timed_out {
+                let offer = self.pending_offers.remove(&cid);
+                let (expects_correlation, topic_path) = offer
+                    .map(|o| (o.expects_correlation, o.topic_path))
+                    .unwrap_or((false, None));
+                log::warn!(
+                    "CycleController: evaluator patience exhausted after {} cycles \
+                     for offer {} (topic={}) — asserting timeout Tabu ({} still pending)",
+                    self.evaluator_patience_cycles,
+                    cid,
+                    topic_path.as_deref().unwrap_or("-"),
+                    self.pending_offers.len(),
+                );
+                self.assert_evaluator_timeout_tabu(
+                    expects_correlation.then_some(cid),
+                );
             }
         }
         #[cfg(feature = "ritual")]
-        let pending_responses_zero = self.pending_evaluator_responses == 0;
+        let pending_responses_zero = self.pending_offers.is_empty();
         #[cfg(not(feature = "ritual"))]
         let pending_responses_zero = true;
 
@@ -778,14 +1014,14 @@ impl CycleController {
             && (tableau_stable || root_resolved);
 
         #[cfg(feature = "ritual")]
-        let pending_count = self.pending_evaluator_responses;
+        let pending_count = self.pending_offers.len();
         #[cfg(not(feature = "ritual"))]
         let pending_count: usize = 0;
 
         log::debug!(
             "CycleController: convergence — prolog_pending={}, clips_pending={}, \
              agenda_empty={}, snapshot_stable={}, tableau_stable={}, root_resolved={}, \
-             pending_evaluator_responses={} → {}",
+             pending_offers={} → {}",
             curr.prolog_pending,
             curr.clips_pending,
             clips_agenda_empty,
@@ -1100,6 +1336,17 @@ mod ritual_tests {
 
     // ── ingest_tephra ─────────────────────────────────────────────────────────
 
+    /// A legacy pending offer (no correlation) for `ctrl`, keyed internally.
+    fn seed_legacy_offer(ctrl: &mut CycleController) -> Uuid {
+        let key = Uuid::new_v4();
+        ctrl.pending_offers.insert(key, PendingOffer {
+            cycles_waiting: 0,
+            expects_correlation: false,
+            topic_path: None,
+        });
+        key
+    }
+
     #[test]
     fn ingest_tephra_writes_to_prolog_mailbox() {
         setup_coire();
@@ -1110,11 +1357,15 @@ mod ritual_tests {
         let ritual_id = registry
             .create(RitualConfig { name: "t".into(), participants: vec![] })
             .unwrap();
-        let mut ctrl = make_ctrl(session, registry.join(ritual_id, None).unwrap());
+        let handle   = registry.join(ritual_id, None).unwrap();
+        let perf_id  = handle.performance_id;
+        let mut ctrl = make_ctrl(session, handle);
+        seed_legacy_offer(&mut ctrl);
 
+        // A well-behaved peer echoes our performance_id on the response.
         let tephra = clara_ritual::TephraEnvelope::new(
             ritual_id,
-            Uuid::new_v4(),
+            perf_id,
             clara_ritual::label::HOHI,
             60_000,
             "dis.peer",
@@ -1157,6 +1408,11 @@ mod ritual_tests {
                 ciphertext: "def".into(),
                 aad:        serde_json::json!({}),
             },
+            source_node_id: None,
+            target_node_id: None,
+            correlation_id: None,
+            topic_path:     None,
+            tags:           None,
         };
 
         ctrl.ingest_tephra(&tephra);
@@ -1261,10 +1517,10 @@ mod ritual_tests {
         assert!(pending_a.is_empty(), "ctrl_a's evaluator event should be drained");
     }
 
-    // ── pending_evaluator_responses counter ───────────────────────────────────
+    // ── pending_offers correlation ────────────────────────────────────────────
 
     #[test]
-    fn publish_offering_increments_pending_counter() {
+    fn publish_offering_registers_pending_offer() {
         setup_coire();
         let (registry, _broker) = make_registry();
         let ritual_id = registry
@@ -1275,7 +1531,7 @@ mod ritual_tests {
         let handle    = registry.join(ritual_id, None).unwrap();
         let mut ctrl  = make_ctrl(session, handle.clone());
 
-        assert_eq!(ctrl.pending_evaluator_responses, 0);
+        assert!(ctrl.pending_offers.is_empty());
 
         clara_coire::global().write_event(&clara_coire::ClaraEvent::new(
             prolog_id,
@@ -1284,11 +1540,59 @@ mod ritual_tests {
         )).unwrap();
 
         ctrl.publish_evaluator_events(&handle);
-        assert_eq!(ctrl.pending_evaluator_responses, 1, "one Offering → pending should be 1");
+        assert_eq!(ctrl.pending_offers.len(), 1, "one Offering → one pending offer");
+        let offer = ctrl.pending_offers.values().next().unwrap();
+        assert!(
+            !offer.expects_correlation,
+            "a plain (no _caws) event is a legacy, order-matched offer"
+        );
     }
 
     #[test]
-    fn hohi_decrements_pending_counter() {
+    fn publish_offering_with_caws_stamps_envelope_routing() {
+        setup_coire();
+        let (registry, broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "caws-test".into(), participants: vec![] })
+            .unwrap();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let handle    = registry.join(ritual_id, None).unwrap();
+        let mut ctrl  = make_ctrl(session, handle.clone());
+
+        let cid = Uuid::new_v4();
+        clara_coire::global().write_event(&clara_coire::ClaraEvent::new(
+            prolog_id,
+            "evaluator/offering",
+            serde_json::json!({
+                "prompt": "hello",
+                "_caws": {
+                    "correlation_id": cid.to_string(),
+                    "target_node_id": "n2",
+                    "topic_path": "dis.test/ritual/p/consults/e1",
+                    "tags": ["urgent"],
+                },
+            }),
+        )).unwrap();
+
+        ctrl.publish_evaluator_events(&handle);
+
+        assert_eq!(ctrl.pending_offers.len(), 1);
+        assert!(ctrl.pending_offers.contains_key(&cid), "offer keyed by _caws correlation id");
+        assert!(ctrl.pending_offers[&cid].expects_correlation);
+
+        let topic = clara_ritual::topic_name("dis.test", ritual_id).unwrap();
+        let (envelopes, _) = broker.poll(&topic, 0).unwrap();
+        assert_eq!(envelopes.len(), 1);
+        let env = &envelopes[0];
+        assert_eq!(env.correlation_id, Some(cid));
+        assert_eq!(env.target_node_id.as_deref(), Some("n2"));
+        assert_eq!(env.topic_path.as_deref(), Some("dis.test/ritual/p/consults/e1"));
+        assert_eq!(env.tags, Some(vec!["urgent".to_string()]));
+    }
+
+    #[test]
+    fn correlated_hohi_resolves_exactly_its_offer() {
         setup_coire();
         let (registry, _broker) = make_registry();
         let ritual_id = registry
@@ -1296,50 +1600,165 @@ mod ritual_tests {
             .unwrap();
         let session  = DeductionSession::new().unwrap();
         let handle   = registry.join(ritual_id, None).unwrap();
+        let perf_id  = handle.performance_id;
         let mut ctrl = make_ctrl(session, handle);
 
-        // Simulate one outstanding Offering.
-        ctrl.pending_evaluator_responses = 1;
+        let cid_a = Uuid::new_v4();
+        let cid_b = Uuid::new_v4();
+        for cid in [cid_a, cid_b] {
+            ctrl.pending_offers.insert(cid, PendingOffer {
+                cycles_waiting: 0,
+                expects_correlation: true,
+                topic_path: None,
+            });
+        }
 
         let hohi = clara_ritual::TephraEnvelope::new(
             ritual_id,
-            Uuid::new_v4(),
+            perf_id,
             clara_ritual::label::HOHI,
             60_000,
             "dis.peer",
             clara_ritual::TephraPayload::Plaintext {
                 body: serde_json::json!({"answer": "yes"}),
             },
-        );
+        )
+        .with_routing(clara_ritual::Routing {
+            correlation_id: Some(cid_a),
+            ..Default::default()
+        });
 
         ctrl.ingest_tephra(&hohi);
-        assert_eq!(ctrl.pending_evaluator_responses, 0, "Hohi should decrement counter to 0");
+        assert!(!ctrl.pending_offers.contains_key(&cid_a), "answered offer removed");
+        assert!(ctrl.pending_offers.contains_key(&cid_b), "other offer still pending");
     }
 
     #[test]
-    fn pending_counter_saturates_at_zero() {
+    fn hohi_with_unknown_correlation_is_dropped() {
+        setup_coire();
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "unknown-cid".into(), participants: vec![] })
+            .unwrap();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let handle    = registry.join(ritual_id, None).unwrap();
+        let perf_id   = handle.performance_id;
+        let mut ctrl  = make_ctrl(session, handle);
+        let kept = seed_legacy_offer(&mut ctrl);
+
+        let hohi = clara_ritual::TephraEnvelope::new(
+            ritual_id,
+            perf_id,
+            clara_ritual::label::HOHI,
+            60_000,
+            "dis.peer",
+            clara_ritual::TephraPayload::Plaintext { body: serde_json::json!(null) },
+        )
+        .with_routing(clara_ritual::Routing {
+            correlation_id: Some(Uuid::new_v4()), // nobody's offer
+            ..Default::default()
+        });
+
+        ctrl.ingest_tephra(&hohi);
+        assert!(ctrl.pending_offers.contains_key(&kept), "unrelated offer untouched");
+        let pending = clara_coire::global().read_pending(prolog_id).unwrap();
+        assert!(pending.is_empty(), "dropped response must not reach the mailbox");
+    }
+
+    #[test]
+    fn hohi_for_other_performance_is_dropped() {
+        setup_coire();
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "other-perf".into(), participants: vec![] })
+            .unwrap();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let mut ctrl  = make_ctrl(session, registry.join(ritual_id, None).unwrap());
+        let kept = seed_legacy_offer(&mut ctrl);
+
+        let hohi = clara_ritual::TephraEnvelope::new(
+            ritual_id,
+            Uuid::new_v4(), // a different performance's response
+            clara_ritual::label::HOHI,
+            60_000,
+            "dis.peer",
+            clara_ritual::TephraPayload::Plaintext { body: serde_json::json!(null) },
+        );
+
+        ctrl.ingest_tephra(&hohi);
+        assert!(ctrl.pending_offers.contains_key(&kept), "our offer stays pending");
+        let pending = clara_coire::global().read_pending(prolog_id).unwrap();
+        assert!(pending.is_empty(), "foreign response must not reach the mailbox");
+    }
+
+    #[test]
+    fn unexpected_hohi_with_no_offers_is_dropped() {
         setup_coire();
         let (registry, _broker) = make_registry();
         let ritual_id = registry
             .create(RitualConfig { name: "sat-test".into(), participants: vec![] })
             .unwrap();
-        let session  = DeductionSession::new().unwrap();
-        let handle   = registry.join(ritual_id, None).unwrap();
-        let mut ctrl = make_ctrl(session, handle);
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let handle    = registry.join(ritual_id, None).unwrap();
+        let perf_id   = handle.performance_id;
+        let mut ctrl  = make_ctrl(session, handle);
 
-        // Counter starts at 0; an unexpected Hohi should not underflow.
         let hohi = clara_ritual::TephraEnvelope::new(
             ritual_id,
-            Uuid::new_v4(),
+            perf_id,
             clara_ritual::label::HOHI,
             60_000,
             "dis.peer",
-            clara_ritual::TephraPayload::Plaintext {
-                body: serde_json::json!(null),
-            },
+            clara_ritual::TephraPayload::Plaintext { body: serde_json::json!(null) },
         );
         ctrl.ingest_tephra(&hohi);
-        assert_eq!(ctrl.pending_evaluator_responses, 0, "saturating_sub should not underflow");
+        assert!(ctrl.pending_offers.is_empty());
+        let pending = clara_coire::global().read_pending(prolog_id).unwrap();
+        assert!(pending.is_empty(), "no offer outstanding → response dropped");
+    }
+
+    #[test]
+    fn per_offer_patience_times_out_with_correlation_id() {
+        setup_coire();
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "patience".into(), participants: vec![] })
+            .unwrap();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let mut ctrl  = make_ctrl(session, registry.join(ritual_id, None).unwrap())
+            .with_evaluator_patience(2);
+
+        let cid = Uuid::new_v4();
+        ctrl.pending_offers.insert(cid, PendingOffer {
+            cycles_waiting: 0,
+            expects_correlation: true,
+            topic_path: None,
+        });
+
+        let agenda = GoalAgenda::new(&None);
+        let snap   = ctrl.snapshot();
+        // Cycle 1: not yet timed out; convergence blocked by the pending offer.
+        assert!(!ctrl.has_converged(&snap.clone(), &snap.clone(), &agenda));
+        assert_eq!(ctrl.pending_offers[&cid].cycles_waiting, 1);
+        // Cycle 2: patience (2) reached — offer dropped, timeout Tabu injected.
+        ctrl.has_converged(&snap.clone(), &snap.clone(), &agenda);
+        assert!(ctrl.pending_offers.is_empty(), "timed-out offer removed");
+
+        let pending = clara_coire::global().read_pending(prolog_id).unwrap();
+        let timeout_events: Vec<_> = pending
+            .iter()
+            .filter(|e| e.origin == "ritual/tabu-timeout")
+            .collect();
+        assert_eq!(timeout_events.len(), 1);
+        assert_eq!(
+            timeout_events[0].payload["_routing"]["correlation_id"],
+            serde_json::json!(cid.to_string()),
+            "timeout Tabu must carry the timed-out offer's correlation id"
+        );
     }
 
     // ── run() integration: full round-trip with mock evaluator ───────────────
@@ -1396,10 +1815,11 @@ mod ritual_tests {
         let mock_flag      = mock_responded.clone();
 
         let mock_thread = std::thread::spawn(move || {
-            let mock_perf_id = Uuid::new_v4();
-            let mut offset   = 0i64;
+            let mut offset = 0i64;
 
-            for _ in 0..200 {
+            // Generous budget (~10s): under full-suite parallelism, engine
+            // startup can delay cycle 0's publish well past the poll start.
+            for _ in 0..2000 {
                 let (envelopes, next_offset) = mock_broker
                     .poll(&mock_topic, offset)
                     .expect("mock poll failed");
@@ -1407,9 +1827,12 @@ mod ritual_tests {
 
                 for env in &envelopes {
                     if env.label == clara_ritual::label::OFFERING {
+                        // Echo the Offering's performance_id, as a real
+                        // RitualParticipant does — required by the
+                        // correlation filter in ingest_tephra.
                         let hohi = TephraEnvelope::new(
                             ritual_id,
-                            mock_perf_id,
+                            env.performance_id,
                             clara_ritual::label::HOHI,
                             60_000,
                             "mock-evaluator.test",
@@ -1425,7 +1848,7 @@ mod ritual_tests {
                     }
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
             // If we get here without finding an Offering the test will fail at
             // the mock_responded assertion below.
@@ -1562,10 +1985,10 @@ mod ritual_tests {
         let mock_flag      = mock_responded.clone();
 
         let mock_thread = std::thread::spawn(move || {
-            let mock_perf_id = Uuid::new_v4();
-            let mut offset   = 0i64;
+            let mut offset = 0i64;
 
-            for _ in 0..400 {
+            // Generous budget (~10s) — see run_loop_converges_with_mock_evaluator_hohi.
+            for _ in 0..2000 {
                 let (envelopes, next_offset) = mock_broker
                     .poll(&mock_topic, offset)
                     .expect("mock poll failed");
@@ -1573,9 +1996,12 @@ mod ritual_tests {
 
                 for env in &envelopes {
                     if env.label == clara_ritual::label::OFFERING {
+                        // Echo the Offering's performance_id, as a real
+                        // RitualParticipant does — required by the
+                        // correlation filter in ingest_tephra.
                         let hohi = TephraEnvelope::new(
                             ritual_id,
-                            mock_perf_id,
+                            env.performance_id,
                             clara_ritual::label::HOHI,
                             60_000,
                             "chanter.test",
@@ -1594,7 +2020,7 @@ mod ritual_tests {
                     }
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
         });
 
@@ -1647,5 +2073,164 @@ mod ritual_tests {
             .expect("Answer binding missing from goal_bindings");
         assert_eq!(answer, "chanter_responded",
             "expected Answer = chanter_responded, got {:?}", answer);
+    }
+
+    // ── caws typed-edge round trip (docs/deduction_redux.md) ──────────────────
+
+    /// Full caws_consult/4 round trip: Prolog publishes an addressed,
+    /// correlated Offering; a mock peer replies with a Hohi echoing the
+    /// correlation id; caws_await resolves it and the goal converges with
+    /// the peer's answer bound.
+    #[test]
+    fn run_loop_caws_consult_round_trip() {
+        use clara_ritual::{Routing, TephraEnvelope, TephraPayload, topic_name};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "caws-round-trip".into(), participants: vec![] })
+            .unwrap();
+        let topic     = topic_name("dis.test", ritual_id).unwrap();
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            "peer_answer(Q, A) :- \
+                caws_consult(n2, 'dis.test/consults/e1', _{prompt: Q}, R), \
+                get_dict(response, R, A).".into(),
+        ]).expect("seed_prolog failed");
+
+        // Mock peer: consumes the addressed Offering, echoes correlation id.
+        let mock_broker    = broker.clone();
+        let mock_topic     = topic.clone();
+        let mock_responded = Arc::new(AtomicBool::new(false));
+        let mock_flag      = mock_responded.clone();
+
+        let mock_thread = std::thread::spawn(move || {
+            let mut offset = 0i64;
+            for _ in 0..2000 {
+                let (envelopes, next_offset) =
+                    mock_broker.poll(&mock_topic, offset).expect("mock poll failed");
+                offset = next_offset;
+                for env in &envelopes {
+                    if env.label == clara_ritual::label::OFFERING {
+                        // The published body must be the clean user payload —
+                        // {"prompt": ...} — with routing on the envelope.
+                        let body = match &env.payload {
+                            TephraPayload::Plaintext { body } => body.clone(),
+                            _ => panic!("unexpected payload"),
+                        };
+                        assert_eq!(
+                            body.get("prompt").and_then(|v| v.as_str()),
+                            Some("hello"),
+                            "caws Offering body must be the raw payload dict, got {body}"
+                        );
+                        assert!(body.get("_caws").is_none(), "_caws must be stripped");
+                        assert_eq!(env.target_node_id.as_deref(), Some("n2"));
+                        assert_eq!(env.topic_path.as_deref(), Some("dis.test/consults/e1"));
+                        let cid = env.correlation_id.expect("Offering must carry correlation id");
+
+                        let hohi = TephraEnvelope::new(
+                            ritual_id,
+                            env.performance_id,
+                            clara_ritual::label::HOHI,
+                            60_000,
+                            "mock-groq.test",
+                            TephraPayload::Plaintext {
+                                body: serde_json::json!({"response": "forty_two"}),
+                            },
+                        )
+                        .with_routing(Routing {
+                            correlation_id: Some(cid),
+                            source_node_id: Some("n2".into()),
+                            ..Default::default()
+                        });
+                        mock_broker.publish(&mock_topic, &hohi).expect("mock publish failed");
+                        mock_flag.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+
+        let mut ctrl = CycleController::new(
+            session,
+            50,
+            Some("peer_answer(hello, Answer)".into()),
+            Arc::new(AtomicBool::new(false)),
+        ).with_ritual(cc_handle);
+
+        let result = ctrl.run().expect("run() should converge");
+        mock_thread.join().expect("mock peer thread panicked");
+        assert!(mock_responded.load(Ordering::Relaxed), "mock peer never saw the Offering");
+
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+        assert!(ctrl.pending_offers.is_empty(), "resolved offer must be cleared");
+
+        let bindings = serde_json::to_string(&result.goal_bindings).unwrap_or_default();
+        let solutions = serde_json::to_string(&result.prolog_solutions).unwrap_or_default();
+        assert!(
+            bindings.contains("forty_two") || solutions.contains("forty_two"),
+            "peer answer must reach the goal bindings; bindings={bindings} solutions={solutions}"
+        );
+
+        // Exactly one Offering was published — the memoized re-query must
+        // not have re-offered.
+        let (all_msgs, _) = broker.poll(&topic, 0).expect("final poll failed");
+        let offerings = all_msgs.iter()
+            .filter(|e| e.label == clara_ritual::label::OFFERING)
+            .count();
+        assert_eq!(offerings, 1, "caws_offer must be idempotent across goal re-runs");
+    }
+
+    /// caws_await with a silent peer: the per-offer patience timeout injects
+    /// a correlated timeout Tabu and the awaiting goal fails —
+    /// timeout-to-false — letting the cycle converge instead of hanging.
+    #[test]
+    fn caws_await_times_out_to_false() {
+        use std::sync::atomic::AtomicBool;
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "caws-timeout".into(), participants: vec![] })
+            .unwrap();
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            "peer_answer(Q, A) :- \
+                caws_consult(n2, 'dis.test/consults/e1', _{prompt: Q}, R), \
+                get_dict(response, R, A).".into(),
+        ]).expect("seed_prolog failed");
+
+        // Nobody answers.
+        let mut ctrl = CycleController::new(
+            session,
+            30,
+            Some("peer_answer(hello, Answer)".into()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_ritual(cc_handle)
+        .with_evaluator_patience(2);
+
+        let result = ctrl.run().expect("run() should converge via timeout, not hang");
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+        assert!(ctrl.pending_offers.is_empty(), "timed-out offer must be cleared");
+
+        // The goal must have failed — no solutions carrying an answer.
+        let solutions = serde_json::to_string(&result.prolog_solutions).unwrap_or_default();
+        assert!(
+            !solutions.contains("forty_two"),
+            "silent peer must not produce an answer; solutions={solutions}"
+        );
     }
 }

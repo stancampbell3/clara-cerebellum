@@ -6,7 +6,7 @@ pub mod conversion;
 pub mod environment;
 
 // Re-export commonly used types
-pub use environment::ClipsEnvironment;
+pub use environment::{split_clips_constructs, ClipsEnvironment};
 pub use bindings::{Environment, CLIPSValue, EvalError};
 pub use conversion::{clips_value_to_string, string_to_c_string, c_string_to_string};
 

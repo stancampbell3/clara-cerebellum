@@ -162,6 +162,12 @@ pub struct DeduceRequest {
     /// performances.
     #[serde(default)]
     pub ritual_id: Option<Uuid>,
+    /// How many cycles a published Offering may wait for its Hohi/Tabu
+    /// before a synthetic timeout Tabu fails it (timeout-to-false).
+    /// Idle waiting cycles are paced (~250ms), so this roughly bounds the
+    /// per-offer wall-clock wait. Default: 10.
+    #[serde(default)]
+    pub evaluator_patience_cycles: Option<u32>,
 }
 
 /// Request to resume a previously persisted deduction.
