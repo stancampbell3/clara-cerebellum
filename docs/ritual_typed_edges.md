@@ -129,6 +129,8 @@ Prolog goal as a dict with `_routing` merged in.
   Offering published `correlation=9519b52b…`, `pending_offers=1` blocks
   convergence → `ingest_tephra hohi resolved offer 9519b52b… — 0 still
   pending` → generated CLIPS hook asserts `edge_replied('e1')` → converged.
+  The exact authored source, graph, and a runnable script are committed at
+  `clara-prolog/docs/examples/typed_edges_e2e/`.
 - **Cobbler UI (Playwright)**: new `dagda/cobbler/frontend/e2e/` suite
   (7 tests, all passing headless): login, canvas render, node slots panel,
   edge typed fields, transduce preview (asserts the generated

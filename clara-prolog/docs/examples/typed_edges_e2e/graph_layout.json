@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "daemon",
+      "label": "Clara",
+      "evaluatorName": "clara_mind_splinter",
+      "url": "",
+      "position": { "x": 100, "y": 100 },
+      "config": {},
+      "status": "idle",
+      "prologSource": "",
+      "clipsSource": ""
+    },
+    {
+      "id": "n2",
+      "type": "daemon",
+      "label": "Clara/Groq",
+      "evaluatorName": "groq_evaluator",
+      "url": "",
+      "position": { "x": 320, "y": 100 },
+      "config": {},
+      "status": "idle"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "n1",
+      "target": "n2",
+      "flowKind": "unicast",
+      "msgType": "offering"
+    }
+  ],
+  "viewport": { "x": 0, "y": 0, "zoom": 1 }
+}
