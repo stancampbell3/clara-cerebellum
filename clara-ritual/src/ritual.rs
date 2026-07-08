@@ -9,6 +9,25 @@ pub enum RitualState {
     Terminated,
 }
 
+impl RitualState {
+    /// Stable string form used in the persisted `rituals` table.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RitualState::Active     => "active",
+            RitualState::Terminated => "terminated",
+        }
+    }
+
+    /// Inverse of [`as_str`]. Returns `None` for unknown strings.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "active"     => Some(RitualState::Active),
+            "terminated" => Some(RitualState::Terminated),
+            _            => None,
+        }
+    }
+}
+
 pub struct Ritual {
     pub ritual_id: Uuid,
     pub config:    RitualConfig,

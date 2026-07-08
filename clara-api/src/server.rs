@@ -126,7 +126,22 @@ pub async fn start_server(
         .clone()
         .unwrap_or_else(|| "dis.local".to_string());
     let kafka_bootstrap = config.server.kafka_bootstrap.clone();
-    let ritual_registry = Arc::new(RitualRegistry::new(dis_domain.clone(), ritual_broker));
+    let ritual_registry = RitualRegistry::new(dis_domain.clone(), ritual_broker);
+    let ritual_registry = Arc::new(match coire_store {
+        Some(ref store) => ritual_registry.with_store(store.clone()),
+        None => ritual_registry,
+    });
+    if coire_store.is_some() {
+        // Plain thread, not web::block: restore calls ensure_topic, whose
+        // inner block_on panics on an async runtime thread.
+        let reg = ritual_registry.clone();
+        let restored = std::thread::spawn(move || reg.restore_from_store())
+            .join()
+            .unwrap_or(0);
+        info!("RitualRegistry: restored {} ritual(s) from CoireStore", restored);
+    } else {
+        info!("RitualRegistry: no Coire store configured — rituals will not survive restarts");
+    }
 
     // Create app state
     let app_state = web::Data::new(AppState {

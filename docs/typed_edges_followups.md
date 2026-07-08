@@ -7,17 +7,18 @@ repeatedly during live verification.
 
 ## 1. Persist (or self-heal) Dis's ritual registry — *recommended first*
 
-Dis keeps active Rituals in memory only. Every Dis restart orphans the
-active ritual configs: lildaemon still believes they're active, but Runs
-fail until each config is deactivated and re-created/re-activated by hand.
-This is the single most annoying operational trap in day-to-day dev.
+**DONE (2026-07-08).** Chose the persistence option: the registry now
+writes through to a `rituals` table in the existing CoireStore
+(`clara-coire/src/store.rs`) and reloads it on boot
+(`RitualRegistry::restore_from_store`, wired in `clara-api/src/server.rs`).
+Active rituals — including keyed-join performance ids — survive Dis
+restarts; terminated ones keep answering status/join truthfully (409, not
+404). lildaemon auto-rejoin semantics deliberately deferred.
 
-Options (pick one):
-- Persist the registry in the existing CoireStore (DuckDB) and reload on
-  boot.
-- Have lildaemon re-join automatically: on a failed Run/join due to unknown
-  ritual_id, re-run the activation flow for configs it thinks are active
-  (idempotent thanks to content-addressed source registration).
+Original problem: Dis kept active Rituals in memory only. Every Dis
+restart orphaned the active ritual configs: lildaemon still believed
+they're active, but Runs failed until each config was deactivated and
+re-created/re-activated by hand.
 
 ## 2. Evaluate-cache staleness for LLM calls
 

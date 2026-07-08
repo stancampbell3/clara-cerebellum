@@ -15,7 +15,7 @@ pub use coire::{Coire, SessionSummary};
 pub use error::{CoireError, CoireResult};
 pub use event::{ClaraEvent, EventStatus};
 pub use source::{ArtifactEntry, SourceEntry, SourceRegistry};
-pub use store::{CoireStore, DeductionSnapshot, TableauChange};
+pub use store::{CoireStore, DeductionSnapshot, RitualRow, TableauChange};
 
 use std::sync::OnceLock;
 

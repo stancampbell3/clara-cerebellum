@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::coire::{raw_to_event, Coire, RawRow};
 use crate::error::CoireResult;
 use crate::event::ClaraEvent;
+use crate::source::now_ms;
 
 /// Full snapshot of a deduction run: seed knowledge + result metadata.
 ///
@@ -83,6 +84,26 @@ pub struct TableauChange {
     pub entries_json:  String,
     /// Unix timestamp (ms) when this row was inserted.
     pub recorded_at_ms: i64,
+}
+
+/// A single row from the `rituals` table — the persisted form of one Ritual
+/// in the server's registry, reloaded on boot so active Rituals survive
+/// restarts.
+///
+/// clara-coire stays ignorant of clara-ritual's types: `config_json` is the
+/// caller-serialized `RitualConfig`, `participants_json` the caller-serialized
+/// participant-key → performance-id map, and `state` a plain string
+/// (`"active"` | `"terminated"`).
+#[derive(Debug, Clone)]
+pub struct RitualRow {
+    pub ritual_id:         Uuid,
+    pub name:              String,
+    pub config_json:       String,
+    pub state:             String,
+    pub topic:             String,
+    pub participants_json: String,
+    pub created_at_ms:     i64,
+    pub updated_at_ms:     i64,
 }
 
 /// Persistent DuckDB-backed store for Coire session snapshots.
@@ -170,7 +191,18 @@ impl CoireStore {
                 expires_at_ms    BIGINT
             );
             CREATE INDEX IF NOT EXISTS idx_artifact_source_type
-                ON source_artifacts (source_id, artifact_type);",
+                ON source_artifacts (source_id, artifact_type);
+
+            CREATE TABLE IF NOT EXISTS rituals (
+                ritual_id         VARCHAR NOT NULL PRIMARY KEY,
+                name              VARCHAR NOT NULL,
+                config_json       VARCHAR NOT NULL,
+                state             VARCHAR NOT NULL,
+                topic             VARCHAR NOT NULL,
+                participants_json VARCHAR NOT NULL DEFAULT '{}',
+                created_at_ms     BIGINT  NOT NULL,
+                updated_at_ms     BIGINT  NOT NULL
+            );",
         )?;
         // Migrations: add columns to stores created before these fields existed.
         // We check information_schema first because some DuckDB versions silently
@@ -826,6 +858,105 @@ impl CoireStore {
         Ok(changes)
     }
 
+    // ── Ritual registry rows ─────────────────────────────────────────────────
+
+    /// Insert or replace the persisted form of a Ritual.
+    pub fn upsert_ritual(&self, row: &RitualRow) -> CoireResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO rituals
+                (ritual_id, name, config_json, state, topic,
+                 participants_json, created_at_ms, updated_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (ritual_id) DO UPDATE SET
+                name              = excluded.name,
+                config_json       = excluded.config_json,
+                state             = excluded.state,
+                topic             = excluded.topic,
+                participants_json = excluded.participants_json,
+                created_at_ms     = excluded.created_at_ms,
+                updated_at_ms     = excluded.updated_at_ms",
+            duckdb::params![
+                row.ritual_id.to_string(),
+                row.name,
+                row.config_json,
+                row.state,
+                row.topic,
+                row.participants_json,
+                row.created_at_ms,
+                row.updated_at_ms,
+            ],
+        )?;
+        log::debug!("CoireStore: upserted ritual {}", row.ritual_id);
+        Ok(())
+    }
+
+    /// Update a persisted Ritual's lifecycle state (`"active"` | `"terminated"`).
+    pub fn set_ritual_state(&self, ritual_id: Uuid, state: &str) -> CoireResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE rituals SET state = ?, updated_at_ms = ? WHERE ritual_id = ?",
+            duckdb::params![state, now_ms(), ritual_id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Update a persisted Ritual's participant-key → performance-id map.
+    pub fn set_ritual_participants(
+        &self,
+        ritual_id:         Uuid,
+        participants_json: &str,
+    ) -> CoireResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE rituals SET participants_json = ?, updated_at_ms = ? WHERE ritual_id = ?",
+            duckdb::params![participants_json, now_ms(), ritual_id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Load all persisted Rituals — active and terminated — oldest first.
+    ///
+    /// Terminated rows are included so a restarted server keeps answering
+    /// status/join requests for them truthfully (409 rather than 404).
+    pub fn load_rituals(&self) -> CoireResult<Vec<RitualRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT ritual_id, name, config_json, state, topic,
+                    participants_json, created_at_ms, updated_at_ms
+             FROM rituals
+             ORDER BY created_at_ms ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?;
+        let mut rituals = Vec::new();
+        for row in rows {
+            let (rid_s, name, config_json, state, topic,
+                 participants_json, created_at_ms, updated_at_ms) = row?;
+            rituals.push(RitualRow {
+                ritual_id: Uuid::parse_str(&rid_s).unwrap(),
+                name,
+                config_json,
+                state,
+                topic,
+                participants_json,
+                created_at_ms,
+                updated_at_ms,
+            });
+        }
+        Ok(rituals)
+    }
+
     // ── Coire event methods ──────────────────────────────────────────────────
 
     fn upsert_event_with_conn(
@@ -1127,5 +1258,93 @@ mod tests {
 
         let events = clone.read_session(sid).unwrap();
         assert_eq!(events.len(), 2);
+    }
+
+    // ── Ritual rows ─────────────────────────────────────────────────────────
+
+    fn make_ritual_row(name: &str) -> RitualRow {
+        RitualRow {
+            ritual_id:         Uuid::new_v4(),
+            name:              name.to_string(),
+            config_json:       format!(r#"{{"name":"{}","participants":[]}}"#, name),
+            state:             "active".to_string(),
+            topic:             format!("dis.test.ritual.{}", name),
+            participants_json: "{}".to_string(),
+            created_at_ms:     1_000,
+            updated_at_ms:     1_000,
+        }
+    }
+
+    #[test]
+    fn load_rituals_empty_on_fresh_store() {
+        let (store, _f) = tmp_store();
+        assert!(store.load_rituals().unwrap().is_empty());
+    }
+
+    #[test]
+    fn upsert_and_load_ritual_roundtrip() {
+        let (store, _f) = tmp_store();
+        let row = make_ritual_row("alpha");
+        store.upsert_ritual(&row).unwrap();
+
+        let loaded = store.load_rituals().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].ritual_id, row.ritual_id);
+        assert_eq!(loaded[0].name, "alpha");
+        assert_eq!(loaded[0].config_json, row.config_json);
+        assert_eq!(loaded[0].state, "active");
+        assert_eq!(loaded[0].topic, row.topic);
+        assert_eq!(loaded[0].participants_json, "{}");
+    }
+
+    #[test]
+    fn upsert_same_ritual_id_replaces() {
+        let (store, _f) = tmp_store();
+        let mut row = make_ritual_row("before");
+        store.upsert_ritual(&row).unwrap();
+        row.name = "after".to_string();
+        store.upsert_ritual(&row).unwrap();
+
+        let loaded = store.load_rituals().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "after");
+    }
+
+    #[test]
+    fn set_ritual_state_updates_row() {
+        let (store, _f) = tmp_store();
+        let row = make_ritual_row("r");
+        store.upsert_ritual(&row).unwrap();
+        store.set_ritual_state(row.ritual_id, "terminated").unwrap();
+
+        let loaded = store.load_rituals().unwrap();
+        assert_eq!(loaded[0].state, "terminated");
+        assert!(loaded[0].updated_at_ms >= row.updated_at_ms);
+    }
+
+    #[test]
+    fn set_ritual_participants_updates_row() {
+        let (store, _f) = tmp_store();
+        let row = make_ritual_row("r");
+        store.upsert_ritual(&row).unwrap();
+        let map = r#"{"http://fp1:6666":"11111111-1111-1111-1111-111111111111"}"#;
+        store.set_ritual_participants(row.ritual_id, map).unwrap();
+
+        let loaded = store.load_rituals().unwrap();
+        assert_eq!(loaded[0].participants_json, map);
+    }
+
+    #[test]
+    fn load_rituals_ordered_by_created_at() {
+        let (store, _f) = tmp_store();
+        let mut newer = make_ritual_row("newer");
+        newer.created_at_ms = 2_000;
+        let older = make_ritual_row("older");
+        store.upsert_ritual(&newer).unwrap();
+        store.upsert_ritual(&older).unwrap();
+
+        let loaded = store.load_rituals().unwrap();
+        assert_eq!(loaded[0].name, "older");
+        assert_eq!(loaded[1].name, "newer");
     }
 }

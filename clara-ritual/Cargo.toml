@@ -17,6 +17,9 @@ tokio        = { version = "1", features = ["sync", "rt"] }
 chrono       = { version = "0.4", default-features = false, features = ["clock"], optional = true }
 rskafka      = { version = "0.6", default-features = false, optional = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 # Enable the real Kafka broker backend via rskafka.
 # When this feature is not enabled, only InMemoryBroker is available.
