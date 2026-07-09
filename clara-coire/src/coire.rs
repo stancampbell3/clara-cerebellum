@@ -152,7 +152,7 @@ impl Coire {
     /// Read all pending events for a session and atomically mark them as processed.
     /// Returns the events (with status flipped to Processed).
     pub fn poll_pending(&self, session_id: Uuid) -> CoireResult<Vec<ClaraEvent>> {
-        self.poll_pending_impl(session_id, None)
+        self.poll_pending_impl(session_id, OriginFilter::Any)
     }
 
     /// Read pending events for a session whose origin starts with `prefix`, and
@@ -163,73 +163,70 @@ impl Coire {
         session_id: Uuid,
         prefix: &str,
     ) -> CoireResult<Vec<ClaraEvent>> {
-        self.poll_pending_impl(session_id, Some(prefix))
+        self.poll_pending_impl(session_id, OriginFilter::StartsWith(prefix))
+    }
+
+    /// Read pending events for a session whose origin does NOT start with
+    /// `prefix`, and atomically mark them as processed.  The complement of
+    /// [`poll_pending_with_origin_prefix`](Self::poll_pending_with_origin_prefix):
+    /// together they let two consumers split one mailbox by origin without
+    /// racing over each other's events.
+    pub fn poll_pending_excluding_origin_prefix(
+        &self,
+        session_id: Uuid,
+        prefix: &str,
+    ) -> CoireResult<Vec<ClaraEvent>> {
+        self.poll_pending_impl(session_id, OriginFilter::NotStartsWith(prefix))
     }
 
     fn poll_pending_impl(
         &self,
         session_id: Uuid,
-        origin_prefix: Option<&str>,
+        origin_filter: OriginFilter<'_>,
     ) -> CoireResult<Vec<ClaraEvent>> {
         let conn = self.conn.lock().unwrap();
         let sid = session_id.to_string();
 
         log::debug!("Coire: polling pending events for session {}", sid);
 
+        let (origin_cond, pattern) = match origin_filter {
+            OriginFilter::Any => ("", None),
+            OriginFilter::StartsWith(p) => (" AND origin LIKE ?", Some(format!("{}%", p))),
+            OriginFilter::NotStartsWith(p) => (" AND origin NOT LIKE ?", Some(format!("{}%", p))),
+        };
+        let sql = format!(
+            "SELECT event_id, session_id, origin, created_at_ms, payload, status
+             FROM coire_events
+             WHERE session_id = ? AND status = 'pending'{}
+             ORDER BY created_at_ms ASC",
+            origin_cond
+        );
+
         let mut events = Vec::new();
         let mut ids: Vec<String> = Vec::new();
 
-        match origin_prefix {
-            None => {
-                let mut stmt = conn.prepare(
-                    "SELECT event_id, session_id, origin, created_at_ms, payload, status
-                     FROM coire_events
-                     WHERE session_id = ? AND status = 'pending'
-                     ORDER BY created_at_ms ASC",
-                )?;
-                let rows = stmt.query_map(duckdb::params![sid], |row| {
-                    Ok(RawRow {
-                        event_id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        origin: row.get(2)?,
-                        created_at_ms: row.get(3)?,
-                        payload: row.get(4)?,
-                        status: row.get(5)?,
-                    })
-                })?;
-                for row in rows {
-                    let raw = row?;
-                    ids.push(raw.event_id.clone());
-                    let mut event = raw_to_event(raw)?;
-                    event.status = EventStatus::Processed;
-                    events.push(event);
-                }
+        {
+            let mut stmt = conn.prepare(&sql)?;
+            let mut params: Vec<&dyn duckdb::ToSql> = vec![&sid];
+            if let Some(pat) = &pattern {
+                params.push(pat);
             }
-            Some(prefix) => {
-                let pattern = format!("{}%", prefix);
-                let mut stmt = conn.prepare(
-                    "SELECT event_id, session_id, origin, created_at_ms, payload, status
-                     FROM coire_events
-                     WHERE session_id = ? AND status = 'pending' AND origin LIKE ?
-                     ORDER BY created_at_ms ASC",
-                )?;
-                let rows = stmt.query_map(duckdb::params![sid, pattern], |row| {
-                    Ok(RawRow {
-                        event_id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        origin: row.get(2)?,
-                        created_at_ms: row.get(3)?,
-                        payload: row.get(4)?,
-                        status: row.get(5)?,
-                    })
-                })?;
-                for row in rows {
-                    let raw = row?;
-                    ids.push(raw.event_id.clone());
-                    let mut event = raw_to_event(raw)?;
-                    event.status = EventStatus::Processed;
-                    events.push(event);
-                }
+            let rows = stmt.query_map(params.as_slice(), |row| {
+                Ok(RawRow {
+                    event_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    origin: row.get(2)?,
+                    created_at_ms: row.get(3)?,
+                    payload: row.get(4)?,
+                    status: row.get(5)?,
+                })
+            })?;
+            for row in rows {
+                let raw = row?;
+                ids.push(raw.event_id.clone());
+                let mut event = raw_to_event(raw)?;
+                event.status = EventStatus::Processed;
+                events.push(event);
             }
         }
 
@@ -337,6 +334,15 @@ impl Coire {
         )?;
         Ok(count as usize)
     }
+}
+
+/// Origin selector for `poll_pending_impl`: consume everything, only a
+/// prefix, or everything but a prefix. The include/exclude pair lets two
+/// consumers split one mailbox by origin without racing.
+enum OriginFilter<'a> {
+    Any,
+    StartsWith(&'a str),
+    NotStartsWith(&'a str),
 }
 
 pub(crate) struct RawRow {
@@ -505,6 +511,44 @@ mod tests {
         let sid = Uuid::new_v4();
         let polled = coire.poll_pending(sid).unwrap();
         assert!(polled.is_empty());
+    }
+
+    #[test]
+    fn poll_pending_with_origin_prefix_leaves_others() {
+        let coire = Coire::new().unwrap();
+        let sid = Uuid::new_v4();
+
+        coire.write_event(&make_event(sid, "clips", json!(1))).unwrap();
+        coire.write_event(&make_event(sid, "ritual/hohi", json!(2))).unwrap();
+
+        let polled = coire.poll_pending_with_origin_prefix(sid, "clips").unwrap();
+        assert_eq!(polled.len(), 1);
+        assert_eq!(polled[0].origin, "clips");
+
+        // The non-matching event is still pending for another consumer.
+        let remaining = coire.read_pending(sid).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].origin, "ritual/hohi");
+    }
+
+    #[test]
+    fn poll_pending_excluding_origin_prefix_is_the_complement() {
+        let coire = Coire::new().unwrap();
+        let sid = Uuid::new_v4();
+
+        coire.write_event(&make_event(sid, "clips", json!(1))).unwrap();
+        coire.write_event(&make_event(sid, "ritual/hohi", json!(2))).unwrap();
+        coire.write_event(&make_event(sid, "relay-prolog:prolog", json!(3))).unwrap();
+
+        let polled = coire.poll_pending_excluding_origin_prefix(sid, "clips").unwrap();
+        assert_eq!(polled.len(), 2);
+        assert!(polled.iter().all(|e| !e.origin.starts_with("clips")));
+        assert!(polled.iter().all(|e| e.status == EventStatus::Processed));
+
+        // The excluded event is still pending for the relay to pick up.
+        let remaining = coire.read_pending(sid).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].origin, "clips");
     }
 
     #[test]

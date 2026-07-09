@@ -51,12 +51,19 @@ ingest-everything behavior.
 
 ## 4. Dual-consumer race on the CLIPS mailbox (investigate)
 
-`relay_clips_to_prolog` drains the CLIPS mailbox **unfiltered**
-(`poll_pending(clips_id)`, `clara-cycle/src/relay.rs:75`) while the CLIPS
-engine's own `consume_coire_events` also reads that mailbox. Whichever runs
-first in a cycle wins. It happens to work with the current phase ordering,
-but the invariant is implicit — worth documenting or making explicit with
-origin-prefix filters like the Prolog side.
+**DONE (2026-07-09).** Both CLIPS-mailbox consumers are now origin-disjoint,
+matching the Prolog mailbox's four filtered consumers:
+`relay_clips_to_prolog` polls only `clips`-prefixed origins (the events the
+coire-publish-* deffunctions emit for the relay), and the CLIPS engine's
+`consume_coire_events` polls the complement via the new
+`Coire::poll_pending_excluding_origin_prefix` (`ritual/*`,
+`relay-prolog:*`, pushed events). The phase-order dependency is gone: a
+`ritual/*` event pending when the relay runs is left untouched (previously
+it would have been silently swallowed as `relay-clips:ritual/hohi` and the
+generated `(coire-event ...)` dispatch rules would never fire), and a
+pending `clips` goal event — whose data is Prolog, not CLIPS — can no
+longer be eval'd by the CLIPS engine. Pinned by
+`clara-cycle/tests/relay_filter_test.rs`.
 
 ## 5. Multi-hop consults — *next capability increment*
 

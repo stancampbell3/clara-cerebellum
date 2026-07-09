@@ -181,15 +181,21 @@ impl ClipsEnvironment {
     /// - `"goal"` events   → `<data>` is eval'd directly as a CLIPS expression
     /// - all other types   → asserted as `(coire-event ...)` template facts, then `(run)`
     ///
-    /// Returns the number of events that were pending (and dispatched).
+    /// Origin contract: this mailbox has two destructive consumers, split by
+    /// origin so neither can eat the other's events (the same invariant the
+    /// Prolog mailbox states on `coire_poll_ritual` in the_coire.pl). Events
+    /// with origin `clips*` were emitted by this engine's own coire-publish-*
+    /// deffunctions FOR the CLIPS→Prolog relay — their `data` is Prolog, not
+    /// CLIPS, so eval'ing them here would fail; they are excluded and left
+    /// pending. Everything else (`ritual/*`, `relay-prolog:*`, pushed events)
+    /// is ours.
+    ///
+    /// Returns the number of events dispatched.
     pub fn consume_coire_events(&mut self) -> Result<usize, String> {
-        let before = clara_coire::global()
-            .count_pending(self.session_id)
-            .map_err(|e| e.to_string())?;
-
         let events = clara_coire::global()
-            .poll_pending(self.session_id)
+            .poll_pending_excluding_origin_prefix(self.session_id, "clips")
             .map_err(|e| e.to_string())?;
+        let dispatched = events.len();
 
         for event in events {
             let ev_type = event.payload
@@ -254,7 +260,7 @@ impl ClipsEnvironment {
             }
         }
 
-        Ok(before)
+        Ok(dispatched)
     }
 
     /// Reset the CLIPS environment

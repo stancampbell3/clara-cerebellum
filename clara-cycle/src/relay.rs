@@ -72,7 +72,14 @@ pub fn relay_clips_to_prolog(
     rec: Option<&RelayRecorder>,
 ) -> Result<usize, CycleError> {
     let coire = clara_coire::global();
-    let events = coire.poll_pending(session.clips_id)?;
+    // Only forward events the CLIPS engine itself emitted (origin "clips",
+    // written by the coire-publish-* deffunctions in the_coire.clp). Every
+    // other origin on this mailbox — ritual/* dual-writes from the
+    // controller, relay-prolog:* from the opposite relay, external pushes —
+    // belongs to the CLIPS engine's consume_coire_events (which polls the
+    // complement) and must be left pending, or the (coire-event ...) rules
+    // matching them would never fire.
+    let events = coire.poll_pending_with_origin_prefix(session.clips_id, "clips")?;
     let count = events.len();
     for event in events {
         let payload = translate_clips_to_prolog(event.payload);
