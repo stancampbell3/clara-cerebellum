@@ -166,6 +166,10 @@ struct CawsDirective {
     /// False for fire-and-forget squawks — no pending offer is registered
     /// and convergence is never blocked on a reply.
     expects_reply: bool,
+    /// Wire label to publish with. `_caws.kind` (written by `caws_emit/4`)
+    /// selects `event`/`hohi`/`tabu`; absent (the `caws_offer`/`caws_squawk`
+    /// path) defaults to `offering`, preserving pre-existing behavior.
+    label: &'static str,
 }
 
 /// A published Offering awaiting its correlated Hohi/Tabu.
@@ -650,7 +654,30 @@ impl CycleController {
             || tephra.label == clara_ritual::label::TABU
         {
             if !self.resolve_pending_offer(tephra) {
-                return; // not an answer to any of our outstanding Offerings
+                // Not an answer to any of our outstanding Offerings. This is
+                // either our own performance's reply arriving after the
+                // offer was already resolved/timed-out (own_performance —
+                // must be dropped: caws_await checks caws_result before
+                // caws_failed, so a stale own-performance reply must never
+                // re-enter as a fresh message event), or a foreign
+                // performance's reply that happens to be addressed to us —
+                // i.e. this node is on the receiving end of a hohi/tabu
+                // edge's auto-tee or manual emit, not the original offerer.
+                // Only the latter falls through to be ingested as a
+                // ritual/hohi|tabu message event.
+                let own_performance = self
+                    .ritual_handle
+                    .as_ref()
+                    .map(|h| h.performance_id == tephra.performance_id)
+                    .unwrap_or(true);
+                let addressed_to_me = matches!(
+                    (&self.self_node_id, &tephra.target_node_id),
+                    (Some(me), Some(target)) if me == target
+                );
+                if own_performance || !addressed_to_me {
+                    return;
+                }
+                // Fall through: ingest as a ritual/hohi|tabu message event.
             }
         } else {
             // Mailbox hygiene for non-reply tephra (Offerings, events):
@@ -935,7 +962,7 @@ impl CycleController {
                     }
                     handle.publish_body_routed(
                         body,
-                        clara_ritual::label::OFFERING,
+                        directive.label,
                         None,
                         directive.routing.clone(),
                     )
@@ -1025,6 +1052,12 @@ impl CycleController {
             .get("expects_reply")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let label = match str_field("kind").as_deref() {
+            Some("event") => clara_ritual::label::EVENT,
+            Some("hohi") => clara_ritual::label::HOHI,
+            Some("tabu") => clara_ritual::label::TABU,
+            _ => clara_ritual::label::OFFERING,
+        };
 
         Some(CawsDirective {
             routing: clara_ritual::Routing {
@@ -1036,6 +1069,7 @@ impl CycleController {
             },
             correlation_id,
             expects_reply,
+            label,
         })
     }
 
@@ -2541,6 +2575,204 @@ mod ritual_tests {
         }
     }
 
+    // ── event/hohi/tabu message edges (caws_emit / ingest fallthrough) ────────
+
+    #[test]
+    fn caws_directive_maps_kind_to_label() {
+        setup_coire();
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "t".into(), participants: vec![] })
+            .unwrap();
+        let handle = registry.join(ritual_id, None).unwrap();
+
+        let event_with_kind = |kind: Option<&str>| {
+            let mut caws = serde_json::json!({
+                "correlation_id": Uuid::new_v4().to_string(),
+                "target_node_id": "n2",
+            });
+            if let Some(k) = kind {
+                caws["kind"] = serde_json::json!(k);
+            }
+            clara_coire::ClaraEvent::new(
+                Uuid::new_v4(),
+                "evaluator/emit",
+                serde_json::json!({"_caws": caws, "payload": "x"}),
+            )
+        };
+
+        for (kind, expected) in [
+            (Some("event"), clara_ritual::label::EVENT),
+            (Some("hohi"), clara_ritual::label::HOHI),
+            (Some("tabu"), clara_ritual::label::TABU),
+            (None, clara_ritual::label::OFFERING),
+        ] {
+            let ev = event_with_kind(kind);
+            let directive = CycleController::caws_directive(&ev, &handle)
+                .expect("_caws block present");
+            assert_eq!(directive.label, expected, "kind={:?}", kind);
+        }
+    }
+
+    #[test]
+    fn evaluator_emit_with_kind_publishes_labeled_tephra_without_pending_offer() {
+        setup_coire();
+        let (registry, broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "t".into(), participants: vec![] })
+            .unwrap();
+        let handle = registry.join(ritual_id, None).unwrap();
+        let session = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let mut ctrl = make_ctrl(session, handle.clone());
+
+        let coire = clara_coire::global();
+        coire.write_event(&clara_coire::ClaraEvent::new(
+            prolog_id,
+            "evaluator/emit",
+            serde_json::json!({
+                "_caws": {
+                    "correlation_id": Uuid::new_v4().to_string(),
+                    "target_node_id": "n2",
+                    "topic_path": "event/e1",
+                    "kind": "event",
+                    "expects_reply": false,
+                },
+                "note": "hello",
+            }),
+        )).unwrap();
+
+        ctrl.publish_evaluator_events(&handle);
+
+        let topic = clara_ritual::topic_name("dis.test", ritual_id).unwrap();
+        let (tephras, _): (Vec<clara_ritual::TephraEnvelope>, _) =
+            broker.poll(&topic, 0).unwrap();
+        assert_eq!(tephras.len(), 1);
+        assert_eq!(tephras[0].label, clara_ritual::label::EVENT);
+        assert!(
+            ctrl.pending_offers.is_empty(),
+            "emit (expects_reply:false) must not register a PendingOffer"
+        );
+    }
+
+    #[test]
+    fn ingest_tephra_falls_through_foreign_perf_addressed_hohi_as_message() {
+        use clara_ritual::{Routing, TephraEnvelope, TephraPayload};
+
+        setup_coire();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "t".into(), participants: vec![] })
+            .unwrap();
+        let mut ctrl = make_ctrl(session, registry.join(ritual_id, None).unwrap())
+            .with_self_node_id(Some("n2".into()));
+
+        // A foreign performance's Hohi, addressed to us, with no matching
+        // pending offer (we are the tee/message target, not the offerer).
+        let tephra = TephraEnvelope::new(
+            ritual_id,
+            Uuid::new_v4(), // foreign performance
+            clara_ritual::label::HOHI,
+            60_000,
+            "dis.peer",
+            TephraPayload::Plaintext { body: serde_json::json!({"response": "ok"}) },
+        )
+        .with_routing(Routing {
+            target_node_id: Some("n2".into()),
+            correlation_id: Some(Uuid::new_v4()),
+            ..Default::default()
+        });
+
+        ctrl.ingest_tephra(&tephra);
+
+        let pending = clara_coire::global().read_pending(prolog_id).unwrap();
+        assert_eq!(pending.len(), 1, "unresolved foreign-perf addressed hohi must be ingested as a message");
+        assert_eq!(pending[0].origin, "ritual/hohi");
+    }
+
+    #[test]
+    fn ingest_tephra_drops_own_perf_unresolved_hohi() {
+        use clara_ritual::{Routing, TephraEnvelope, TephraPayload};
+
+        setup_coire();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "t".into(), participants: vec![] })
+            .unwrap();
+        let handle  = registry.join(ritual_id, None).unwrap();
+        let perf_id = handle.performance_id;
+        let mut ctrl = make_ctrl(session, handle).with_self_node_id(Some("n2".into()));
+
+        // Our own performance's Hohi (e.g. a late reply after the offer was
+        // already resolved/timed-out) — must be dropped, never re-ingested
+        // as a message event (caws_await checks caws_result before
+        // caws_failed, so a stale own-performance reply must not resurrect).
+        let tephra = TephraEnvelope::new(
+            ritual_id,
+            perf_id,
+            clara_ritual::label::HOHI,
+            60_000,
+            "dis.peer",
+            TephraPayload::Plaintext { body: serde_json::json!({"response": "late"}) },
+        )
+        .with_routing(Routing {
+            target_node_id: Some("n2".into()),
+            correlation_id: Some(Uuid::new_v4()),
+            ..Default::default()
+        });
+
+        ctrl.ingest_tephra(&tephra);
+
+        assert!(
+            clara_coire::global().read_pending(prolog_id).unwrap().is_empty(),
+            "own-performance unresolved hohi must be dropped, not ingested as a message"
+        );
+    }
+
+    #[test]
+    fn ingest_tephra_drops_foreign_perf_hohi_not_addressed_to_me() {
+        use clara_ritual::{Routing, TephraEnvelope, TephraPayload};
+
+        setup_coire();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "t".into(), participants: vec![] })
+            .unwrap();
+        let mut ctrl = make_ctrl(session, registry.join(ritual_id, None).unwrap())
+            .with_self_node_id(Some("n2".into()));
+
+        // Foreign performance, unresolved, but addressed to a different node.
+        let tephra = TephraEnvelope::new(
+            ritual_id,
+            Uuid::new_v4(),
+            clara_ritual::label::TABU,
+            60_000,
+            "dis.peer",
+            TephraPayload::Plaintext { body: serde_json::json!({"error": "nope"}) },
+        )
+        .with_routing(Routing {
+            target_node_id: Some("n3".into()),
+            correlation_id: Some(Uuid::new_v4()),
+            ..Default::default()
+        });
+
+        ctrl.ingest_tephra(&tephra);
+
+        assert!(
+            clara_coire::global().read_pending(prolog_id).unwrap().is_empty(),
+            "foreign-perf tabu not addressed to us must be dropped"
+        );
+    }
+
     // ── auto-pipe round trips (generated caws_auto_pipe_* / caws_edge_reply) ──
 
     /// Seed the exact Prolog/CLIPS snippets `transduce_graph` generates for an
@@ -2748,5 +2980,245 @@ mod ritual_tests {
             "timeout must surface as edge_result(e1, tabu, ...); \
              bindings={bindings} solutions={solutions}"
         );
+    }
+
+    // ── event/hohi/tabu message edges: emit / tee round trips ─────────────────
+
+    /// Keystone: a manual emit helper on n1 (event edge e1, n1 -> n2) publishes
+    /// a fire-and-forget, addressed Tephra with wire label "event"; n2 ingests
+    /// it (via the generated target dispatch rule) and converges having
+    /// asserted `edge_message(e1, event, Payload)`.
+    #[test]
+    fn run_loop_event_edge_round_trip() {
+        use clara_ritual::topic_name;
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "event-edge-round-trip".into(), participants: vec![] })
+            .unwrap();
+        let topic = topic_name("dis.test", ritual_id).unwrap();
+
+        // Both handles must join before anything is published: registry.join
+        // seeds a fresh consumer's offset at the topic's *current* latest
+        // position, so a handle joining after n1 publishes would skip the
+        // backlog and never see it.
+        let handle_a = registry.join(ritual_id, Some("n1")).unwrap();
+        let handle_b = registry.join(ritual_id, Some("n2")).unwrap();
+
+        // Node n1: the generated manual emit helper for event edge e1 (n1 -> n2).
+        let mut session_a = DeductionSession::new().unwrap();
+        session_a.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            // generated: manual emit helper
+            "emit_n2_event(Payload) :- caws_emit('n2', 'event/e1', event, Payload).".into(),
+            // authored: fire it once
+            "send_it :- emit_n2_event(_{msg: \"hello\"}).".into(),
+        ]).expect("seed_prolog failed");
+
+        let mut ctrl_a = CycleController::new(
+            session_a,
+            10,
+            Some("send_it".into()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_ritual(handle_a)
+        .with_self_node_id(Some("n1".into()));
+
+        let result_a = ctrl_a.run().expect("ctrl_a should converge");
+        assert_eq!(result_a.status, crate::result::CycleStatus::Converged);
+        assert!(
+            ctrl_a.pending_offers.is_empty(),
+            "emit (expects_reply:false) must never register a PendingOffer"
+        );
+
+        let (tephras, _) = broker.poll(&topic, 0).expect("broker poll failed");
+        assert_eq!(tephras.len(), 1, "exactly one Tephra must be published");
+        assert_eq!(tephras[0].label, clara_ritual::label::EVENT);
+        assert_eq!(tephras[0].target_node_id.as_deref(), Some("n2"));
+
+        // Node n2: the generated target dispatch rule for the same edge.
+        let mut session_b = DeductionSession::new().unwrap();
+        session_b.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            "wait_msg(P) :- edge_message(e1, event, P).".into(),
+        ]).expect("seed_prolog failed");
+        session_b.seed_clips(&[
+            "(defrule edge-e1-on-message\n    \
+                (coire-event (origin \"ritual/event\") (topic \"event/e1\") (correlation ?cid&~\"\"))\n    \
+                =>\n    \
+                (coire-publish-goal (str-cat \"caws_edge_message('e1', event, '\" ?cid \"')\")))".into(),
+        ]).expect("seed_clips failed");
+
+        let mut ctrl_b = CycleController::new(
+            session_b,
+            30,
+            Some("wait_msg(Payload)".into()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_ritual(handle_b)
+        .with_self_node_id(Some("n2".into()));
+
+        let result_b = ctrl_b.run().expect("ctrl_b should converge");
+        assert_eq!(result_b.status, crate::result::CycleStatus::Converged);
+
+        let bindings  = serde_json::to_string(&result_b.goal_bindings).unwrap_or_default();
+        let solutions = serde_json::to_string(&result_b.prolog_solutions).unwrap_or_default();
+        assert!(
+            bindings.contains("hello") || solutions.contains("hello"),
+            "n2 must receive n1's emitted payload via edge_message/3; \
+             bindings={bindings} solutions={solutions}"
+        );
+    }
+
+    /// Keystone: a foreign-origin `ritual/event` Tephra (correlation X) lands
+    /// at a tee node; the generated auto-tee wrapper forwards it onward
+    /// preserving X, exactly once — a second cycle must not re-emit.
+    #[test]
+    fn run_loop_event_tee_relay() {
+        use clara_ritual::{Routing, TephraEnvelope, TephraPayload, topic_name};
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "event-tee-relay".into(), participants: vec![] })
+            .unwrap();
+        let topic = topic_name("dis.test", ritual_id).unwrap();
+
+        // The tee node: n2, forwarding a received event onward to n3 via
+        // generated auto-tee edge e1.
+        let handle = registry.join(ritual_id, Some("n2")).unwrap();
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            // generated: auto-tee wrapper
+            "caws_auto_tee_e1(Cid) :- caws_tee('e1', 'n3', 'event/e1', event, Cid).".into(),
+            "caws_auto_tee_e1(_).".into(),
+            // authored: force convergence to wait for the tee to fire
+            "wait_teed(Cid) :- caws_teed('e1', Cid).".into(),
+        ]).expect("seed_prolog failed");
+        session.seed_clips(&[
+            "(defrule edge-e1-auto-tee-event\n    \
+                (coire-event (origin \"ritual/event\") (correlation ?cid&~\"\"))\n    \
+                =>\n    \
+                (coire-publish-goal (str-cat \"caws_auto_tee_e1('\" ?cid \"')\")))".into(),
+        ]).expect("seed_clips failed");
+
+        // Pre-publish a foreign-origin event tephra addressed to n2 (as
+        // ingest_tephra would have already dual-written it into both
+        // mailboxes before the tee wrapper ever runs).
+        let cid = Uuid::new_v4();
+        let foreign = TephraEnvelope::new(
+            ritual_id,
+            Uuid::new_v4(), // foreign performance
+            clara_ritual::label::EVENT,
+            60_000,
+            "dis.peer",
+            TephraPayload::Plaintext { body: serde_json::json!({"note": "relay-me"}) },
+        )
+        .with_routing(Routing {
+            target_node_id: Some("n2".into()),
+            correlation_id: Some(cid),
+            ..Default::default()
+        });
+        broker.publish(&topic, &foreign).expect("seed publish failed");
+
+        let mut ctrl = CycleController::new(
+            session,
+            30,
+            Some("wait_teed(Cid)".into()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_ritual(handle)
+        .with_self_node_id(Some("n2".into()));
+
+        let result = ctrl.run().expect("ctrl should converge once the tee fires");
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+
+        let (all_msgs, _) = broker.poll(&topic, 0).expect("final poll failed");
+        let forwarded: Vec<_> = all_msgs.iter()
+            .filter(|e| e.target_node_id.as_deref() == Some("n3"))
+            .collect();
+        assert_eq!(forwarded.len(), 1, "exactly one forwarded Tephra, no duplicate re-tee");
+        assert_eq!(forwarded[0].label, clara_ritual::label::EVENT);
+        assert_eq!(forwarded[0].correlation_id, Some(cid), "correlation id must be preserved");
+    }
+
+    /// Keystone: a foreign performance's Hohi reply, addressed to a node with
+    /// no matching pending offer (the tee node, not the original offerer),
+    /// falls through `ingest_tephra` (C1) as a message and is auto-teed
+    /// onward, preserving the reply's correlation id.
+    #[test]
+    fn run_loop_hohi_tee_forwards_reply() {
+        use clara_ritual::{Routing, TephraEnvelope, TephraPayload, topic_name};
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "hohi-tee-relay".into(), participants: vec![] })
+            .unwrap();
+        let topic = topic_name("dis.test", ritual_id).unwrap();
+
+        // The tee node: n2, forwarding a peer's Hohi reply onward to n3 via
+        // generated auto-tee hohi edge e2.
+        let handle = registry.join(ritual_id, Some("n2")).unwrap();
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            "caws_auto_tee_e2(Cid) :- caws_tee('e2', 'n3', 'hohi/e2', hohi, Cid).".into(),
+            "caws_auto_tee_e2(_).".into(),
+            "wait_teed(Cid) :- caws_teed('e2', Cid).".into(),
+        ]).expect("seed_prolog failed");
+        session.seed_clips(&[
+            "(defrule edge-e2-auto-tee-hohi\n    \
+                (coire-event (origin \"ritual/hohi\") (correlation ?cid&~\"\"))\n    \
+                =>\n    \
+                (coire-publish-goal (str-cat \"caws_auto_tee_e2('\" ?cid \"')\")))".into(),
+        ]).expect("seed_clips failed");
+
+        // A different performance's Hohi reply, addressed to n2, with no
+        // pending offer at n2 — this node is only relaying it.
+        let cid = Uuid::new_v4();
+        let reply = TephraEnvelope::new(
+            ritual_id,
+            Uuid::new_v4(), // foreign performance
+            clara_ritual::label::HOHI,
+            60_000,
+            "dis.peer",
+            TephraPayload::Plaintext { body: serde_json::json!({"response": "42"}) },
+        )
+        .with_routing(Routing {
+            target_node_id: Some("n2".into()),
+            source_node_id: Some("n1".into()),
+            correlation_id: Some(cid),
+            ..Default::default()
+        });
+        broker.publish(&topic, &reply).expect("seed publish failed");
+
+        let mut ctrl = CycleController::new(
+            session,
+            30,
+            Some("wait_teed(Cid)".into()),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_ritual(handle)
+        .with_self_node_id(Some("n2".into()));
+
+        let result = ctrl.run().expect("ctrl should converge once the tee fires");
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+
+        let (all_msgs, _) = broker.poll(&topic, 0).expect("final poll failed");
+        let forwarded: Vec<_> = all_msgs.iter()
+            .filter(|e| e.target_node_id.as_deref() == Some("n3"))
+            .collect();
+        assert_eq!(forwarded.len(), 1, "exactly one forwarded reply, no duplicate re-tee");
+        assert_eq!(forwarded[0].label, clara_ritual::label::HOHI);
+        assert_eq!(forwarded[0].correlation_id, Some(cid), "reply correlation id must be preserved");
     }
 }

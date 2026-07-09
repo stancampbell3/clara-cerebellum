@@ -14,6 +14,9 @@ pub mod label {
     pub const CLIPS_FIRE: &str = "clips_fire";
     pub const CLARA_FY_HIT: &str = "clara_fy_hit";
     pub const DEDUCTION_EVENT: &str = "deduction_event";
+    /// Manually-emitted or relay-forwarded application message on an
+    /// `event` edge — not part of an offer/reply exchange.
+    pub const EVENT: &str = "event";
 }
 
 /// Typed view of `TephraEnvelope::label`.
@@ -29,6 +32,7 @@ pub enum MessageKind {
     ClipsFire,
     ClaraFyHit,
     DeductionEvent,
+    Event,
 }
 
 impl MessageKind {
@@ -41,6 +45,7 @@ impl MessageKind {
             label::CLIPS_FIRE => Some(Self::ClipsFire),
             label::CLARA_FY_HIT => Some(Self::ClaraFyHit),
             label::DEDUCTION_EVENT => Some(Self::DeductionEvent),
+            label::EVENT => Some(Self::Event),
             _ => None,
         }
     }
@@ -54,6 +59,7 @@ impl MessageKind {
             Self::ClipsFire => label::CLIPS_FIRE,
             Self::ClaraFyHit => label::CLARA_FY_HIT,
             Self::DeductionEvent => label::DEDUCTION_EVENT,
+            Self::Event => label::EVENT,
         }
     }
 }
@@ -338,6 +344,7 @@ mod tests {
             (label::CLIPS_FIRE, MessageKind::ClipsFire),
             (label::CLARA_FY_HIT, MessageKind::ClaraFyHit),
             (label::DEDUCTION_EVENT, MessageKind::DeductionEvent),
+            (label::EVENT, MessageKind::Event),
         ] {
             assert_eq!(MessageKind::from_label(lbl), Some(kind));
             assert_eq!(kind.as_label(), lbl);

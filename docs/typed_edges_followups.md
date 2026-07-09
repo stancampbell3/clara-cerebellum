@@ -1,9 +1,24 @@
+claude --resume f097ee01-f88a-4c51-852d-089af0dce7f1
 # Typed Edges — Follow-up Work
 
 Candidate next steps after the typed Ritual edges phase
 (`ritual_typed_edges.md`, landed 2026-07-05). Ordered roughly by
 recommended sequence; the first two items are the ones that bit us
 repeatedly during live verification.
+
+## Event/hohi/tabu edge semantics — DONE (2026-07-09)
+
+The three non-offering edge `msgType` values — `event`, `hohi`, `tabu` —
+previously generated only a comment (no runtime behavior). They now have
+emit/tee/message semantics symmetric with the offering auto-pipe iteration:
+a manual `emit_<target>_<kind>/1` helper in both pipe modes, an
+`pipeMode: "auto"` forward-chaining tee (`caws_auto_tee_<edge>/1`) for
+relay chains, and a target-side `caws_edge_message/3` dispatch asserting
+`edge_message/3` + calling `on_edge_message/3`. Delivery is live-Dis-
+deductions only — see the new follow-up below for lildaemon participant
+delivery. Full write-up: `ritual_edge_messages.md`. This was implicit
+scope from the original typed-edges phase, not one of the numbered items
+below, so it isn't renumbering them.
 
 ## 1. Persist (or self-heal) Dis's ritual registry — *recommended first*
 
@@ -109,3 +124,32 @@ regressions.
   under `goat/` — either document or disable reload for Ritual work.
 - Repo-root scratch files in all three repos (test*.pl, x.txt, demo, glogs,
   older planning docs) — manual cleanup pass pending (owner: Stan).
+
+## 11. Participant-side (lildaemon) delivery of event/hohi/tabu messages
+
+The `RitualParticipant` label gate (`label != "offering"` → skip) means a
+lildaemon-hosted evaluator never receives an event/hohi/tabu edge's emitted
+or teed messages directly — only a live Dis deduction acting as a graph
+node does (see `ritual_edge_messages.md`). Needs: a decision on what
+"receiving" a message means for a plain evaluator (a synthetic prompt
+field? a side-channel callback?), since participants don't run the
+Prolog/CLIPS engines that `caws_edge_message/3` and `on_edge_message/3`
+depend on.
+
+## 12. `pending_messages` convergence hold for passive message-edge listeners
+
+Discovered during live verification of item above (2026-07-09): a
+`CycleController` with no outstanding `pending_offers` converges as soon as
+its mailboxes look quiet for one cycle — offering edges hold convergence
+open via `pending_offers`/patience, but nothing analogous exists for a node
+that only waits on `edge_message/3`. Over the in-memory broker (Rust tests)
+this is invisible because the whole round trip finishes inside the same
+few busy cycles; over real Kafka a passive listener can — and does —
+declare victory before the message arrives. Not a defect in emit/tee/
+dispatch itself (proven correct live once an incidental outstanding
+consult was used to hold convergence open), but a real gap for a deduction
+whose *only* job is to listen. Needs a `pending_messages`-style hold,
+analogous to `pending_offers`: register one when an edge's target dispatch
+rule is generated and a matching message hasn't arrived yet, clear it once
+`caws_edge_message/3` fires (no patience/timeout — an event/hohi/tabu
+message is not guaranteed to ever arrive, unlike an offering's reply).

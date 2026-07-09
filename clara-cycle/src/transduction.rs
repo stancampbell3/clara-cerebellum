@@ -375,27 +375,11 @@ pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "offering".to_string());
 
-        let source_snippets = result.per_node.entry(source_id.clone()).or_default();
-        if msg_type != "offering" {
-            source_snippets.prolog.push_str(&format!(
-                "% Edge {} carries '{}' messages — no consult helper generated \
-                 (typed listener semantics ride on the envelope label).\n",
-                edge_id, msg_type
-            ));
-            continue;
-        }
-
         let target_label = target
             .get("label")
             .and_then(|l| l.as_str())
             .filter(|l| !l.is_empty())
             .unwrap_or(target_id.as_str());
-        let helper = format!("consult_{}", sanitize_identifier(target_label));
-        let topic = str_field("topicSuffix")
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("consults/{}", sanitize_topic(&s)))
-            .unwrap_or_else(|| format!("consults/{}", sanitize_topic(&edge_id)));
-
         let qualifier_kind = str_field("qualifierKind").unwrap_or_else(|| "none".into());
         let qualifier_value = str_field("qualifierValue").unwrap_or_default();
         // Absent = manual: legacy graphs keep the consult-helper-only behavior.
@@ -403,8 +387,8 @@ pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "manual".to_string());
 
-        // A boolean qualifier compiles to a guard goal shared by the consult
-        // helper and (in auto mode) the pipe wrapper.
+        // A boolean qualifier compiles to a guard goal shared by the source
+        // helper (consult/emit) and, in auto mode, the pipe/tee wrapper.
         let guard_goal = match (qualifier_kind.as_str(), qualifier_value.trim()) {
             ("boolean", guard) if !guard.is_empty() => {
                 Some(if guard.split_whitespace().count() > 1 {
@@ -416,6 +400,17 @@ pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
             }
             _ => None,
         };
+        let rule_id = sanitize_identifier(&edge_id);
+
+        let source_snippets = result.per_node.entry(source_id.clone()).or_default();
+
+        match msg_type.as_str() {
+            "offering" => {
+        let helper = format!("consult_{}", sanitize_identifier(target_label));
+        let topic = str_field("topicSuffix")
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("consults/{}", sanitize_topic(&s)))
+            .unwrap_or_else(|| format!("consults/{}", sanitize_topic(&edge_id)));
 
         // ── Source Prolog: consult helper (+ boolean guard) ──────────────
         source_snippets.prolog.push_str(&format!(
@@ -445,14 +440,13 @@ pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
              =>\n    \
              (coire-publish-assert \"edge_replied('{}')\"))\n\n",
             edge_id, target_label, topic,
-            sanitize_identifier(&edge_id), topic, edge_id
+            rule_id, topic, edge_id
         ));
 
         // ── Source CLIPS: typed reply dispatch → edge_result/3 + hooks ───
         // The timeout rule carries no topic constraint — timeout events have
         // only a correlation id; the Prolog side attributes them to this edge
         // via caws_edge_offer/2.
-        let rule_id = sanitize_identifier(&edge_id);
         source_snippets.clips.push_str(&format!(
             "; Edge {eid}: dispatch {tl}'s typed replies to Prolog (edge_result/3 + hooks)\n\
              (defrule edge-{rid}-on-hohi-result\n    \
@@ -506,8 +500,123 @@ pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
                 f = pipe_functor,
             ));
         }
+            }
+            "event" | "hohi" | "tabu" => {
+                let kind = msg_type.as_str();
+                let topic = str_field("topicSuffix")
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!("{}/{}", kind, sanitize_topic(&s)))
+                    .unwrap_or_else(|| format!("{}/{}", kind, sanitize_topic(&edge_id)));
+                let helper = format!("emit_{}_{}", sanitize_identifier(target_label), kind);
+
+                // ── Source Prolog: manual emit helper (+ boolean guard) ──
+                source_snippets.prolog.push_str(&format!(
+                    "% Edge {}: {} {} -> {} ({})\n",
+                    edge_id, kind, source_id, target_id, target_label
+                ));
+                match &guard_goal {
+                    Some(guard) => {
+                        source_snippets.prolog.push_str(&format!(
+                            "{}(Payload) :-\n    {},\n    caws_emit('{}', '{}', {}, Payload).\n\n",
+                            helper, guard, target_id, topic, kind
+                        ));
+                    }
+                    None => {
+                        source_snippets.prolog.push_str(&format!(
+                            "{}(Payload) :-\n    caws_emit('{}', '{}', {}, Payload).\n\n",
+                            helper, target_id, topic, kind
+                        ));
+                    }
+                }
+
+                // Target CLIPS: dispatch the message → edge_message/3 + hook.
+                // Built here (source_id/rule_id/kind/topic are all in scope)
+                // but only appended to `result.per_node` at the end of this
+                // arm — `source_snippets` above is a live mutable borrow of
+                // the same map and must not overlap with a second entry().
+                let target_dispatch_rule = format!(
+                    "; Edge {eid}: dispatch {src}'s '{kind}' message to Prolog (edge_message/3 + hook)\n\
+                     (defrule edge-{rid}-on-message\n    \
+                     (coire-event (origin \"ritual/{kind}\") (topic \"{topic}\") (correlation ?cid&~\"\"))\n    \
+                     =>\n    \
+                     (coire-publish-goal (str-cat \"caws_edge_message('{eid}', {kind}, '\" ?cid \"')\")))\n\n",
+                    eid = edge_id,
+                    rid = rule_id,
+                    src = source_id,
+                    kind = kind,
+                    topic = topic,
+                );
+
+                // ── Auto-tee: forward chaining along the edge ────────────
+                if pipe_mode == "auto" {
+                    let tee_functor = format!("caws_auto_tee_{}", rule_id);
+                    source_snippets.prolog.push_str(&format!(
+                        "% Edge {}: auto-tee incoming '{}' messages to {} ({})\n",
+                        edge_id, kind, target_id, target_label
+                    ));
+                    match &guard_goal {
+                        Some(guard) => {
+                            source_snippets.prolog.push_str(&format!(
+                                "{f}(Cid) :-\n    {},\n    caws_tee('{}', '{}', '{}', {}, Cid).\n{f}(_).\n\n",
+                                guard, edge_id, target_id, topic, kind, f = tee_functor
+                            ));
+                        }
+                        None => {
+                            source_snippets.prolog.push_str(&format!(
+                                "{f}(Cid) :-\n    caws_tee('{}', '{}', '{}', {}, Cid).\n{f}(_).\n\n",
+                                edge_id, target_id, topic, kind, f = tee_functor
+                            ));
+                        }
+                    }
+                    // Trigger origins to react to: hohi/event forward the
+                    // matching single wire label; tabu forwards both the
+                    // direct reply and the local timeout event, but the
+                    // wrapper always tees with Kind=tabu (W4 — there is no
+                    // wire-level "tabu-timeout" label).
+                    let trigger_origins: &[(&str, &str)] = match kind {
+                        "hohi" => &[("hohi", "ritual/hohi")],
+                        "tabu" => &[
+                            ("tabu", "ritual/tabu"),
+                            ("tabu-timeout", "ritual/tabu-timeout"),
+                        ],
+                        _ => &[("event", "ritual/event")],
+                    };
+                    for (rule_suffix, origin) in trigger_origins {
+                        source_snippets.clips.push_str(&format!(
+                            "; Edge {eid}: auto-tee — forward every incoming '{origin}' message to {tl}\n\
+                             (defrule edge-{rid}-auto-tee-{suffix}\n    \
+                             (coire-event (origin \"{origin}\") (correlation ?cid&~\"\"))\n    \
+                             =>\n    \
+                             (coire-publish-goal (str-cat \"{f}('\" ?cid \"')\")))\n\n",
+                            eid = edge_id,
+                            rid = rule_id,
+                            tl = target_label,
+                            suffix = rule_suffix,
+                            origin = origin,
+                            f = tee_functor,
+                        ));
+                    }
+                }
+
+                // Append the target dispatch rule built above — the last
+                // touch of `result.per_node` in this arm, once `source_snippets`
+                // (the other live entry into the same map) is done being used.
+                result.per_node.entry(target_id.clone()).or_default()
+                    .clips.push_str(&target_dispatch_rule);
+            }
+            _ => {
+                source_snippets.prolog.push_str(&format!(
+                    "% Edge {} carries '{}' messages — no consult helper generated \
+                     (typed listener semantics ride on the envelope label).\n",
+                    edge_id, msg_type
+                ));
+                continue;
+            }
+        }
 
         // ── Target Prolog: assertion qualifier seeds ground truth ────────
+        // Shared by offering and message (event/hohi/tabu) edges — unknown
+        // msgTypes `continue`d above and never reach this.
         if qualifier_kind == "assertion" && !qualifier_value.trim().is_empty() {
             let target_snippets = result.per_node.entry(target_id.clone()).or_default();
             let mut fact = qualifier_value.trim().to_string();
@@ -1966,12 +2075,153 @@ mod tests {
     }
 
     #[test]
-    fn graph_non_offering_edge_generates_comment_only() {
+    fn graph_unknown_msg_type_edge_generates_comment_only() {
+        // "event"/"hohi"/"tabu" are recognized message-edge kinds now (see
+        // the message-edge tests below); a truly unrecognized msgType still
+        // falls back to comment-only, no generated code.
+        let result = transduce_graph(&two_node_graph(r#", "msgType": "mystery""#)).unwrap();
+        let source = &result.per_node["n1"];
+        assert!(source.prolog.contains("carries 'mystery' messages"));
+        assert!(!source.prolog.contains("caws_consult"));
+        assert!(!source.prolog.contains("caws_emit"));
+        assert!(source.clips.is_empty());
+    }
+
+    // ── message edges (event/hohi/tabu) ───────────────────────────────────────
+
+    #[test]
+    fn graph_manual_event_edge_generates_emit_helper_and_target_dispatch_no_tee() {
         let result = transduce_graph(&two_node_graph(r#", "msgType": "event""#)).unwrap();
         let source = &result.per_node["n1"];
-        assert!(source.prolog.contains("carries 'event' messages"));
-        assert!(!source.prolog.contains("caws_consult"));
-        assert!(source.clips.is_empty());
+        assert!(
+            source.prolog.contains("emit_clara_groq_event(Payload) :-"),
+            "helper named from target label + kind, got:\n{}", source.prolog
+        );
+        assert!(source.prolog.contains("caws_emit('n2', 'event/e1', event, Payload)"));
+        assert!(!source.prolog.contains("caws_tee"), "manual mode must not generate a tee");
+        assert!(!source.clips.contains("auto-tee"));
+
+        let target = &result.per_node["n2"];
+        assert!(target.clips.contains("(defrule edge-e1-on-message"));
+        assert!(target.clips.contains(
+            "(coire-event (origin \"ritual/event\") (topic \"event/e1\") (correlation ?cid&~\"\"))"
+        ));
+        assert!(target.clips.contains(
+            "(coire-publish-goal (str-cat \"caws_edge_message('e1', event, '\" ?cid \"')\"))"
+        ));
+    }
+
+    #[test]
+    fn graph_auto_event_edge_generates_tee_wrapper_and_trigger() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "msgType": "event", "pipeMode": "auto""#,
+        ))
+        .unwrap();
+        let source = &result.per_node["n1"];
+        assert!(
+            source.prolog.contains("caws_auto_tee_e1(Cid) :-"),
+            "tee wrapper generated:\n{}", source.prolog
+        );
+        assert!(source.prolog.contains("caws_tee('e1', 'n2', 'event/e1', event, Cid)"));
+        assert!(source.prolog.contains("caws_auto_tee_e1(_)."), "catch-all clause");
+        assert!(source.clips.contains("(defrule edge-e1-auto-tee-event"));
+        assert!(source.clips.contains(
+            "(coire-event (origin \"ritual/event\") (correlation ?cid&~\"\"))"
+        ));
+        assert!(source.clips.contains(
+            "(coire-publish-goal (str-cat \"caws_auto_tee_e1('\" ?cid \"')\"))"
+        ));
+        // Manual emit helper still generated alongside the tee.
+        assert!(source.prolog.contains("emit_clara_groq_event(Payload) :-"));
+    }
+
+    #[test]
+    fn graph_auto_tabu_edge_generates_exactly_two_tee_triggers() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "msgType": "tabu", "pipeMode": "auto""#,
+        ))
+        .unwrap();
+        let source = &result.per_node["n1"];
+        assert!(source.clips.contains("(defrule edge-e1-auto-tee-tabu\n"));
+        assert!(source.clips.contains(
+            "(coire-event (origin \"ritual/tabu\") (correlation ?cid&~\"\"))"
+        ));
+        assert!(source.clips.contains("(defrule edge-e1-auto-tee-tabu-timeout"));
+        assert!(source.clips.contains(
+            "(coire-event (origin \"ritual/tabu-timeout\") (correlation ?cid&~\"\"))"
+        ));
+        // Both triggers invoke the same wrapper — no separate timeout wrapper.
+        assert_eq!(source.prolog.matches("caws_auto_tee_e1(Cid) :-").count(), 1);
+        assert_eq!(source.clips.matches("caws_auto_tee_e1('\" ?cid \"')").count(), 2);
+        // Wrapper always tees with Kind=tabu (no wire-level tabu-timeout label).
+        assert!(source.prolog.contains("caws_tee('e1', 'n2', 'tabu/e1', tabu, Cid)"));
+    }
+
+    #[test]
+    fn graph_auto_hohi_edge_generates_exactly_one_tee_trigger() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "msgType": "hohi", "pipeMode": "auto""#,
+        ))
+        .unwrap();
+        let source = &result.per_node["n1"];
+        assert!(source.clips.contains("(defrule edge-e1-auto-tee-hohi"));
+        assert!(!source.clips.contains("auto-tee-tabu"));
+        assert!(source.prolog.contains("caws_tee('e1', 'n2', 'hohi/e1', hohi, Cid)"));
+    }
+
+    #[test]
+    fn graph_message_edge_boolean_qualifier_guards_helper_and_wrapper() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "msgType": "event", "pipeMode": "auto", "qualifierKind": "boolean", "qualifierValue": "core_temp(T),T>9000""#,
+        ))
+        .unwrap();
+        let prolog = &result.per_node["n1"].prolog;
+        assert!(prolog.contains(
+            "emit_clara_groq_event(Payload) :-\n    core_temp(T),T>9000,"
+        ), "{prolog}");
+        assert!(prolog.contains(
+            "caws_auto_tee_e1(Cid) :-\n    core_temp(T),T>9000,"
+        ), "{prolog}");
+    }
+
+    #[test]
+    fn graph_message_edge_assertion_qualifier_seeds_target_fact() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "msgType": "hohi", "qualifierKind": "assertion", "qualifierValue": "core_temp(9500)""#,
+        ))
+        .unwrap();
+        let target = &result.per_node["n2"];
+        assert!(target.prolog.contains("core_temp(9500)."), "fact with period:\n{}", target.prolog);
+    }
+
+    #[test]
+    fn graph_message_edge_topic_suffix_overrides_edge_id_channel() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "msgType": "event", "topicSuffix": "psych evals""#,
+        ))
+        .unwrap();
+        let prolog = &result.per_node["n1"].prolog;
+        assert!(prolog.contains("'event/psych-evals'"), "sanitized suffix:\n{prolog}");
+    }
+
+    #[test]
+    fn graph_auto_message_edge_sanitizes_ugly_edge_ids() {
+        let graph = r#"{
+          "nodes": [
+            {"id": "n1", "type": "daemon", "evaluatorName": "clara_mind_splinter", "label": "Clara"},
+            {"id": "n2", "type": "daemon", "evaluatorName": "groq_evaluator", "label": "Groq"}
+          ],
+          "edges": [
+            {"id": "edge 9!", "source": "n1", "target": "n2", "msgType": "event", "pipeMode": "auto"}
+          ]
+        }"#;
+        let result = transduce_graph(graph).unwrap();
+        let source = &result.per_node["n1"];
+        assert!(source.prolog.contains("caws_auto_tee_edge_9_(Cid) :-"), "{}", source.prolog);
+        assert!(source.prolog.contains("caws_tee('edge 9!', 'n2', 'event/edge-9-', event, Cid)"));
+        assert!(source.clips.contains("(defrule edge-edge_9_-auto-tee-event"));
+        let target = &result.per_node["n2"];
+        assert!(target.clips.contains("caws_edge_message('edge 9!', event, '"));
     }
 
     #[test]

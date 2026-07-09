@@ -11,7 +11,10 @@
     caws_await/2,              % +CorrelationId, -Result
     caws_consult/4,            % +TargetNodeId, +TopicPath, +Payload, -Result
     caws_pipe/4,               % +EdgeId, +TargetNodeId, +TopicPath, +IncomingCid
-    caws_edge_reply/3          % +EdgeId, +Kind, +CorrelationId
+    caws_edge_reply/3,         % +EdgeId, +Kind, +CorrelationId
+    caws_emit/4,               % +TargetNodeId, +TopicPath, +Kind, +Payload
+    caws_tee/5,                % +EdgeId, +TargetNodeId, +TopicPath, +Kind, +IncomingCid
+    caws_edge_message/3        % +EdgeId, +Kind, +CorrelationId
 ]).
 
 :- use_module(library(http/json)).
@@ -32,6 +35,11 @@
 :- thread_local caws_piped/2.        % EdgeId, IncomingCid — pipe memo
 :- thread_local caws_edge_offer/2.   % EdgeId, OutgoingCid — for timeout attribution
 :- thread_local caws_edge_replied/2. % EdgeId, ReplyCid — reply-dispatch memo
+:- thread_local caws_emit_sent/2.    % Key, CorrelationId — manual-emit re-run memo
+:- thread_local caws_emitted/1.      % CorrelationId — wire-level publish dedup
+:- thread_local caws_message/3.      % Kind, CorrelationId, PayloadDict — event/hohi/tabu mirror
+:- thread_local caws_teed/2.         % EdgeId, IncomingCid — auto-tee memo
+:- thread_local caws_edge_msg_seen/2. % EdgeId, CorrelationId — receive-dispatch memo
 
 % Edge results and user hooks live in user: so authored node source can match
 % edge_result/3 and define on_edge_hohi/on_edge_tabu without declarations.
@@ -45,6 +53,12 @@
 :- thread_local user:edge_result/3.  % EdgeId, hohi|tabu, PayloadDict
 :- dynamic user:on_edge_hohi/2.      % user-overridable hooks
 :- dynamic user:on_edge_tabu/2.
+
+% Same thread_local-vs-dynamic split as edge_result/3 above, for the
+% event/hohi/tabu message edges (docs/ritual_edge_messages.md): edge_message/3
+% is per-run state, on_edge_message/3 is an authored, process-wide hook.
+:- thread_local user:edge_message/3. % EdgeId, event|hohi|tabu, PayloadDict
+:- dynamic user:on_edge_message/3.   % user-overridable hook
 
 coire_session(Id) :- coire_session_id(Id).
 
@@ -200,11 +214,22 @@ caws_cache_event(Event) :-
     ).
 
 caws_cache_by_origin('ritual/hohi', Cid, Payload) :- !,
-    (caws_result(Cid, _) -> true ; assertz(caws_result(Cid, Payload))).
+    (caws_result(Cid, _) -> true ; assertz(caws_result(Cid, Payload))),
+    (caws_message(hohi, Cid, _) -> true ; assertz(caws_message(hohi, Cid, Payload))).
 caws_cache_by_origin('ritual/tabu', Cid, Payload) :- !,
-    (caws_failed(Cid, _) -> true ; assertz(caws_failed(Cid, Payload))).
+    (caws_failed(Cid, _) -> true ; assertz(caws_failed(Cid, Payload))),
+    (caws_message(tabu, Cid, _) -> true ; assertz(caws_message(tabu, Cid, Payload))).
 caws_cache_by_origin('ritual/tabu-timeout', Cid, Payload) :- !,
+    % Local-only wire label (never published) — feeds caws_failed for
+    % caws_await/caws_tee(tabu) but intentionally NOT caws_message: the
+    % tabu-tee's timeout trigger republishes via the ritual/tabu wire label
+    % (see caws_tee/5), so there is no separate "tabu_timeout" message kind.
     (caws_failed(Cid, _) -> true ; assertz(caws_failed(Cid, Payload))).
+% Manually-emitted or teed application messages on event/hohi/tabu edges
+% (docs/ritual_edge_messages.md). Cached the same way incoming Offerings are:
+% the drain is shared between caws_edge_message and the auto-tee path.
+caws_cache_by_origin('ritual/event', Cid, Payload) :- !,
+    (caws_message(event, Cid, _) -> true ; assertz(caws_message(event, Cid, Payload))).
 % Incoming Offerings are cached too (not dropped): the drain is shared between
 % caws_await and the auto-pipe path, so whichever drains first must not eat
 % the payload the other needs.
@@ -283,4 +308,96 @@ caws_strip_routing(Payload0, Payload) :-
     (   is_dict(Payload0), del_dict('_routing', Payload0, _, P1)
     ->  Payload = P1
     ;   Payload = Payload0
+    ).
+
+% ── caws: event/hohi/tabu message edges (docs/ritual_edge_messages.md) ──────
+%
+% caws_emit/4 (and the manual `emit_*` helpers generated on message edges)
+% publish a fire-and-forget, addressed, correlated message — like an
+% Offering but with expects_reply:false, so it never registers a
+% PendingOffer or blocks convergence. caws_tee/5 is the auto-mode
+% forward-chaining counterpart: it republishes an already-cached inbound
+% Hohi/Tabu/event payload onward to another node, preserving the incoming
+% correlation id (so relay chains, e.g. A->B->C, stay traceable end to
+% end). caws_edge_message/3 is the receive-side dispatch, generated on the
+% target of every event/hohi/tabu edge.
+
+%!  caws_emit(+TargetNodeId, +TopicPath, +Kind, +Payload)
+%
+%   Manual emit entry point (the generated `emit_*_<kind>/1` helpers).
+%   Mints a fresh correlation id, memoized per (Target, Topic, Kind,
+%   Payload) within one engine so a re-run of the goal does not re-publish.
+caws_emit(Target, Topic, Kind, Payload) :-
+    caws_payload_dict(Payload, Dict0),
+    Key = emit(Target, Topic, Kind, Dict0),
+    (   caws_emit_sent(Key, _)
+    ->  true
+    ;   caws_uuid(Cid),
+        caws_emit_cid(Target, Topic, Kind, Dict0, Cid),
+        assertz(caws_emit_sent(Key, Cid))
+    ).
+
+%!  caws_emit_cid(+TargetNodeId, +TopicPath, +Kind, +Payload, +Cid)
+%
+%   Core publisher shared by caws_emit/4 (fresh Cid) and caws_tee/5
+%   (preserved incoming Cid). Idempotent per Cid (wire-level dedup) —
+%   load-bearing for the tee path, where the same Cid may be offered to
+%   more than one call site.
+caws_emit_cid(Target, Topic, Kind, Payload, Cid) :-
+    (   caws_emitted(Cid)
+    ->  true
+    ;   caws_payload_dict(Payload, Dict0),
+        put_dict('_caws', Dict0,
+                 _{correlation_id: Cid, target_node_id: Target, topic_path: Topic,
+                   kind: Kind, expects_reply: false},
+                 Dict),
+        atom_json_dict(Json, Dict, []),
+        coire_session(Session),
+        coire_emit(Session, 'evaluator/emit', Json),
+        assertz(caws_emitted(Cid))
+    ).
+
+%!  caws_tee(+EdgeId, +TargetNodeId, +TopicPath, +Kind, +IncomingCid)
+%
+%   Auto-tee: forward the cached inbound event/Hohi/Tabu payload for
+%   IncomingCid onward to TargetNodeId on TopicPath, preserving the
+%   correlation id. Idempotent per (EdgeId, IncomingCid). Always succeeds
+%   (a not-yet-cached payload is retried on the next event) — same shape
+%   as caws_pipe/4.
+caws_tee(EdgeId, _, _, _, Cid) :-
+    caws_teed(EdgeId, Cid), !.
+caws_tee(EdgeId, Target, Topic, Kind, Cid) :-
+    caws_drain_ritual_events,
+    (   caws_tee_payload(Kind, Cid, Payload0)
+    ->  caws_strip_routing(Payload0, Payload),
+        assertz(caws_teed(EdgeId, Cid)),
+        caws_emit_cid(Target, Topic, Kind, Payload, Cid)
+    ;   true
+    ).
+
+% Payload lookup by kind for the tee: hohi/tabu reuse the existing
+% caws_result/caws_failed caches (populated by caws_cache_by_origin,
+% including the tabu-timeout->caws_failed path — the wire label the tee
+% republishes with is always `tabu`, never a timeout-specific label, per
+% the TephraEnvelope wire contract); event uses the new caws_message cache.
+caws_tee_payload(hohi, Cid, Payload)  :- caws_result(Cid, Payload).
+caws_tee_payload(tabu, Cid, Payload)  :- caws_failed(Cid, Payload).
+caws_tee_payload(event, Cid, Payload) :- caws_message(event, Cid, Payload).
+
+%!  caws_edge_message(+EdgeId, +Kind, +Cid)
+%
+%   Receive dispatch for an edge's event/Hohi/Tabu message. Asserts
+%   user:edge_message(EdgeId, Kind, Payload) exactly once per (EdgeId, Cid)
+%   and runs the user:on_edge_message/3 hook when defined. Always
+%   succeeds (mirrors caws_edge_reply/3).
+caws_edge_message(EdgeId, _, Cid) :-
+    caws_edge_msg_seen(EdgeId, Cid), !.
+caws_edge_message(EdgeId, Kind, Cid) :-
+    caws_drain_ritual_events,
+    (   caws_message(Kind, Cid, Payload0)
+    ->  caws_strip_routing(Payload0, Payload),
+        assertz(caws_edge_msg_seen(EdgeId, Cid)),
+        assertz(user:edge_message(EdgeId, Kind, Payload)),
+        ignore(catch(user:on_edge_message(EdgeId, Kind, Payload), _, true))
+    ;   true
     ).

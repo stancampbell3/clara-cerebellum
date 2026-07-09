@@ -114,8 +114,8 @@ goal re-proved. No convergence hole: relayed goal events count as pending.
   non-empty correlation).
 - Two auto edges to the same target sharing an authored `topicSuffix`
   collapse into one offer (`caws_offer`'s (Target, Topic, Payload) memo).
-- `event`/`hohi`/`tabu` edge rule-sets: next iteration — the dispatch
-  machinery here is the substrate.
+- `event`/`hohi`/`tabu` edges have their own emit/tee/message runtime,
+  built on this substrate — see `docs/ritual_edge_messages.md`.
 
 ## Verification
 
