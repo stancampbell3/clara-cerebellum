@@ -21,7 +21,7 @@
 //            are published → both mailboxes empty → CLIPS fires nothing →
 //            agenda empty → root_goal_resolved → CONVERGED in 1 cycle.
 
-use std::sync::{Arc, Once, atomic::AtomicBool};
+use std::sync::{Arc, Mutex, Once, atomic::AtomicBool};
 use clara_cycle::{CycleController, CycleStatus, DeductionSession, TruthValue};
 use clara_toolbox::{
     ToolboxManager,
@@ -29,6 +29,19 @@ use clara_toolbox::{
 };
 
 static INIT: Once = Once::new();
+
+// The evaluate call counter and cache are process-global statics. With the
+// cache namespaced per deduction, each test's runs execute for real — so
+// tests asserting exact counts must not run concurrently. (Before the
+// per-deduction scoping they were accidentally isolated: every test hit the
+// same shared cache entry.)
+static COUNT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_counts() -> std::sync::MutexGuard<'static, ()> {
+    // Recover from poison: a panicked test already reported its failure; the
+    // next test resets the counter and cache itself.
+    COUNT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn init_globals() {
     INIT.call_once(|| {
@@ -62,6 +75,7 @@ fn make_session(manifest: &str) -> DeductionSession {
 #[test]
 fn clara_evaluate_called_once_per_deduction() {
     init_globals();
+    let _count_guard = lock_counts();
     reset_evaluate_call_count();
     clear_evaluate_cache();
 
@@ -105,18 +119,25 @@ fn clara_evaluate_called_once_per_deduction() {
     );
 }
 
-// ── Cache-clear test ──────────────────────────────────────────────────────────
+// ── Per-deduction cache scoping ───────────────────────────────────────────────
 
-/// Verifies that `clear_evaluate_cache` actually invalidates the cache so
-/// that a subsequent deduction re-executes the FFI rather than reusing the
-/// stale cached result.
+/// The evaluate cache is namespaced by deduction id (docs/
+/// typed_edges_followups.md #2): a second deduction issuing the identical
+/// request must RE-EXECUTE the FFI, never be served the previous
+/// deduction's entry — stale LLM answers and side-effecting operations
+/// (set_evaluator) must not leak across runs. Within each deduction the
+/// once-only memoization still holds (echo2 stays a cache hit — asserted
+/// implicitly by the +1-per-run counts here and explicitly by the test
+/// above). `clear_evaluate_cache` coverage lives in the clara-toolbox ffi
+/// unit tests.
 #[test]
-fn clara_evaluate_cache_clear_resets_execution_count() {
+fn clara_evaluate_cache_scoped_per_deduction() {
     init_globals();
+    let _count_guard = lock_counts();
 
     let manifest = env!("CARGO_MANIFEST_DIR");
 
-    // First deduction: warm the cache (1 real FFI call expected).
+    // First deduction: cold cache → exactly 1 real FFI call.
     reset_evaluate_call_count();
     clear_evaluate_cache();
     CycleController::new(
@@ -129,7 +150,7 @@ fn clara_evaluate_cache_clear_resets_execution_count() {
     .expect("first run failed");
     let count_after_first = get_evaluate_call_count();
 
-    // Second deduction WITHOUT clearing: cache still warm → no additional real call.
+    // Second deduction WITHOUT clearing: its own namespace → 1 more call.
     CycleController::new(
         make_session(manifest),
         5,
@@ -137,32 +158,17 @@ fn clara_evaluate_cache_clear_resets_execution_count() {
         Arc::new(AtomicBool::new(false)),
     )
     .run()
-    .expect("second run (warm cache) failed");
-    let count_after_warm = get_evaluate_call_count();
-
-    // Third deduction WITH cache cleared: FFI invoked again for the cache miss.
-    clear_evaluate_cache();
-    CycleController::new(
-        make_session(manifest),
-        5,
-        Some("duh_dun".to_string()),
-        Arc::new(AtomicBool::new(false)),
-    )
-    .run()
-    .expect("third run (cold cache) failed");
-    let count_after_cold = get_evaluate_call_count();
+    .expect("second run failed");
+    let count_after_second = get_evaluate_call_count();
 
     assert_eq!(
         count_after_first, 1,
-        "first run: expected 1 FFI call, got {}", count_after_first,
+        "first run: expected 1 FFI call (echo2 memoised), got {}", count_after_first,
     );
     assert_eq!(
-        count_after_warm, 1,
-        "warm-cache second run must not add FFI calls; got {}", count_after_warm,
-    );
-    assert_eq!(
-        count_after_cold, 2,
-        "after cache clear, third run should add 1 more FFI call (total=2); got {}",
-        count_after_cold,
+        count_after_second, 2,
+        "a fresh deduction must re-execute rather than reuse the previous \
+         deduction's cached result; expected 2 total FFI calls, got {}",
+        count_after_second,
     );
 }

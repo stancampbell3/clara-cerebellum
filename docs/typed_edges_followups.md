@@ -22,11 +22,20 @@ re-created/re-activated by hand.
 
 ## 2. Evaluate-cache staleness for LLM calls
 
-Dis's toolbox `evaluate` cache (`clara-toolbox/src/ffi.rs`) memoizes by
-payload. Correct for deterministic tools, wrong for `ponder_*` LLM calls:
-re-running the same query returns the previous answer (during E2E, a re-run
-returned a stale echo response even after the focused evaluator changed).
-Add a TTL, or let splinteredmind `evaluate` opt out of the cache.
+**DONE (2026-07-09).** The cache key (`clara-toolbox/src/ffi.rs`,
+`cache_key`) is now namespaced by the current deduction id (the
+`CURRENT_DEDUCTION_ID` thread-local the controller already installed):
+entries never leak across runs, so a repeated query re-executes and a
+`set_evaluator` issued by a later deduction actually reaches lildaemon
+instead of being served from a previous run's cache — that side-effecting
+call being memoized process-wide was the "stale echo after switching the
+focused evaluator" symptom. Within one deduction the load-bearing
+once-per-deduction memoization is unchanged (re-proved goals stay cache
+hits). Neither of the originally suggested fixes was right: a TTL already
+existed (`evaluate_cache_ttl_seconds`, 4h CarrionPicker sweep — kept, as
+the memory bound) but still serves stale answers inside its window, and a
+`ponder_*` opt-out would have broken the once-per-deduction invariant.
+The "vary the query between runs" operational gotcha is obsolete.
 
 ## 3. Mailbox hygiene: don't ingest foreign Offerings
 

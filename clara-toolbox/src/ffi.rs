@@ -128,11 +128,28 @@ pub struct CacheEntry {
     pub domain_id: Option<String>,
 }
 
-// Key: trimmed input JSON string.  Value: `CacheEntry`.
+// Key: see `cache_key` — the trimmed input JSON string, namespaced by the
+// current deduction id when one is active.  Value: `CacheEntry`.
 // RwLock allows concurrent reads (cache hits) without exclusive locking.
 fn evaluate_cache() -> &'static RwLock<HashMap<String, CacheEntry>> {
     static CACHE: OnceLock<RwLock<HashMap<String, CacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Cache key: the trimmed request JSON, namespaced by the current deduction
+/// so entries never leak across runs — LLM answers and side-effecting
+/// operations (e.g. splinteredmind `set_evaluator`) must not be served from
+/// a previous deduction's cache. Within one deduction the memoization is
+/// unchanged: a re-proved goal issuing an identical request is a hit.
+/// Calls outside a deduction context (`None`) share one global namespace,
+/// as before.
+fn cache_key(input: &str) -> String {
+    match current_deduction_id() {
+        // U+001F (unit separator) cannot appear in a UUID, and raw-JSON
+        // global keys never start with `<uuid>\u{1F}`, so no collisions.
+        Some(id) => format!("{id}\u{1F}{}", input.trim()),
+        None => input.trim().to_string(),
+    }
 }
 
 fn now_ms() -> i64 {
@@ -241,13 +258,13 @@ pub extern "C" fn rust_clara_evaluate(input_json: *const c_char) -> *mut c_char 
 /// This is the core evaluation logic, separated out so it can be used
 /// by both the C FFI function and Rust callers.
 pub fn evaluate_json_string(input_str: &str) -> *mut c_char {
-    let key = input_str.trim();
+    let key = cache_key(input_str);
 
     // 1. Cache hit: return memoised result without executing the tool or
     //    incrementing the counter.
     {
         let cache = evaluate_cache().read().unwrap();
-        if let Some(entry) = cache.get(key) {
+        if let Some(entry) = cache.get(&key) {
             log::debug!("evaluate_json_string: cache hit");
             return CString::new(entry.value.clone())
                 .unwrap_or_else(|e| {
@@ -321,7 +338,7 @@ pub fn evaluate_json_string(input_str: &str) -> *mut c_char {
         deduction_id:  current_deduction_id(),
         domain_id:     domain_id().map(str::to_string),
     };
-    evaluate_cache().write().unwrap().insert(key.to_string(), entry);
+    evaluate_cache().write().unwrap().insert(key, entry);
 
     // Convert Rust string to C string
     match CString::new(response_str) {
@@ -429,6 +446,47 @@ mod tests {
             assert!(result_str.contains("success"), "Expected success, got: {}", result_str);
         }
         free_c_string(result_ptr);
+    }
+
+    // ── Per-deduction cache scoping ──────────────────────────────────────────
+
+    /// Identical requests memoize within one deduction context but never
+    /// across deductions (stale LLM answers / set_evaluator side effects
+    /// must not leak between runs). No-context calls share one global
+    /// namespace, as before.
+    #[test]
+    fn cache_scoped_per_deduction_context() {
+        let _guard = setup();
+        let input = r#"{"tool":"echo","arguments":{"message":"scope_test"}}"#;
+
+        // Deduction A: miss, then hit under the same context.
+        {
+            let _ctx = deduction_context(Uuid::new_v4());
+            free_c_string(evaluate_json_string(input));
+            free_c_string(evaluate_json_string(input));
+        }
+        assert_eq!(
+            get_evaluate_call_count(), 1,
+            "second identical call within one deduction must be a cache hit"
+        );
+
+        // Deduction B: same input, different deduction — must re-execute.
+        {
+            let _ctx = deduction_context(Uuid::new_v4());
+            free_c_string(evaluate_json_string(input));
+        }
+        assert_eq!(
+            get_evaluate_call_count(), 2,
+            "a fresh deduction must not be served another deduction's entry"
+        );
+
+        // No deduction context: global namespace, memoizes independently.
+        free_c_string(evaluate_json_string(input));
+        free_c_string(evaluate_json_string(input));
+        assert_eq!(
+            get_evaluate_call_count(), 3,
+            "no-context calls share one global namespace (1 miss, then hits)"
+        );
     }
 
     // ── CacheEntry metadata ──────────────────────────────────────────────────
@@ -584,10 +642,13 @@ mod tests {
 
         assert_eq!(current_deduction_id(), None, "context should be cleared after guard drop");
 
+        // The entry is stored under the deduction-namespaced key.
+        let key = format!(
+            "{id}\u{1F}{}",
+            r#"{"tool":"echo","arguments":{"message":"ctx_tag"}}"#
+        );
         let cache = evaluate_cache().read().unwrap();
-        let entry = cache
-            .get(r#"{"tool":"echo","arguments":{"message":"ctx_tag"}}"#)
-            .expect("entry should be cached");
+        let entry = cache.get(&key).expect("entry should be cached");
         assert_eq!(entry.deduction_id, Some(id), "entry should be attributed to the deduction");
     }
 

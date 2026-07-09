@@ -8,8 +8,8 @@
 #     groq_evaluator (GROQ_API_KEY) available
 #
 # Usage: ./run_e2e.sh ["your query"]
-# Vary the query between runs — Dis's evaluate cache memoizes LLM calls by
-# payload, so re-running the same text returns the cached answer.
+# (Re-running the same query is fine: the evaluate cache is scoped per
+# deduction since followup #2, so every Run re-evaluates.)
 set -euo pipefail
 cd "$(dirname "$0")"
 

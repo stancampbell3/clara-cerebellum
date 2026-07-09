@@ -50,8 +50,9 @@ this directory and `docs/ritual_typed_edges.md`.)
 
 ## Gotchas (bit us during verification)
 
-- Vary the query between runs: Dis's toolbox evaluate cache memoizes LLM
-  calls by payload, so an identical query returns the cached answer.
+- (Fixed 2026-07-09, followup #2:) identical queries used to return the
+  previous run's cached answer — the evaluate cache is now scoped per
+  deduction, so re-running the same query re-evaluates.
 - Dis's ritual registry survives restarts via CoireStore, but after a
   restart it is still safest to deactivate and re-activate the config.
 - Focus `clara_mind_splinter` (the script does this) or the local ponder
