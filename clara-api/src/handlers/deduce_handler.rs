@@ -46,6 +46,8 @@ pub async fn start_deduce(
     let req_clips_src_id  = req.clips_source_id;
     let ritual_id_req     = req.ritual_id;
     let patience_req      = req.evaluator_patience_cycles;
+    let self_node_id_req  = req.self_node_id.clone();
+    let initial_offering_req = req.initial_offering.clone();
 
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
@@ -110,6 +112,8 @@ pub async fn start_deduce(
                 let c = if let Some(store) = store_bg { c.with_store(store) } else { c };
                 let c = c.with_trace(trace);
                 let c = if let Some(p) = patience_req { c.with_evaluator_patience(p) } else { c };
+                let c = c.with_self_node_id(self_node_id_req)
+                         .with_initial_offering(initial_offering_req);
                 // Attach a RitualHandle when the caller supplied a ritual_id.
                 // Each deduction run joins anonymously (fresh performance_id).
                 if let Some(rid) = ritual_id_req {

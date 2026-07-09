@@ -168,6 +168,20 @@ pub struct DeduceRequest {
     /// per-offer wall-clock wait. Default: 10.
     #[serde(default)]
     pub evaluator_patience_cycles: Option<u32>,
+    /// Design-time graph node id this deduction acts as within the Ritual.
+    ///
+    /// When set, `ingest_tephra` drops non-reply Tephras addressed (via
+    /// `target_node_id`) to a different node, so a participant only reacts
+    /// to Offerings meant for it. When absent, all Tephras are ingested
+    /// (legacy behavior). Unaddressed Tephras are always ingested.
+    #[serde(default)]
+    pub self_node_id: Option<String>,
+    /// Optional Offering to inject into both engine mailboxes at the start
+    /// of the run, as if it had just arrived over the Coire. This lets
+    /// generated auto-pipe rules (`caws_auto_pipe_*`) fire for the payload
+    /// that started the run, not just for peer-published Offerings.
+    #[serde(default)]
+    pub initial_offering: Option<clara_cycle::InitialOffering>,
 }
 
 /// Request to resume a previously persisted deduction.

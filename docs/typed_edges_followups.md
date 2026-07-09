@@ -30,12 +30,15 @@ Add a TTL, or let splinteredmind `evaluate` opt out of the cache.
 
 ## 3. Mailbox hygiene: don't ingest foreign Offerings
 
-`ingest_tephra` writes every non-Hohi/Tabu tephra into both engine
-mailboxes — including Offerings *addressed to other nodes* (observed as a
-`ritual/offering` event drained alongside the awaited `ritual/hohi`).
-Harmless today (caws ignores non-hohi/tabu origins) but it accumulates
-noise in every performance's mailboxes. Filter on `target_node_id` before
-ingesting, mirroring the participant-side skip.
+**DONE (2026-07-09),** folded into the offering auto-pipe iteration (see
+`ritual_edge_auto_pipe.md`). `ingest_tephra` now (a) drops non-reply
+Tephras whose `performance_id` is its own (self-echo suppression — required
+once auto-pipe rules react to incoming Offerings, or a deduction would pipe
+its own published Offering forever) and (b) when the deduction was given a
+`self_node_id` (new `DeduceRequest` field, threaded from lildaemon), drops
+non-reply Tephras addressed to a different `target_node_id`. Unaddressed
+Tephras and legacy callers (no `self_node_id`) keep the old
+ingest-everything behavior.
 
 ## 4. Dual-consumer race on the CLIPS mailbox (investigate)
 

@@ -33,6 +33,8 @@ pub mod transpile;
 pub mod transduction;
 
 pub use controller::CycleController;
+#[cfg(feature = "ritual")]
+pub use controller::InitialOffering;
 pub use error::CycleError;
 pub use result::{CoireSnapshot, CycleStatus, DeductionResult, InMemoryTraceEntry};
 pub use session::DeductionSession;

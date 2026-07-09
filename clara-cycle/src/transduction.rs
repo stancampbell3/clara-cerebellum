@@ -398,26 +398,38 @@ pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
 
         let qualifier_kind = str_field("qualifierKind").unwrap_or_else(|| "none".into());
         let qualifier_value = str_field("qualifierValue").unwrap_or_default();
+        // Absent = manual: legacy graphs keep the consult-helper-only behavior.
+        let pipe_mode = str_field("pipeMode")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "manual".to_string());
+
+        // A boolean qualifier compiles to a guard goal shared by the consult
+        // helper and (in auto mode) the pipe wrapper.
+        let guard_goal = match (qualifier_kind.as_str(), qualifier_value.trim()) {
+            ("boolean", guard) if !guard.is_empty() => {
+                Some(if guard.split_whitespace().count() > 1 {
+                    // Natural-language claim — classify via Clara LLM.
+                    format!("clara_fy(\"{}\", true)", guard.replace('"', "\\\""))
+                } else {
+                    guard.trim_end_matches('.').to_string()
+                })
+            }
+            _ => None,
+        };
 
         // ── Source Prolog: consult helper (+ boolean guard) ──────────────
         source_snippets.prolog.push_str(&format!(
             "% Edge {}: offering {} -> {} ({})\n",
             edge_id, source_id, target_id, target_label
         ));
-        match (qualifier_kind.as_str(), qualifier_value.trim()) {
-            ("boolean", guard) if !guard.is_empty() => {
-                let guard_goal = if guard.split_whitespace().count() > 1 {
-                    // Natural-language claim — classify via Clara LLM.
-                    format!("clara_fy(\"{}\", true)", guard.replace('"', "\\\""))
-                } else {
-                    guard.trim_end_matches('.').to_string()
-                };
+        match &guard_goal {
+            Some(guard) => {
                 source_snippets.prolog.push_str(&format!(
                     "{}(Payload, Result) :-\n    {},\n    caws_consult('{}', '{}', Payload, Result).\n\n",
-                    helper, guard_goal, target_id, topic
+                    helper, guard, target_id, topic
                 ));
             }
-            _ => {
+            None => {
                 source_snippets.prolog.push_str(&format!(
                     "{}(Payload, Result) :-\n    caws_consult('{}', '{}', Payload, Result).\n\n",
                     helper, target_id, topic
@@ -435,6 +447,65 @@ pub fn transduce_graph(graph_json: &str) -> Result<GraphTransduction, String> {
             edge_id, target_label, topic,
             sanitize_identifier(&edge_id), topic, edge_id
         ));
+
+        // ── Source CLIPS: typed reply dispatch → edge_result/3 + hooks ───
+        // The timeout rule carries no topic constraint — timeout events have
+        // only a correlation id; the Prolog side attributes them to this edge
+        // via caws_edge_offer/2.
+        let rule_id = sanitize_identifier(&edge_id);
+        source_snippets.clips.push_str(&format!(
+            "; Edge {eid}: dispatch {tl}'s typed replies to Prolog (edge_result/3 + hooks)\n\
+             (defrule edge-{rid}-on-hohi-result\n    \
+             (coire-event (origin \"ritual/hohi\") (topic \"{topic}\") (correlation ?cid&~\"\"))\n    \
+             =>\n    \
+             (coire-publish-goal (str-cat \"caws_edge_reply('{eid}', hohi, '\" ?cid \"')\")))\n\n\
+             (defrule edge-{rid}-on-tabu-result\n    \
+             (coire-event (origin \"ritual/tabu\") (topic \"{topic}\") (correlation ?cid&~\"\"))\n    \
+             =>\n    \
+             (coire-publish-goal (str-cat \"caws_edge_reply('{eid}', tabu, '\" ?cid \"')\")))\n\n\
+             (defrule edge-{rid}-on-timeout-result\n    \
+             (coire-event (origin \"ritual/tabu-timeout\") (correlation ?cid&~\"\"))\n    \
+             =>\n    \
+             (coire-publish-goal (str-cat \"caws_edge_reply('{eid}', tabu_timeout, '\" ?cid \"')\")))\n\n",
+            eid = edge_id,
+            rid = rule_id,
+            tl = target_label,
+            topic = topic,
+        ));
+
+        // ── Auto-pipe: forward incoming Offerings along the edge ─────────
+        if pipe_mode == "auto" {
+            let pipe_functor = format!("caws_auto_pipe_{}", rule_id);
+            source_snippets.prolog.push_str(&format!(
+                "% Edge {}: auto-pipe incoming Offerings to {} ({})\n",
+                edge_id, target_id, target_label
+            ));
+            match &guard_goal {
+                Some(guard) => {
+                    source_snippets.prolog.push_str(&format!(
+                        "{f}(Cid) :-\n    {},\n    caws_pipe('{}', '{}', '{}', Cid).\n{f}(_).\n\n",
+                        guard, edge_id, target_id, topic, f = pipe_functor
+                    ));
+                }
+                None => {
+                    source_snippets.prolog.push_str(&format!(
+                        "{f}(Cid) :-\n    caws_pipe('{}', '{}', '{}', Cid).\n{f}(_).\n\n",
+                        edge_id, target_id, topic, f = pipe_functor
+                    ));
+                }
+            }
+            source_snippets.clips.push_str(&format!(
+                "; Edge {eid}: auto-pipe — forward every incoming Offering to {tl}\n\
+                 (defrule edge-{rid}-auto-pipe\n    \
+                 (coire-event (origin \"ritual/offering\") (correlation ?cid&~\"\"))\n    \
+                 =>\n    \
+                 (coire-publish-goal (str-cat \"{f}('\" ?cid \"')\")))\n\n",
+                eid = edge_id,
+                rid = rule_id,
+                tl = target_label,
+                f = pipe_functor,
+            ));
+        }
 
         // ── Target Prolog: assertion qualifier seeds ground truth ────────
         if qualifier_kind == "assertion" && !qualifier_value.trim().is_empty() {
@@ -1911,6 +1982,88 @@ mod tests {
         .unwrap();
         let prolog = &result.per_node["n1"].prolog;
         assert!(prolog.contains("'consults/psych-evals'"), "sanitized suffix:\n{prolog}");
+    }
+
+    #[test]
+    fn graph_manual_edge_generates_reply_dispatch_but_no_pipe() {
+        let result = transduce_graph(&two_node_graph("")).unwrap();
+        let source = &result.per_node["n1"];
+        // Typed reply dispatch is generated in BOTH modes…
+        assert!(source.clips.contains("(defrule edge-e1-on-hohi-result"));
+        assert!(source.clips.contains(
+            "(coire-publish-goal (str-cat \"caws_edge_reply('e1', hohi, '\" ?cid \"')\"))"
+        ));
+        assert!(source.clips.contains("(defrule edge-e1-on-tabu-result"));
+        assert!(source.clips.contains(
+            "(coire-publish-goal (str-cat \"caws_edge_reply('e1', tabu, '\" ?cid \"')\"))"
+        ));
+        assert!(source.clips.contains("(defrule edge-e1-on-timeout-result"));
+        assert!(source.clips.contains(
+            "(coire-publish-goal (str-cat \"caws_edge_reply('e1', tabu_timeout, '\" ?cid \"')\"))"
+        ));
+        // …the legacy reply hook survives…
+        assert!(source.clips.contains("edge_replied('e1')"));
+        // …but nothing pipes without pipeMode auto.
+        assert!(!source.prolog.contains("caws_auto_pipe"), "{}", source.prolog);
+        assert!(!source.clips.contains("auto-pipe"), "{}", source.clips);
+    }
+
+    #[test]
+    fn graph_auto_edge_generates_pipe_wrapper_and_rule() {
+        let result = transduce_graph(&two_node_graph(r#", "pipeMode": "auto""#)).unwrap();
+        let source = &result.per_node["n1"];
+        assert!(
+            source.prolog.contains("caws_auto_pipe_e1(Cid) :-"),
+            "pipe wrapper generated:\n{}", source.prolog
+        );
+        assert!(source.prolog.contains("caws_pipe('e1', 'n2', 'consults/e1', Cid)"));
+        assert!(source.prolog.contains("caws_auto_pipe_e1(_)."), "catch-all clause");
+        assert!(source.clips.contains("(defrule edge-e1-auto-pipe"));
+        assert!(source.clips.contains(
+            "(coire-event (origin \"ritual/offering\") (correlation ?cid&~\"\"))"
+        ));
+        assert!(source.clips.contains(
+            "(coire-publish-goal (str-cat \"caws_auto_pipe_e1('\" ?cid \"')\"))"
+        ));
+        // Synchronous consult helper is unchanged alongside the pipe.
+        assert!(source.prolog.contains("consult_clara_groq(Payload, Result) :-"));
+        assert!(source.prolog.contains("caws_consult('n2', 'consults/e1', Payload, Result)"));
+    }
+
+    #[test]
+    fn graph_auto_edge_boolean_qualifier_guards_pipe() {
+        let result = transduce_graph(&two_node_graph(
+            r#", "pipeMode": "auto", "qualifierKind": "boolean", "qualifierValue": "core_temp(T),T>9000""#,
+        ))
+        .unwrap();
+        let prolog = &result.per_node["n1"].prolog;
+        // Guard appears in both the consult helper and the pipe wrapper.
+        assert!(prolog.contains(
+            "consult_clara_groq(Payload, Result) :-\n    core_temp(T),T>9000,"
+        ), "{prolog}");
+        assert!(prolog.contains(
+            "caws_auto_pipe_e1(Cid) :-\n    core_temp(T),T>9000,"
+        ), "{prolog}");
+    }
+
+    #[test]
+    fn graph_auto_edge_sanitizes_ugly_edge_ids() {
+        let graph = r#"{
+          "nodes": [
+            {"id": "n1", "type": "daemon", "evaluatorName": "clara_mind_splinter", "label": "Clara"},
+            {"id": "n2", "type": "daemon", "evaluatorName": "groq_evaluator", "label": "Groq"}
+          ],
+          "edges": [
+            {"id": "edge 9!", "source": "n1", "target": "n2", "pipeMode": "auto"}
+          ]
+        }"#;
+        let result = transduce_graph(graph).unwrap();
+        let source = &result.per_node["n1"];
+        // Functor and rule names sanitized; raw id survives single-quoted.
+        assert!(source.prolog.contains("caws_auto_pipe_edge_9_(Cid) :-"), "{}", source.prolog);
+        assert!(source.prolog.contains("caws_pipe('edge 9!', 'n2', 'consults/edge-9-', Cid)"));
+        assert!(source.clips.contains("(defrule edge-edge_9_-auto-pipe"));
+        assert!(source.clips.contains("caws_edge_reply('edge 9!', hohi, '"));
     }
 
     #[test]

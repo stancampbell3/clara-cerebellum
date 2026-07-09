@@ -30,7 +30,8 @@
       "source": "n1",
       "target": "n2",
       "flowKind": "unicast",
-      "msgType": "offering"
+      "msgType": "offering",
+      "pipeMode": "auto"
     }
   ],
   "viewport": { "x": 0, "y": 0, "zoom": 1 }
