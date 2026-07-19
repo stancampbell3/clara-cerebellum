@@ -149,7 +149,7 @@ services:
       clara-api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/6666"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6666/health', timeout=2)"]
       interval: 5s
       timeout: 3s
       retries: 20
