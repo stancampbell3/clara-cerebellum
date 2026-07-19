@@ -128,6 +128,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - CEREBELLUM_URL=http://clara-api:8080
+      # Dis (clara-api) ritual endpoints — used by DisClient when activating rituals.
+      - DIS_BASE_URL=http://clara-api:8080
       - LILDAEMON_JWT_SECRET=${LILDAEMON_JWT_SECRET}
       - LILDAEMON_BASE_URL=http://lildaemon:6666
       - LILDAEMON_DB_PATH=/app/data/lildaemon.duc
@@ -137,9 +139,12 @@ services:
       # Shared secret gating POST /auth/service-token.
       # Must match LILDAEMON_SERVICE_SECRET in the clara-api service above.
       - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
+      - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
+      - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output
+      - ../lildaemon/workspace:/app/workspace:ro
     depends_on:
       clara-api:
         condition: service_healthy
