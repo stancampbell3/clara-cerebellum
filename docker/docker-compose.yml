@@ -150,7 +150,7 @@ services:
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output
-      - ../lildaemon/workspace:/app/workspace:ro
+      - ../lildaemon/workspace:/app/workspace
     depends_on:
       clara-api:
         condition: service_healthy

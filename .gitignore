@@ -34,5 +34,8 @@ clara-clips/clips-src/core/*.a
 data/
 lildaemon/
 
+# Large binary model files — not committed without LFS (see docs/archived cleanup notes)
+models/
+
 # our mixing place
 wok/
