@@ -141,6 +141,12 @@ services:
       - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
       - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
       - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
+      # Ochecho TTS (goat.mcp.ochecho, used by the clara_mind_splinter evaluator's
+      # "ochecho" MCP server). Ochecho itself runs natively on the host — not in
+      # Docker — because it needs the host's CUDA/GPU venv (see ochecho/README.md).
+      # Reached the same way OLLAMA_BASE_URL is above, via host.docker.internal.
+      - OCHECHO_SERVER=http://host.docker.internal:1932
+      - OCHECHO_TOKEN=${OCHECHO_TOKEN}
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output
