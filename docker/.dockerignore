@@ -22,6 +22,9 @@ target/
 # Exclude Rust build artifacts (very large)
 clara-cerebrum/target/
 
+# Exclude dev-only overrides (production uses config/evaluators.yaml and config/fish.yaml)
+lildaemon/wok/
+
 # Exclude Python caches
 **/__pycache__/
 **/*.pyc
