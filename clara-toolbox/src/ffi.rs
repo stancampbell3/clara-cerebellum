@@ -233,7 +233,10 @@ impl clara_coire::EvaluateCacheEviction for ToolboxCacheEviction {
 /// Pointer to C string containing JSON response (must be freed with rust_free_string)
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn rust_clara_evaluate(input_json: *const c_char) -> *mut c_char {
+pub extern "C" fn rust_clara_evaluate(
+    _env: *mut libc::c_void,
+    input_json: *const c_char,
+) -> *mut c_char {
     unsafe {
         // Convert C string to Rust string
         let input_str = if input_json.is_null() {

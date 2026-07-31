@@ -1,6 +1,6 @@
 // CLIPS REPL with full Rust callback support
 
-use clara_clips::ClipsEnvironment;
+use clara_clips::{is_construct, ClipsEnvironment};
 use clara_toolbox::{ClaraSplinteredMindTool, EvaluateTool, ToolboxManager};
 use demonic_voice::DemonicVoice;
 use rustyline::error::ReadlineError;
@@ -54,28 +54,6 @@ fn paren_depth(s: &str) -> i32 {
 }
 
 /// Returns true if the input is a CLIPS construct definition that needs Build(), not Eval().
-fn is_construct(s: &str) -> bool {
-    let s = s.trim();
-    if !s.starts_with('(') {
-        return false;
-    }
-    let keyword = s[1..].trim_start().split_whitespace().next().unwrap_or("");
-    matches!(
-        keyword,
-        "defrule"
-            | "deftemplate"
-            | "deffacts"
-            | "defglobal"
-            | "deffunction"
-            | "defclass"
-            | "defmessage-handler"
-            | "defgeneric"
-            | "defmethod"
-            | "defmodule"
-            | "definstances"
-    )
-}
-
 fn main() {
     load_dotenv();
 

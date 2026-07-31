@@ -53,6 +53,10 @@ services:
       # Shared secret used to acquire a lildaemon service JWT at Ritual bootstrap.
       # Must match LILDAEMON_SERVICE_SECRET in the lildaemon service below.
       - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
+      # Edgequake RAG API, used by the `edgequake` tool (clara-toolbox) that
+      # backs the_cow.pl/the_cow.clp for Prolog/CLIPS.
+      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://10.0.0.192:8082}
+      - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
     depends_on:
       kafka:
         condition: service_healthy
@@ -147,6 +151,9 @@ services:
       # Reached the same way OLLAMA_BASE_URL is above, via host.docker.internal.
       - OCHECHO_SERVER=http://host.docker.internal:1932
       - OCHECHO_TOKEN=${OCHECHO_TOKEN}
+      # Edgequake RAG API, used by goat/mcp/edgequake (LLM tool-calling side).
+      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://10.0.0.192:8082}
+      - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output

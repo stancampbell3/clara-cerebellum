@@ -141,6 +141,19 @@ impl ClipsEnvironment {
         }
     }
 
+    /// Load a single top-level CLIPS form, routing it to [`build`] or [`eval`]
+    /// based on [`is_construct`]. Use this instead of [`eval`] when the input
+    /// may be a construct definition (e.g. deffunction/defrule loaded from a
+    /// rules file) rather than a plain expression.
+    pub fn build_or_eval(&mut self, code: &str) -> Result<String, String> {
+        if is_construct(code) {
+            self.build(code)?;
+            Ok(String::new())
+        } else {
+            self.eval(code)
+        }
+    }
+
     /// Build (compile) a single CLIPS construct definition into this environment.
     ///
     /// Handles `defglobal`, `deftemplate`, `deffunction`, `defrule`, etc.
@@ -314,6 +327,31 @@ impl Drop for ClipsEnvironment {
 // We're assuming single-threaded access per environment (protected by RwLock in SessionManager)
 unsafe impl Send for ClipsEnvironment {}
 unsafe impl Sync for ClipsEnvironment {}
+
+/// Returns true if `code` is a CLIPS construct definition (`defrule`,
+/// `deffunction`, `deftemplate`, ...) that must go through [`ClipsEnvironment::build`],
+/// as opposed to a plain expression/function call for [`ClipsEnvironment::eval`].
+pub fn is_construct(code: &str) -> bool {
+    let s = code.trim();
+    if !s.starts_with('(') {
+        return false;
+    }
+    let keyword = s[1..].trim_start().split_whitespace().next().unwrap_or("");
+    matches!(
+        keyword,
+        "defrule"
+            | "deftemplate"
+            | "deffacts"
+            | "defglobal"
+            | "deffunction"
+            | "defclass"
+            | "defmessage-handler"
+            | "defgeneric"
+            | "defmethod"
+            | "defmodule"
+            | "definstances"
+    )
+}
 
 /// Parse a CLIPS source string into individual top-level construct strings.
 ///

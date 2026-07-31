@@ -1,7 +1,7 @@
 // ToolboxManager: Registry and execution engine for tools
 
 use crate::tool::{Tool, ToolError, ToolRequest, ToolResponse};
-use crate::tools::{ClassifyTool, ClaraSplinteredMindTool, EchoTool};
+use crate::tools::{ClaraEdgequakeTool, ClaraSplinteredMindTool, ClassifyTool, EchoTool};
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -103,6 +103,16 @@ impl ToolboxManager {
             .unwrap_or_else(|_| "http://localhost:6666".to_string());
         log::info!("Registering splinteredmind tool with FieryPit URL: {}", fierypit_url);
         mgr.register_tool(Arc::new(ClaraSplinteredMindTool::with_url(&fierypit_url)));
+
+        // Register edgequake tool with base URL/API key from environment
+        let edgequake_url = std::env::var("EDGEQUAKE_BASE_URL")
+            .unwrap_or_else(|_| "http://10.0.0.192:8082".to_string());
+        let edgequake_api_key = std::env::var("EDGEQUAKE_API_KEY").ok();
+        log::info!("Registering edgequake tool with base URL: {}", edgequake_url);
+        mgr.register_tool(Arc::new(ClaraEdgequakeTool::new(
+            edgequake_url,
+            edgequake_api_key,
+        )));
 
         // Register classify tool with model from environment (optional)
         if let Ok(model_path) = std::env::var("DAGDA_MODEL_PATH") {

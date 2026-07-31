@@ -220,12 +220,23 @@ pub async fn load_rules(
         .get_session(&session_id)
         .map_err(ApiError::from)?;
 
-    // Load each rule via CLIPS environment
+    // Load each rule via CLIPS environment. A "rule" string may contain a
+    // single construct/expression or several (e.g. a whole .clp file's worth),
+    // so split it into individual top-level forms first, then route each one
+    // to build() (constructs: defrule, deffunction, ...) or eval() (plain
+    // expressions like (assert ...)) based on its leading keyword.
     for rule in &req.rules {
         state
             .session_manager
-            .with_clips_env(&session_id, |env| {
-                env.eval(rule)
+            .with_clips_env(&session_id, |env| -> Result<(), String> {
+                for construct in clara_clips::split_clips_constructs(rule) {
+                    if clara_clips::is_construct(&construct) {
+                        env.build(&construct)?;
+                    } else {
+                        env.eval(&construct)?;
+                    }
+                }
+                Ok(())
             })
             .map_err(ApiError::from)?;
     }

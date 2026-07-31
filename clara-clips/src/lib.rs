@@ -4,7 +4,7 @@ pub mod backend;
 
 // Re-export commonly used types
 pub use backend::ffi;
-pub use backend::ClipsEnvironment;
+pub use backend::{is_construct, split_clips_constructs, ClipsEnvironment};
 
 // Force-link coire FFI symbols so the C linker can find them.
 // Without these re-exports, the linker strips the #[no_mangle] symbols
