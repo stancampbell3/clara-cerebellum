@@ -65,6 +65,6 @@ fn main() -> std::io::Result<()> {
 
     // Start the async runtime and server
     actix_web::rt::System::new().block_on(async {
-        start_server("0.0.0.0", 8080, ritual_broker).await
+        start_server("0.0.0.0", 8080, ritual_broker, config).await
     })
 }

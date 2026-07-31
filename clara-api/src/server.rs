@@ -2,7 +2,7 @@ use actix_web::{web, App, HttpServer};
 use clara_coire::CarrionPicker;
 use clara_cycle::CoireStore;
 use clara_session::{SessionManager, ManagerConfig};
-use clara_config::ConfigLoader;
+use clara_config::AppConfig;
 use clara_toolbox::{set_domain_id, ToolboxCacheEviction};
 use clara_ritual::{KafkaBridge, RitualRegistry};
 #[cfg(test)]
@@ -21,17 +21,20 @@ use crate::subprocess::SubprocessPool;
 /// `ritual_broker` must be constructed **before** the actix runtime starts
 /// (i.e. in synchronous `main()`), because `RsKafkaClient` owns a tokio
 /// runtime and creating one inside an existing async runtime panics.
+///
+/// `config` must be the same `AppConfig` instance used to build
+/// `ritual_broker` (including any environment-variable overrides, e.g.
+/// `KAFKA_BOOTSTRAP`, applied by the caller). Reloading config independently
+/// here would silently drop those overrides from `AppState.kafka_bootstrap`,
+/// which is handed out to Ritual participants over the API.
 pub async fn start_server(
     host: &str,
     port: u16,
     ritual_broker: Arc<dyn KafkaBridge>,
+    config: AppConfig,
 ) -> std::io::Result<()> {
     let addr = format!("{}:{}", host, port);
     info!("Starting Clara API server on {}", addr);
-
-    // Load configuration
-    let config = ConfigLoader::from_env(None)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to load config: {}", e)))?;
 
     info!("Using CLIPS binary at: {}", config.clips.binary_path);
 
