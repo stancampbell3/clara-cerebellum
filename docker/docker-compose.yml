@@ -57,6 +57,10 @@ services:
       # backs the_cow.pl/the_cow.clp for Prolog/CLIPS.
       - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://10.0.0.192:8082}
       - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
+      # Optional tenant/workspace scoping (X-Tenant-ID/X-Workspace-ID headers).
+      # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
+      - EDGEQUAKE_DEFAULT_TENANT=${EDGEQUAKE_DEFAULT_TENANT:-}
+      - EDGEQUAKE_DEFAULT_WORKSPACE=${EDGEQUAKE_DEFAULT_WORKSPACE:-}
     depends_on:
       kafka:
         condition: service_healthy
@@ -154,6 +158,10 @@ services:
       # Edgequake RAG API, used by goat/mcp/edgequake (LLM tool-calling side).
       - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://10.0.0.192:8082}
       - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
+      # Optional tenant/workspace scoping (X-Tenant-ID/X-Workspace-ID headers).
+      # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
+      - EDGEQUAKE_DEFAULT_TENANT=${EDGEQUAKE_DEFAULT_TENANT:-}
+      - EDGEQUAKE_DEFAULT_WORKSPACE=${EDGEQUAKE_DEFAULT_WORKSPACE:-}
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output

@@ -13,7 +13,8 @@
 :- module(the_cow, [
     ruminate/2,
     ruminate_with_context/3,
-    ruminate_mode/3
+    ruminate_mode/3,
+    ruminate_opts/3
 ]).
 
 :- use_module(library(http/json)).
@@ -57,6 +58,27 @@ ruminate_mode(Query, Mode, Result) :-
     % strings as SWI strings, which never unify with the bare atom `error`
     % below — confirmed live that the unqualified [] form silently never
     % detects errors (see the_rabbit.pl's classify_text/2 for the same fix).
+    atom_json_dict(Raw, Dict, [value_string_as(atom)]),
+    ( get_dict(status, Dict, error) ->
+        format(user_error, "edgequake tool error: ~w~n", [Dict.message]),
+        fail
+    ;
+        Result = Raw
+    ).
+
+%% ruminate_opts/3 - Query Edgequake with explicit overrides.
+%%   Opts is a dict of any of: tenant, workspace, llm_provider, llm_model,
+%%   mode, context, max_results — merged over the base {operation, query}
+%%   dict via .put/1, so unset keys fall through to the edgequake tool's
+%%   configured defaults (EDGEQUAKE_DEFAULT_TENANT/WORKSPACE env vars,
+%%   Edgequake's own tenant/workspace default provider+model). Example:
+%%     ruminate_opts("what is a qubit?",
+%%                   _{llm_provider: ollama, llm_model: "gemma4:e4b"},
+%%                   Result)
+ruminate_opts(Query, Opts, Result) :-
+    Args = _{operation: query, query: Query}.put(Opts),
+    dict_to_json(_{tool: edgequake, arguments: Args}, Json),
+    the_rabbit:clara_evaluate(Json, Raw),
     atom_json_dict(Raw, Dict, [value_string_as(atom)]),
     ( get_dict(status, Dict, error) ->
         format(user_error, "edgequake tool error: ~w~n", [Dict.message]),

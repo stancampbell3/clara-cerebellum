@@ -104,14 +104,30 @@ impl ToolboxManager {
         log::info!("Registering splinteredmind tool with FieryPit URL: {}", fierypit_url);
         mgr.register_tool(Arc::new(ClaraSplinteredMindTool::with_url(&fierypit_url)));
 
-        // Register edgequake tool with base URL/API key from environment
+        // Register edgequake tool with base URL/API key/tenant/workspace from
+        // environment. Default tenant/workspace are optional — unset means
+        // "no scoping", which lets Edgequake fall back to its own default
+        // tenant/workspace (correct for the current single-tenant setup).
         let edgequake_url = std::env::var("EDGEQUAKE_BASE_URL")
             .unwrap_or_else(|_| "http://10.0.0.192:8082".to_string());
         let edgequake_api_key = std::env::var("EDGEQUAKE_API_KEY").ok();
+        // docker-compose's `${VAR:-}` idiom sets an unset var to an empty
+        // string rather than leaving it absent, so `.ok()` alone would read
+        // "no tenant configured" as `Some("")` — a non-empty tenant value
+        // that silently breaks path building (e.g. `/tenants//workspaces`).
+        // Treat blank as unset, same as "no scoping".
+        let edgequake_default_tenant = std::env::var("EDGEQUAKE_DEFAULT_TENANT")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let edgequake_default_workspace = std::env::var("EDGEQUAKE_DEFAULT_WORKSPACE")
+            .ok()
+            .filter(|s| !s.is_empty());
         log::info!("Registering edgequake tool with base URL: {}", edgequake_url);
         mgr.register_tool(Arc::new(ClaraEdgequakeTool::new(
             edgequake_url,
             edgequake_api_key,
+            edgequake_default_tenant,
+            edgequake_default_workspace,
         )));
 
         // Register classify tool with model from environment (optional)

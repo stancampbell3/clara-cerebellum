@@ -1,6 +1,22 @@
 # Edgequake Tenant/Workspace/Provider/Model Support — Plan
 
-_Written 2026-08-11. Builds on `docs/edgequake_integration_status.md` (Phase 1 status) and supersedes `docs/gemini_convo_edgequake_extensions.md` (that doc was speculative/AI-generated sketch code against an unverified API shape — this plan replaces its guesses with behavior confirmed live against the running instance)._
+_Written 2026-08-11. Implemented and verified live the same day — see "Implementation status" below. Builds on `docs/edgequake_integration_status.md` (Phase 1 status) and supersedes `docs/gemini_convo_edgequake_extensions.md` (that doc was speculative/AI-generated sketch code against an unverified API shape — this plan replaces its guesses with behavior confirmed live against the running instance)._
+
+## Implementation status (2026-08-11): done
+
+Everything below was implemented and verified live against a rebuilt `docker-clara-api-1` / the real Edgequake instance on limbic, in this order:
+
+- `clara-toolbox/src/tools/edgequake.rs`: `EdgequakeClient` gained `default_tenant`/`default_workspace`, threaded as `X-Tenant-ID`/`X-Workspace-ID` headers on every request; `EdgequakeArgs` gained `tenant`/`workspace` (headers, all ops) and `llm_provider`/`llm_model` (JSON body, `Query` op only); three new read-only ops added (`ListTenants`, `ListWorkspaces`, `ListModels`).
+- `clara-toolbox/src/manager.rs`: reads `EDGEQUAKE_DEFAULT_TENANT`/`EDGEQUAKE_DEFAULT_WORKSPACE`, passed through to `ClaraEdgequakeTool::new`.
+- `docker/docker-compose.yml`: added the two new env vars next to the existing `EDGEQUAKE_BASE_URL`/`EDGEQUAKE_API_KEY` lines (both `clara-api` and `lildaemon` blocks).
+- `clara-prolog/prolog-lib/the_cow.pl`: added `ruminate_opts/3`, a dict-merge predicate (`.put/1`) layering `tenant`/`workspace`/`llm_provider`/`llm_model`/`mode`/etc. over the base query args, alongside the unchanged `ruminate/2`/`ruminate_mode/3`.
+
+**Bug found and fixed during implementation, not in the original plan**: `docker-compose.yml`'s `${EDGEQUAKE_DEFAULT_TENANT:-}` idiom (matching the pre-existing `EDGEQUAKE_API_KEY` pattern) sets the env var to an **empty string** inside the container when unset, not absent. `std::env::var(...).ok()` reads that as `Some("")`, not `None` — silently bypassing the "no tenant configured" guard and building a malformed `/api/v1/tenants//workspaces` URL. Fixed in `manager.rs` by filtering empty strings to `None` for both new env vars.
+
+**Two things confirmed live that the plan below only guessed at:**
+
+1. **`X-Tenant-ID`/`X-Workspace-ID` headers ARE honored on `POST /api/v1/query`**, not just the GET graph-read endpoints — this was the plan's one open question. Confirmed two ways, both cost-free: a bogus workspace header gets a clean `400 Invalid workspace ID: ...` *before* any LLM dispatch (visible in `clara-api`'s logs via the tool's `Execution failed: Edgequake API error 400 ...`), and a valid tenant/workspace pair succeeds with the correct `workspace_id` visible in Edgequake's own resolver logs.
+2. **Don't trust the response body's `stats.llm_provider`/`stats.llm_model` fields — they're unreliable on this Edgequake version (`0.20.2`).** A `ruminate_opts` call with explicit `llm_provider: ollama, llm_model: "gemma4:e4b"` returned a response whose `stats` block claimed `"llm_provider":"openai","llm_model":"gpt-4.1-mini"` — alarming at first (looked like an unintended real cloud call) until checking `docker logs edgequake-api`, which shows the actual dispatch: `edgequake_api::providers::resolver: LLM provider created with safety limits provider="ollama" model="gemma4:e4b" source=Request`. The request genuinely ran on local Ollama; the stats field is just mislabeled/stale — a reporting bug on Edgequake's side (no external LLM keys are configured on that instance at all, per Stan, so a real OpenAI call would have failed outright rather than returning a coherent answer). **When verifying which provider actually served a request, check `docker logs edgequake-api | grep resolver`, not the response body's `stats` block.**
 
 ## Where this fits
 
@@ -78,6 +94,6 @@ CLIPS side: same idea, a `ruminate-opts` deffunction that takes a pre-built JSON
 ## Open questions / explicitly out of scope for this pass
 
 - **Other request options** (temperature, top_k, max_tokens, embedding provider/model, response streaming): `GET /api/v1/models` exposes per-model capability flags (`supports_streaming`, `supports_json_mode`, context length, etc.) suggesting these might be controllable, but that hasn't been probed. Recommend using the same safe "deliberately invalid value → read the validation error" technique per field when this becomes relevant, rather than guessing.
-- **Whether `X-Tenant-ID`/`X-Workspace-ID` headers are honored on `POST /api/v1/query`** the same way they're confirmed on `GET /api/v1/graph/entities` — plausible given the shared middleware pattern, but not independently confirmed (doing so would require a real query call). Should be the first thing checked when this lands, using step 2 of the verification plan above with an explicit tenant/workspace header set.
+- ~~Whether `X-Tenant-ID`/`X-Workspace-ID` headers are honored on `POST /api/v1/query`~~ — **resolved, yes**, see "Implementation status" above.
 - **Auth policy** (`EDGEQUAKE_API_KEY` blank, dev/prod split) — status doc Outstanding #1, unresolved, unaffected by this plan.
 - **Write operations** (Phase 2 proper: graph writes, lildaemon evaluator write access) — still deferred, this plan only touches read/query scoping.
