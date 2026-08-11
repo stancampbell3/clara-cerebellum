@@ -1,0 +1,97 @@
+● Good article — and the notable absence of neurosymbolic or formal logic
+  approaches in their survey is itself a useful data point. Here's my analysis  
+  for the one-pager:                                                            
+                                                             
+  ---                                                                           
+  Comparison Analysis: Existing XAI Methods vs. Clara                         
+                                                                                
+  The Five Methods Covered                                                      
+                                                                                
+  Method: LIME                                                                  
+  Type: Post-hoc                                                                
+  Core Mechanism: Local linear approximation of model behavior                  
+  Core Limitation: Unstable — explanations shift with minor parameter changes;
+    approximates, doesn't reveal                                             
+  ────────────────────────────────────────                                      
+  Method: SHAP                                                               
+  Type: Post-hoc                                                                
+  Core Mechanism: Game-theoretic feature attribution over all feature        
+    combinations                                                                
+  Core Limitation: Hours of compute at production scale; assumes feature     
+    independence that rarely holds                                              
+  ────────────────────────────────────────                                   
+  Method: Attention Visualization
+  Type: Intrinsic (transformer)                                                 
+  Core Mechanism: Extracts attention weights as proxy for "what the model
+  focused                                                                       
+    on"                                                     
+  Core Limitation: High attention ≠ causal importance — correlation, not
+    mechanism
+  ────────────────────────────────────────
+  Method: Gradient-Based / Saliency                                             
+  Type: Post-hoc
+  Core Mechanism: Backpropagation to identify influential input features        
+  Core Limitation: Amplifies noise in deep networks; saliency degrades in deep
+    architectures
+  ────────────────────────────────────────
+  Method: Influence Functions                                                   
+  Type: Post-hoc
+  Core Mechanism: Traces predictions back to training examples via Hessian      
+    computation                                             
+  Core Limitation: Computationally prohibitive; numerically unstable; explains
+    training data provenance, not reasoning
+
+  The Shared Structural Problem
+
+  Every method in the article shares a root limitation: they reconstruct        
+  explanations for decisions that were never made explainably. The model's
+  actual computation is opaque; these techniques produce an artifact that       
+  approximates or correlates with it after the fact. The explanation is separate
+   from the reasoning — it is a shadow of it.
+
+  The article's complete absence of neurosymbolic, rule-based, or formal logic  
+  approaches reflects where the field currently sits: post-hoc interpretation is
+   the dominant paradigm because the dominant models (deep neural networks,     
+  transformers) offer no native reasoning trace.            
+
+  How Clara Differs — and What to Say in the One-Pager                          
+   
+  The contrast with Clara is structural, not incremental:                       
+                                                            
+  - Post-hoc methods explain after the fact. Clara's reasoning tableau is       
+  generated as inference occurs — the explanation is a direct record of the
+  computation, not a reconstruction of it.                                      
+  - Post-hoc methods approximate. LIME explicitly admits it does not show what
+  the model did. Clara's tableau is deterministic — same rules, same inputs,    
+  same trace, every time.
+  - Post-hoc methods are computationally additive. SHAP adds hours of compute on
+   top of an already-trained model. Clara's explanation is a byproduct of       
+  inference with no separate cost.
+  - Attention is correlational, not causal. Clara's rules fire explicitly and   
+  leave named entries in the tableau — there is no ambiguity about what drove a 
+  result.
+  - Influence functions explain data provenance. Clara explains reasoning —     
+  which axioms applied, in what order, with what bindings, and where uncertainty
+   was acknowledged.
+                                                                                
+  Recommended Framing for the One-Pager                                         
+   
+  Rather than naming LIME or SHAP specifically (which can read as defensive),   
+  I'd suggest a single tight paragraph positioned at the end of "The Explanation
+   Gap" section that frames the contrast in structural terms — something like:  
+                                                            
+  ▎ Current approaches to this problem apply interpretation techniques to models
+  ▎  after training — approximating, at one remove, decisions that were never 
+  ▎ made with explainability in mind. These methods generate a shadow of a      
+  ▎ reasoning trace; Clara generates the trace itself, as a direct product of 
+  ▎ how its reasoning engine operates.
+
+  This is forward-looking, positions Clara as categorically different rather    
+  than incrementally better, and doesn't require the reader to know LIME or SHAP
+   to follow the argument. We can add specificity in a technical appendix if AWS
+   asks for it in follow-up.                                
+
+  ---
+  My recommendation: insert that paragraph (or a refined version of it) at the
+  end of the "Explanation Gap" section in the draft, then remove the [Note]     
+  placeholder. Want me to update the draft with this addition now?
