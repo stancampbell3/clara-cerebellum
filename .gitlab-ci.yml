@@ -4,6 +4,16 @@ stages:
 variables:
   CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
 
+.build_deps: &build_deps
+  # Same native deps as docker/Dockerfile's builder stage:
+  #   cmake/ninja/build-essential - CLIPS (cc crate) + SWI-Prolog (cmake) builds
+  #   libssl-dev/pkg-config       - reqwest
+  #   libgmp-dev/zlib1g-dev/libpcre2-dev - SWI-Prolog deps
+  - apt-get update && apt-get install -y --no-install-recommends
+    cmake ninja-build build-essential libssl-dev pkg-config
+    libgmp-dev zlib1g-dev libpcre2-dev python3 git
+    && rm -rf /var/lib/apt/lists/*
+
 cargo-test:
   stage: test
   image: rust:latest
@@ -12,6 +22,8 @@ cargo-test:
     paths:
       - .cargo/
       - target/
+  before_script:
+    - *build_deps
   script:
     - cargo test --workspace
   rules:
@@ -25,8 +37,10 @@ cargo-clippy:
     paths:
       - .cargo/
       - target/
-  script:
+  before_script:
+    - *build_deps
     - rustup component add clippy
+  script:
     - cargo clippy --workspace --all-targets
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "merge_request_event"'
