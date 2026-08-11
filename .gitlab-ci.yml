@@ -18,10 +18,17 @@ cargo-test:
   stage: test
   image: rust:latest
   cache:
-    key: cargo-cache
+    # Cargo registry only — not target/. target/ has ~35k small object files
+    # (CLIPS/SWI-Prolog/Rust build artifacts); archiving/extracting it cost
+    # ~5min round-trip for marginal benefit, since a fresh git checkout resets
+    # mtimes and partially invalidates cargo's incremental fingerprints anyway.
+    # The registry cache is what actually matters: it avoids re-downloading
+    # every dependency from crates.io on each run.
+    key:
+      files:
+        - Cargo.lock
     paths:
-      - .cargo/
-      - target/
+      - .cargo/registry/
   before_script:
     - *build_deps
   script:
@@ -33,10 +40,17 @@ cargo-clippy:
   stage: test
   image: rust:latest
   cache:
-    key: cargo-cache
+    # Cargo registry only — not target/. target/ has ~35k small object files
+    # (CLIPS/SWI-Prolog/Rust build artifacts); archiving/extracting it cost
+    # ~5min round-trip for marginal benefit, since a fresh git checkout resets
+    # mtimes and partially invalidates cargo's incremental fingerprints anyway.
+    # The registry cache is what actually matters: it avoids re-downloading
+    # every dependency from crates.io on each run.
+    key:
+      files:
+        - Cargo.lock
     paths:
-      - .cargo/
-      - target/
+      - .cargo/registry/
   before_script:
     - *build_deps
     - rustup component add clippy
