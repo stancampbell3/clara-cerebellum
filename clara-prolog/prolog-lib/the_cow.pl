@@ -14,7 +14,10 @@
     ruminate/2,
     ruminate_with_context/3,
     ruminate_mode/3,
-    ruminate_opts/3
+    ruminate_opts/3,
+    ruminate_status/2,
+    ruminate_answer/2,
+    ruminate_citations/2
 ]).
 
 :- use_module(library(http/json)).
@@ -27,6 +30,8 @@ ruminate(Query, Result) :-
 %% ruminate_with_context/3 - Query Edgequake with conversational context.
 %%   Context is a plain string; folded into the query the same way
 %%   ponder_text_with_context/3 threads context through to the LLM.
+%%   Result is the parsed response dict (see ruminate_status/2,
+%%   ruminate_answer/2, ruminate_citations/2 for common fields).
 ruminate_with_context(Query, Context, Result) :-
     dict_to_json(_{tool: edgequake,
                    arguments: _{operation: query,
@@ -43,11 +48,13 @@ ruminate_with_context(Query, Context, Result) :-
         format(user_error, "edgequake tool error: ~w~n", [Dict.message]),
         fail
     ;
-        Result = Raw
+        Result = Dict
     ).
 
 %% ruminate_mode/3 - Query Edgequake's RAG API with an explicit retrieval mode.
 %%   Mode is one of: naive, local, global, hybrid, mix.
+%%   Result is the parsed response dict (see ruminate_status/2,
+%%   ruminate_answer/2, ruminate_citations/2 for common fields).
 ruminate_mode(Query, Mode, Result) :-
     dict_to_json(_{tool: edgequake,
                    arguments: _{operation: query,
@@ -63,7 +70,7 @@ ruminate_mode(Query, Mode, Result) :-
         format(user_error, "edgequake tool error: ~w~n", [Dict.message]),
         fail
     ;
-        Result = Raw
+        Result = Dict
     ).
 
 %% ruminate_opts/3 - Query Edgequake with explicit overrides.
@@ -71,7 +78,9 @@ ruminate_mode(Query, Mode, Result) :-
 %%   mode, context, max_results — merged over the base {operation, query}
 %%   dict via .put/1, so unset keys fall through to the edgequake tool's
 %%   configured defaults (EDGEQUAKE_DEFAULT_TENANT/WORKSPACE env vars,
-%%   Edgequake's own tenant/workspace default provider+model). Example:
+%%   Edgequake's own tenant/workspace default provider+model). Result is
+%%   the parsed response dict (see ruminate_status/2, ruminate_answer/2,
+%%   ruminate_citations/2 for common fields). Example:
 %%     ruminate_opts("what is a qubit?",
 %%                   _{llm_provider: ollama, llm_model: "gemma4:e4b"},
 %%                   Result)
@@ -84,5 +93,23 @@ ruminate_opts(Query, Opts, Result) :-
         format(user_error, "edgequake tool error: ~w~n", [Dict.message]),
         fail
     ;
-        Result = Raw
+        Result = Dict
     ).
+
+%% ruminate_status/2 - Extract the status atom (`success`/`error`) from a
+%%   ruminate*/N result dict.
+ruminate_status(Result, Status) :-
+    Status = Result.status.
+
+%% ruminate_answer/2 - Extract the generated answer string from a
+%%   ruminate*/N result dict.
+ruminate_answer(Result, Answer) :-
+    Answer = Result.answer.
+
+%% ruminate_citations/2 - Extract the list of source/citation dicts from a
+%%   ruminate*/N result dict. Each entry carries (per Edgequake's
+%%   SourceReference): source_type, id, score, snippet, and, when present,
+%%   document_id, file_path, start_line/end_line, chunk_index, etc.
+%%   Defaults to [] rather than failing when sources is absent.
+ruminate_citations(Result, Citations) :-
+    Citations = Result.get(sources, []).
