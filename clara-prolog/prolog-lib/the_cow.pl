@@ -33,7 +33,11 @@ ruminate_with_context(Query, Context, Result) :-
                                 context: Context,
                                 mode: hybrid}}, Json),
     the_rabbit:clara_evaluate(Json, Raw),
-    atom_json_dict(Raw, Dict, []),
+    % value_string_as(atom): without this, atom_json_dict/3 decodes JSON
+    % strings as SWI strings, which never unify with the bare atom `error`
+    % below — confirmed live that the unqualified [] form silently never
+    % detects errors (see the_rabbit.pl's classify_text/2 for the same fix).
+    atom_json_dict(Raw, Dict, [value_string_as(atom)]),
     ( get_dict(status, Dict, error) ->
         format(user_error, "edgequake tool error: ~w~n", [Dict.message]),
         fail
@@ -49,7 +53,11 @@ ruminate_mode(Query, Mode, Result) :-
                                 query: Query,
                                 mode: Mode}}, Json),
     the_rabbit:clara_evaluate(Json, Raw),
-    atom_json_dict(Raw, Dict, []),
+    % value_string_as(atom): without this, atom_json_dict/3 decodes JSON
+    % strings as SWI strings, which never unify with the bare atom `error`
+    % below — confirmed live that the unqualified [] form silently never
+    % detects errors (see the_rabbit.pl's classify_text/2 for the same fix).
+    atom_json_dict(Raw, Dict, [value_string_as(atom)]),
     ( get_dict(status, Dict, error) ->
         format(user_error, "edgequake tool error: ~w~n", [Dict.message]),
         fail

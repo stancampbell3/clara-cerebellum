@@ -311,6 +311,18 @@ impl ClipsEnvironment {
     pub fn as_ptr(&self) -> *mut Environment {
         self.env
     }
+
+    /// Run the agenda and return the number of rules that actually fired.
+    ///
+    /// `limit` matches CLIPS's own convention: a negative value runs to
+    /// exhaustion (no limit), otherwise runs at most `limit` rule firings.
+    ///
+    /// Calls the `Run()` C API directly rather than `eval("(run)")` — the
+    /// CLIPS-language `run` function is void-returning, so evaluating it as
+    /// text can never yield a fire count (see [`bindings::Run`]).
+    pub fn run_rules(&mut self, limit: i64) -> Result<i64, String> {
+        unsafe { Ok(bindings::Run(self.env, limit)) }
+    }
 }
 
 impl Drop for ClipsEnvironment {

@@ -308,24 +308,20 @@ pub async fn run_rules(
 
     let start = std::time::Instant::now();
 
-    // Run rules via CLIPS environment
-    let run_cmd = if req.max_iterations < 0 {
-        "(run)".to_string()
-    } else {
-        format!("(run {})", req.max_iterations)
-    };
-
-    let result = state
+    // Run rules via CLIPS environment. Calls the `Run()` C API directly
+    // (ClipsEnvironment::run_rules) rather than eval("(run)") — the
+    // CLIPS-language `run` function is void-returning, so its fire count
+    // can never be recovered by parsing eval's textual output.
+    let fired = state
         .session_manager
         .with_clips_env(&session_id, |env| {
-            env.eval(&run_cmd)
+            env.run_rules(req.max_iterations)
         })
         .map_err(ApiError::from)?;
 
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
-    // Parse result to get rules fired count
-    let rules_fired = result.trim().parse::<u64>().unwrap_or(0);
+    let rules_fired = fired.max(0) as u64;
 
     // Touch session to update last activity
     state
@@ -346,12 +342,11 @@ pub async fn run_rules(
 pub async fn query_facts(
     state: web::Data<AppState>,
     path: web::Path<String>,
-    query: web::Query<std::collections::HashMap<String, String>>,
+    _query: web::Query<std::collections::HashMap<String, String>>,
 ) -> Result<HttpResponse, ApiError> {
     let session_id = clara_session::SessionId(path.into_inner());
-    let pattern = query.get("pattern").cloned().unwrap_or_else(|| "?f".to_string());
 
-    log::info!("Querying facts in session: {} with pattern: {}", session_id, pattern);
+    log::info!("Querying facts in session: {}", session_id);
 
     // Verify session exists
     let _session = state
@@ -359,20 +354,24 @@ pub async fn query_facts(
         .get_session(&session_id)
         .map_err(ApiError::from)?;
 
-    // Query facts via CLIPS environment
-    let query_cmd = format!("(find-all-facts ((?f)) TRUE)");
+    // Query facts via CLIPS environment. `(find-all-facts ((?f)) TRUE)` (the
+    // previous command here) is invalid CLIPS syntax — the fact-set query
+    // functions require at least one deftemplate name per bound variable
+    // (`(<var> <template-name>+)`), and there's no "any template" wildcard,
+    // so `((?f))` alone always 500s with a PRNTUTIL2 syntax error. `(facts)`
+    // lists every fact (relation + slot values) across all deftemplates
+    // without that restriction.
     let result = state
         .session_manager
-        .with_clips_env(&session_id, |env| {
-            env.eval(&query_cmd)
-        })
+        .with_clips_env(&session_id, |env| env.eval("(facts)"))
         .map_err(ApiError::from)?;
 
-    // Parse result into list of facts
-    // For now, just split by lines and filter empty
+    // Parse result into list of facts, one per line. Drop the trailing
+    // "For a total of N facts." summary line `(facts)` appends — it isn't a
+    // fact.
     let matches: Vec<String> = result
         .lines()
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("For a total of"))
         .map(|s| s.to_string())
         .collect();
 

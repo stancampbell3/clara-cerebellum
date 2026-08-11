@@ -9,16 +9,9 @@
 ;;; Sessions that want (ruminate ...) available load this file explicitly via
 ;;; the existing ClipsLoadRules operation.
 
-;;; (ruminate ?query-str) → JSON response string from Edgequake (hybrid mode).
-(deffunction ruminate (?query-str)
-  (ruminate-mode ?query-str "hybrid"))
-
-;;; (ruminate-with-context ?query-str ?context-str) → JSON response string.
-(deffunction ruminate-with-context (?query-str ?context-str)
-  (bind ?payload
-    (str-cat "{\"tool\":\"edgequake\",\"arguments\":{\"operation\":\"query\",\"query\":\""
-             ?query-str "\",\"context\":\"" ?context-str "\",\"mode\":\"hybrid\"}}"))
-  (clara-evaluate ?payload))
+;;; Deffunctions are defined bottom-up: CLIPS requires a callee to already be
+;;; built before the caller references it (no forward references), so loading
+;;; this file top-to-bottom in one shot only builds if callees come first.
 
 ;;; (ruminate-mode ?query-str ?mode-str) → JSON response string.
 ;;;   ?mode-str is one of: "naive", "local", "global", "hybrid", "mix".
@@ -27,3 +20,14 @@
     (str-cat "{\"tool\":\"edgequake\",\"arguments\":{\"operation\":\"query\",\"query\":\""
              ?query-str "\",\"mode\":\"" ?mode-str "\"}}"))
   (clara-evaluate ?payload))
+
+;;; (ruminate-with-context ?query-str ?context-str) → JSON response string.
+(deffunction ruminate-with-context (?query-str ?context-str)
+  (bind ?payload
+    (str-cat "{\"tool\":\"edgequake\",\"arguments\":{\"operation\":\"query\",\"query\":\""
+             ?query-str "\",\"context\":\"" ?context-str "\",\"mode\":\"hybrid\"}}"))
+  (clara-evaluate ?payload))
+
+;;; (ruminate ?query-str) → JSON response string from Edgequake (hybrid mode).
+(deffunction ruminate (?query-str)
+  (ruminate-mode ?query-str "hybrid"))

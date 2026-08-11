@@ -31,7 +31,11 @@ dict_to_json(Dict, Json) :-
 classify_text(Text, Result) :-
     dict_to_json(_{tool: classify, arguments: _{text: Text}}, Json),
     clara_evaluate(Json, Raw),
-    atom_json_dict(Raw, Dict, []),
+    % value_string_as(atom): atom_json_dict/3 defaults to decoding JSON
+    % strings as SWI strings, which never unify with the bare atom `error`
+    % below (confirmed live: the unqualified [] form silently never detects
+    % errors). Decoding as atoms makes the get_dict/3 comparison work.
+    atom_json_dict(Raw, Dict, [value_string_as(atom)]),
     ( get_dict(status, Dict, error) ->
         format(user_error, "classify tool error: ~w~n", [Dict.message]),
         fail
@@ -44,7 +48,7 @@ classify_text(Text, Result) :-
 classify_text_k(Text, K, Result) :-
     dict_to_json(_{tool: classify, arguments: _{text: Text, k: K}}, Json),
     clara_evaluate(Json, Raw),
-    atom_json_dict(Raw, Dict, []),
+    atom_json_dict(Raw, Dict, [value_string_as(atom)]),
     ( get_dict(status, Dict, error) ->
         format(user_error, "classify tool error: ~w~n", [Dict.message]),
         fail

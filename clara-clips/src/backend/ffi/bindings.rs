@@ -104,6 +104,15 @@ extern "C" {
     /// Handles defglobal, deftemplate, deffunction, defrule, etc.
     /// Returns BuildError enum: 0 = BE_NO_ERROR (success), non-zero = failure.
     pub fn Build(env: *mut Environment, build_string: *const c_char) -> c_int;
+
+    /// Run the agenda for up to `run_limit` rule firings (-1 = unlimited).
+    /// Returns the number of rules that fired.
+    ///
+    /// The CLIPS-language `(run)` function is declared with a void return
+    /// type (see `RunCommand` in engine.c, which calls this and discards the
+    /// result) — `Eval(env, "(run)", ...)` can never recover a fire count.
+    /// This binds the underlying `Run()` C API function directly instead.
+    pub fn Run(env: *mut Environment, run_limit: i64) -> i64;
 }
 
 #[cfg(test)]
