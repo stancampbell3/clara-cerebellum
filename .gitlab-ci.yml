@@ -1,0 +1,32 @@
+stages:
+  - test
+
+variables:
+  CARGO_HOME: "${CI_PROJECT_DIR}/.cargo"
+
+cargo-test:
+  stage: test
+  image: rust:latest
+  cache:
+    key: cargo-cache
+    paths:
+      - .cargo/
+      - target/
+  script:
+    - cargo test --workspace
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "merge_request_event"'
+
+cargo-clippy:
+  stage: test
+  image: rust:latest
+  cache:
+    key: cargo-cache
+    paths:
+      - .cargo/
+      - target/
+  script:
+    - rustup component add clippy
+    - cargo clippy --workspace --all-targets
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "merge_request_event"'

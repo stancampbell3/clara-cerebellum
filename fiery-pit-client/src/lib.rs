@@ -914,7 +914,10 @@ mod tests {
 
     #[test]
     fn test_from_env_no_key_when_unset() {
-        std::env::remove_var("FIERYPIT_SERVICE_KEY");
+        // `new()` never reads env vars, so no env setup/teardown is needed here.
+        // (Previously this called env::remove_var("FIERYPIT_SERVICE_KEY"), which
+        // did nothing for this test but raced with test_from_env_reads_service_key
+        // since cargo test runs tests in parallel within a process.)
         let client = FieryPitClient::new("http://localhost:6666");
         assert!(client.service_key.is_none());
     }
