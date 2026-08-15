@@ -27,6 +27,45 @@
 (deffunction coire-session ()
   ?*coire-session-id*)
 
+;;; ── Ritual identity (read-only current-Ritual context) ──────────────────────
+;;;
+;;; Distinct from ?*coire-session-id* above (the local Coire mailbox's session
+;;; UUID, always present) and from coire-topic-*'s ambient Dis domain (used
+;;; for ad hoc topic naming regardless of any Ritual). These four globals
+;;; surface the identity of the Ritual this deduction has actually joined —
+;;; set once by CycleController::with_ritual via
+;;; DeductionSession::seed_ritual_context, and re-injected automatically
+;;; after every (reset), the same way ?*coire-session-id* already is.
+;;;
+;;; A deduction that never joins a Ritual (ad hoc topics, or either REPL)
+;;; never has these bound: they stay at their defaults below — empty string,
+;;; or an empty multifield for participants.
+
+(defglobal ?*ritual-id* = "")
+(defglobal ?*ritual-performance-id* = "")
+(defglobal ?*ritual-dis-domain* = "")
+(defglobal ?*ritual-participants* = (create$))
+
+;;; (ritual-id) → string: this deduction's joined Ritual UUID, or "" if none.
+(deffunction ritual-id ()
+  ?*ritual-id*)
+
+;;; (ritual-performance-id) → string: this deduction's own Performance UUID
+;;;   within the joined Ritual, or "" if none.
+(deffunction ritual-performance-id ()
+  ?*ritual-performance-id*)
+
+;;; (ritual-dis-domain) → string: the joined Ritual's Dis domain, or "" if none.
+(deffunction ritual-dis-domain ()
+  ?*ritual-dis-domain*)
+
+;;; (ritual-participants) → multifield: the joined Ritual's participant
+;;;   roster (as declared in RitualConfig at creation, not the live join
+;;;   map) — an empty multifield if not part of a Ritual, or if the Ritual
+;;;   was created with no participants.
+(deffunction ritual-participants ()
+  ?*ritual-participants*)
+
 ;;; ── Incoming event template ─────────────────────────────────────────────────
 
 ;;; Template for events dispatched by consume_coire_events() when the event
@@ -136,6 +175,65 @@
   (coire-emit ?*prolog-session-id*
               "evaluator/squawk"
               (str-cat ?body ?sep "\"_caws\":" ?caws "}")))
+
+;;; ── coire-topic-*: ad hoc, non-Ritual Kafka topics ──────────────────────────
+;;;
+;;; Unlike caws-offer/caws-squawk above (addressed traffic on a Ritual's
+;;; single Kafka topic, relayed via the paired Prolog engine), coire-topic-*
+;;; talks directly to clara_ritual's global KafkaBridge singleton — freeform
+;;; topics named `{dis_domain}.coire.{subject-path}`, independent of any
+;;; joined Ritual. Injected into the deduction process, prolog-repl, and
+;;; clips-repl alike by clara_ritual::init_global at startup. A research
+;;; agent can create a topic, publish/poll on it, and let other agents
+;;; discover it later via (coire-topic-list) — no prior coordination
+;;; required.
+;;;
+;;; Low-level UDFs (ritual-topic-create/list/delete/publish/poll/poll-from)
+;;; are registered in userfunctions.c, alongside coire-emit/coire-poll/etc.
+;;; CLIPS cannot parse JSON natively (see "Notes on consumption" below), so
+;;; coire-topic-list and coire-topic-poll(-from) return raw JSON text, same
+;;; as (coire-poll ...) already does — write custom string parsing (or use
+;;; the Rust API) if you need structured access.
+
+;;; (coire-topic-create ?subject-path) → string: "ok" or {"error":"..."}
+;;;   Ensure an ad hoc topic exists (1 partition, replication factor 1).
+;;;   Idempotent — safe to call every time before publishing.
+(deffunction coire-topic-create (?subject-path)
+  (ritual-topic-create ?subject-path))
+
+;;; (coire-topic-list) → string: JSON array of subject-path strings, e.g.
+;;;   ["research.edge-detection","scratch"].
+(deffunction coire-topic-list ()
+  (ritual-topic-list))
+
+;;; (coire-topic-delete ?subject-path) → string: "ok" or {"error":"..."}
+;;;   Deleting a topic that doesn't exist is not an error.
+(deffunction coire-topic-delete (?subject-path)
+  (ritual-topic-delete ?subject-path))
+
+;;; (coire-topic-publish ?subject-path ?payload-json ?options-json)
+;;;   Publish a JSON payload to an ad hoc topic. ?payload-json must be a
+;;;   full JSON object, e.g. "{\"hello\":\"world\"}". ?options-json may be
+;;;   "" for defaults (label "event", ttl 60s, no routing), or a JSON object
+;;;   with any of label, ttl_ms, target_node_id, source_node_id,
+;;;   correlation_id, tags — e.g. "{\"label\":\"clips_fire\"}". Returns
+;;;   {"tephra_id":"..."} or {"error":"..."}.
+(deffunction coire-topic-publish (?subject-path ?payload-json ?options-json)
+  (ritual-topic-publish ?subject-path ?payload-json ?options-json))
+
+;;; (coire-topic-poll ?subject-path) → string: JSON array of envelopes.
+;;;   Auto-advancing cursor tracked per (this session's coire-session,
+;;;   ?subject-path) — repeated calls act like a stream, with no offset
+;;;   bookkeeping required of the caller.
+(deffunction coire-topic-poll (?subject-path)
+  (ritual-topic-poll (coire-session) ?subject-path))
+
+;;; (coire-topic-poll-from ?subject-path ?since-offset) → string:
+;;;   {"envelopes":[...],"next_offset":N}. Manual/explicit-offset variant —
+;;;   no cursor is tracked; pass next_offset back in as ?since-offset on the
+;;;   next call to avoid re-delivery.
+(deffunction coire-topic-poll-from (?subject-path ?since-offset)
+  (ritual-topic-poll-from ?subject-path ?since-offset))
 
 ;;; ── Notes on consumption ─────────────────────────────────────────────────────
 ;;;

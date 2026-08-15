@@ -63,6 +63,15 @@ extern char* rust_coire_mark(const char* event_id);
 extern long long rust_coire_count(const char* session);
 extern void rust_coire_free_string(char* s);
 
+/* External declarations for ad hoc Coire topic (clara-ritual) FFI callbacks */
+extern char* rust_ritual_topic_create(const char* subject_path);
+extern char* rust_ritual_topic_list(void);
+extern char* rust_ritual_topic_delete(const char* subject_path);
+extern char* rust_ritual_topic_publish(const char* subject_path, const char* payload_json, const char* options_json);
+extern char* rust_ritual_topic_poll(const char* consumer_id, const char* subject_path);
+extern char* rust_ritual_topic_poll_from(const char* subject_path, const char* since_offset);
+extern void rust_ritual_free_string(char* s);
+
 /*********************************************************/
 /* ClaraEvaluateWrapper: C wrapper for Rust callback     */
 /* This function is registered with CLIPS and calls the  */
@@ -178,6 +187,135 @@ static void CoireCountWrapper(
   }
 
 /*********************************************************/
+/* RitualTopicCreateWrapper: (ritual-topic-create "path") */
+/* Returns string: "ok" or error JSON                    */
+/*********************************************************/
+static void RitualTopicCreateWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argSubject;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argSubject))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing subject_path\"}"); return; }
+
+   char* result = rust_ritual_topic_create(argSubject.lexemeValue->contents);
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_ritual_free_string(result);
+  }
+
+/*********************************************************/
+/* RitualTopicListWrapper: (ritual-topic-list)            */
+/* Returns string: JSON array of subject-path strings     */
+/*********************************************************/
+static void RitualTopicListWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   (void) context;
+   char* result = rust_ritual_topic_list();
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_ritual_free_string(result);
+  }
+
+/*********************************************************/
+/* RitualTopicDeleteWrapper: (ritual-topic-delete "path") */
+/* Returns string: "ok" or error JSON                    */
+/*********************************************************/
+static void RitualTopicDeleteWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argSubject;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argSubject))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing subject_path\"}"); return; }
+
+   char* result = rust_ritual_topic_delete(argSubject.lexemeValue->contents);
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_ritual_free_string(result);
+  }
+
+/*****************************************************************/
+/* RitualTopicPublishWrapper:                                    */
+/*   (ritual-topic-publish "path" "{payload}" "{options}"|"")     */
+/* Returns string: {"tephra_id":"..."} or error JSON              */
+/*****************************************************************/
+static void RitualTopicPublishWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argSubject, argPayload, argOptions;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argSubject))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing subject_path\"}"); return; }
+   if (! UDFNextArgument(context, LEXEME_BITS, &argPayload))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing payload_json\"}"); return; }
+   if (! UDFNextArgument(context, LEXEME_BITS, &argOptions))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing options_json\"}"); return; }
+
+   char* result = rust_ritual_topic_publish(
+     argSubject.lexemeValue->contents,
+     argPayload.lexemeValue->contents,
+     argOptions.lexemeValue->contents);
+
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_ritual_free_string(result);
+  }
+
+/*********************************************************/
+/* RitualTopicPollWrapper: (ritual-topic-poll "consumer" "path") */
+/* Returns string: JSON array of envelopes                */
+/*********************************************************/
+static void RitualTopicPollWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argConsumer, argSubject;
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argConsumer))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing consumer_id\"}"); return; }
+   if (! UDFNextArgument(context, LEXEME_BITS, &argSubject))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing subject_path\"}"); return; }
+
+   char* result = rust_ritual_topic_poll(
+     argConsumer.lexemeValue->contents,
+     argSubject.lexemeValue->contents);
+
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_ritual_free_string(result);
+  }
+
+/*******************************************************************/
+/* RitualTopicPollFromWrapper: (ritual-topic-poll-from "path" 0)   */
+/* Returns string: {"envelopes":[...],"next_offset":N}             */
+/*******************************************************************/
+static void RitualTopicPollFromWrapper(
+  Environment *env,
+  UDFContext *context,
+  UDFValue *returnValue)
+  {
+   UDFValue argSubject, argOffset;
+   char offsetBuf[32];
+
+   if (! UDFFirstArgument(context, LEXEME_BITS, &argSubject))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing subject_path\"}"); return; }
+   if (! UDFNextArgument(context, INTEGER_BIT, &argOffset))
+     { returnValue->lexemeValue = CreateString(env, "{\"error\":\"missing since_offset\"}"); return; }
+
+   snprintf(offsetBuf, sizeof(offsetBuf), "%lld", (long long) argOffset.integerValue->contents);
+
+   char* result = rust_ritual_topic_poll_from(argSubject.lexemeValue->contents, offsetBuf);
+   returnValue->lexemeValue = CreateString(env, result);
+   rust_ritual_free_string(result);
+  }
+
+/*********************************************************/
 /* UserFunctions: Informs the expert system environment  */
 /*   of any user defined functions. In the default case, */
 /*   there are no user defined functions. To define      */
@@ -198,4 +336,12 @@ void UserFunctions(
    AddUDF(env, "coire-poll", "s", 1, 1, "s", CoirePollWrapper, "CoirePollWrapper", NULL);
    AddUDF(env, "coire-mark", "s", 1, 1, "s", CoireMarkWrapper, "CoireMarkWrapper", NULL);
    AddUDF(env, "coire-count", "l", 1, 1, "s", CoireCountWrapper, "CoireCountWrapper", NULL);
+
+   /* Register ad hoc Coire topic (clara-ritual) functions */
+   AddUDF(env, "ritual-topic-create", "s", 1, 1, "s", RitualTopicCreateWrapper, "RitualTopicCreateWrapper", NULL);
+   AddUDF(env, "ritual-topic-list", "s", 0, 0, "", RitualTopicListWrapper, "RitualTopicListWrapper", NULL);
+   AddUDF(env, "ritual-topic-delete", "s", 1, 1, "s", RitualTopicDeleteWrapper, "RitualTopicDeleteWrapper", NULL);
+   AddUDF(env, "ritual-topic-publish", "s", 3, 3, "s;s;s", RitualTopicPublishWrapper, "RitualTopicPublishWrapper", NULL);
+   AddUDF(env, "ritual-topic-poll", "s", 2, 2, "s;s", RitualTopicPollWrapper, "RitualTopicPollWrapper", NULL);
+   AddUDF(env, "ritual-topic-poll-from", "s", 2, 2, "s;l", RitualTopicPollFromWrapper, "RitualTopicPollFromWrapper", NULL);
   }

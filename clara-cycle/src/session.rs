@@ -22,6 +22,28 @@ pub struct DeductionSession {
     pub clips_id:  Uuid,
     /// Live deduction tableau: tracks predicate truth values and bindings.
     pub tableau:   Dagda,
+    /// Set by `seed_ritual_context` when this deduction has joined a Ritual.
+    /// Kept so `reset_clips_wm` can re-inject the CLIPS globals after any
+    /// `(reset)`, the same way it already does for the session UUIDs.
+    ritual_context: Option<RitualContext>,
+}
+
+#[derive(Clone)]
+struct RitualContext {
+    ritual_id:      Uuid,
+    performance_id: Uuid,
+    dis_domain:     String,
+    participants:   Vec<String>,
+}
+
+/// Escape a string for embedding in a single-quoted Prolog atom literal.
+fn prolog_atom_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// Escape a string for embedding in a double-quoted CLIPS string literal.
+fn clips_string_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 impl DeductionSession {
@@ -38,7 +60,7 @@ impl DeductionSession {
         // directly to the Prolog Coire mailbox (e.g. evaluator/ ritual requests).
         clips.eval(&format!("(bind ?*prolog-session-id* \"{}\")", prolog_id))
             .map_err(CycleError::SessionCreationFailed)?;
-        Ok(Self { prolog, clips, prolog_id, clips_id, tableau })
+        Ok(Self { prolog, clips, prolog_id, clips_id, tableau, ritual_context: None })
     }
 
     /// Load Prolog clauses into the Prolog engine and populate the tableau.
@@ -95,6 +117,84 @@ impl DeductionSession {
             .map_err(CycleError::Clips)?;
         self.clips
             .eval(&format!("(bind ?*coire-session-id* \"{}\")", self.clips_id))
+            .map_err(CycleError::Clips)?;
+        if self.ritual_context.is_some() {
+            self.inject_ritual_context_clips()?;
+        }
+        Ok(())
+    }
+
+    /// Seed both engines with the identity of the Ritual this deduction has
+    /// joined, so authored rule/goal code can read `ritual_id/1`,
+    /// `ritual_performance_id/1`, `ritual_dis_domain/1`, and
+    /// `ritual_participants/1` (CLIPS: `(ritual-id)` etc.) — read-only
+    /// context useful for structuring outbound messages/topics. A deduction
+    /// that never joins a Ritual (including ad hoc, non-Ritual topics) never
+    /// calls this: `ritual_id/1` then simply fails, and the CLIPS globals
+    /// stay at their `the_coire.clp` defaults (empty string / empty
+    /// multifield).
+    pub fn seed_ritual_context(
+        &mut self,
+        ritual_id:      Uuid,
+        performance_id: Uuid,
+        dis_domain:     &str,
+        participants:   &[String],
+    ) -> Result<(), CycleError> {
+        self.ritual_context = Some(RitualContext {
+            ritual_id,
+            performance_id,
+            dis_domain:   dis_domain.to_string(),
+            participants: participants.to_vec(),
+        });
+        self.inject_ritual_context_prolog()?;
+        self.inject_ritual_context_clips()?;
+        Ok(())
+    }
+
+    fn inject_ritual_context_prolog(&mut self) -> Result<(), CycleError> {
+        let ctx = self.ritual_context.as_ref().expect("ritual_context set by caller");
+        let participants_list = ctx.participants.iter()
+            .map(|p| format!("'{}'", prolog_atom_escape(p)))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.prolog
+            .assertz(&format!("the_coire:ritual_id_fact('{}')", ctx.ritual_id))
+            .map_err(CycleError::Prolog)?;
+        self.prolog
+            .assertz(&format!("the_coire:ritual_performance_id_fact('{}')", ctx.performance_id))
+            .map_err(CycleError::Prolog)?;
+        self.prolog
+            .assertz(&format!(
+                "the_coire:ritual_dis_domain_fact('{}')",
+                prolog_atom_escape(&ctx.dis_domain)
+            ))
+            .map_err(CycleError::Prolog)?;
+        self.prolog
+            .assertz(&format!("the_coire:ritual_participants_fact([{participants_list}])"))
+            .map_err(CycleError::Prolog)?;
+        Ok(())
+    }
+
+    fn inject_ritual_context_clips(&mut self) -> Result<(), CycleError> {
+        let ctx = self.ritual_context.as_ref().expect("ritual_context set by caller");
+        let participants_multifield = ctx.participants.iter()
+            .map(|p| format!("\"{}\"", clips_string_escape(p)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.clips
+            .eval(&format!("(bind ?*ritual-id* \"{}\")", ctx.ritual_id))
+            .map_err(CycleError::Clips)?;
+        self.clips
+            .eval(&format!("(bind ?*ritual-performance-id* \"{}\")", ctx.performance_id))
+            .map_err(CycleError::Clips)?;
+        self.clips
+            .eval(&format!(
+                "(bind ?*ritual-dis-domain* \"{}\")",
+                clips_string_escape(&ctx.dis_domain)
+            ))
+            .map_err(CycleError::Clips)?;
+        self.clips
+            .eval(&format!("(bind ?*ritual-participants* (create$ {participants_multifield}))"))
             .map_err(CycleError::Clips)?;
         Ok(())
     }

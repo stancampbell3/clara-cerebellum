@@ -92,6 +92,18 @@ fn main() {
     println!("Initializing Coire...");
     clara_coire::init_global().expect("Failed to initialize Coire");
 
+    // Initialize the global clara-ritual KafkaBridge (ad hoc coire_topic_*
+    // predicates and, when KAFKA_BOOTSTRAP is set, real cross-process pub/sub).
+    // Falls back to an in-process InMemoryBroker — fine for this REPL alone,
+    // but invisible to any other process.
+    println!("Initializing ritual bridge...");
+    let ritual_bridge =
+        clara_ritual::bridge_from_env().expect("Failed to construct KafkaBridge");
+    let dis_domain = clara_ritual::dis_domain_from_env();
+    clara_ritual::init_global(ritual_bridge, dis_domain.clone())
+        .expect("Failed to initialize ritual bridge");
+    println!("Dis domain: {}", dis_domain);
+
     // Initialize the global ToolboxManager
     println!("Initializing ToolboxManager...");
     ToolboxManager::init_global();

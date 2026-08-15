@@ -16,6 +16,10 @@ pub struct RitualHandle {
     pub ritual_id:      Uuid,
     pub performance_id: Uuid,
     pub dis_domain:     String,
+    /// The Ritual's participant roster, as declared in `RitualConfig` at
+    /// creation time (`RitualRegistry::create`). Not the live join map —
+    /// just the addresses/identifiers the Ritual was configured with.
+    pub participants:   Vec<String>,
     broker:             Arc<dyn KafkaBridge>,
     topic:              String,
     /// Offset of the next unread message on the Ritual topic.
@@ -28,6 +32,7 @@ impl RitualHandle {
         ritual_id:      Uuid,
         performance_id: Uuid,
         dis_domain:     String,
+        participants:   Vec<String>,
         broker:         Arc<dyn KafkaBridge>,
         topic:          String,
         initial_offset: i64,
@@ -36,6 +41,7 @@ impl RitualHandle {
             ritual_id,
             performance_id,
             dis_domain,
+            participants,
             broker,
             topic,
             consumer_offset: Arc::new(AtomicI64::new(initial_offset)),
@@ -116,6 +122,7 @@ impl Clone for RitualHandle {
             ritual_id:       self.ritual_id,
             performance_id:  self.performance_id,
             dis_domain:      self.dis_domain.clone(),
+            participants:    self.participants.clone(),
             broker:          self.broker.clone(),
             topic:           self.topic.clone(),
             consumer_offset: self.consumer_offset.clone(),

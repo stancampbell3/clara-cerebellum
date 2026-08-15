@@ -66,11 +66,27 @@ These handle `assert`, `retract`, and `goal` types automatically; other types fa
 
 `coire_consume/0` polls the inbound mailbox for events from `"relay-*"` origins (self-emitted `"prolog"` events stay local for CLIPS relay forwarding). Events are dispatched via `coire_dispatch_event/1`.
 
+### Ad hoc topics (`coire_topic_*`)
+
+Everything above operates on the local, per-session `Coire` mailbox (an in-memory/DuckDB store — no Kafka involved) or on a single Ritual's addressed traffic via `caws_offer`/`caws_squawk`/`caws_emit`, which requires a `RitualHandle` joined by the cycle controller. `coire_topic_*` is a third, independent path: it talks directly to `clara-ritual`'s global `KafkaBridge` singleton, publishing to and polling freeform topics named `{dis_domain}.coire.{SubjectPath}` — segregated from Ritual topics (`{dis_domain}.ritual.{uuid}`) by the `coire` designation. No Ritual, registry entry, or joined participant is required.
+
+| Predicate | Purpose |
+|-----------|---------|
+| `coire_topic_create(SubjectPath)` | Ensure an ad hoc topic exists (idempotent) |
+| `coire_topic_list(-Topics)` | List every ad hoc topic's subject path in the ambient Dis domain |
+| `coire_topic_delete(SubjectPath)` | Delete an ad hoc topic (not an error if absent) |
+| `coire_topic_publish/2,3` | Publish a JSON payload; the 3-arg form takes `label`/`ttl_ms`/routing options |
+| `coire_topic_poll(SubjectPath, -Envelopes)` | Poll with an auto-advancing cursor, keyed per `(coire_session, SubjectPath)` |
+| `coire_topic_poll/4` | Poll from an explicit offset — no cursor tracked |
+
+This is what makes ad hoc, cross-agent conversation possible outside a Ritual: a research agent can `coire_topic_create/1` a topic, `coire_topic_publish/2` onto it, and any other agent (Prolog, CLIPS, or an external consumer) can `coire_topic_list/1` to discover it and `coire_topic_poll/2` to read it, with no prior coordination. The published `TephraEnvelope` stamps `ritual_id`/`performance_id` as nil UUIDs, signaling "no Ritual identity" to consumers written for both kinds of traffic. See `clara-ritual/src/adhoc.rs` for the underlying (unit-tested) Rust logic shared with the CLIPS side, and `clara-ritual/src/lib.rs` for `init_global`/`global` — the singleton injected into the deduction process, `prolog-repl`, and `clips-repl` alike.
+
 ## Architecture Notes
 
 - **Thread-local vs Dynamic**: State predicates use thread_local to avoid cross-engine contamination; hooks remain dynamic as authored definitions
 - **Rust Integration**: All publishes go through `coire_emit(Session, 'evaluator/*', Json)` which the Rust relay forwards appropriately
 - **Cycle Controller**: The cycle controller's pending_offers entry blocks convergence until correlated Hohi/Tabu or timeout arrives
+- **Coire vs clara-ritual**: "Coire" as used by this module is the local, in-memory/DuckDB mailbox (`clara-coire`) — Kafka itself lives one layer up, in the separate `clara-ritual` crate, reached only via `caws_*` (Ritual-scoped) or `coire_topic_*` (ad hoc) predicates, never directly
 
 ## Summary
 
@@ -80,5 +96,6 @@ The Coire module provides a robust distributed messaging layer for Prolog engine
 3. Auto-pipe and auto-tee forwarding chains
 4. Idempotent operations through memoization caches
 5. Extensible user hooks for custom handling
+6. Ad hoc, non-Ritual Kafka topics (`coire_topic_*`) for freeform cross-agent conversation
 
 The design prioritizes correctness (no stale replies leaking across runs) while enabling flexible event-driven architectures in heterogeneous Prolog/CLIPS environments.

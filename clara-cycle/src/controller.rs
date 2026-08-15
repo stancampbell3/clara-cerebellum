@@ -244,9 +244,21 @@ impl CycleController {
 
     /// Attach a [`RitualHandle`] so that `evaluator_pass` will publish
     /// outbound evaluator-tagged Coire events and ingest incoming Tephras
-    /// from peer evaluators.
+    /// from peer evaluators. Also seeds the Ritual's identity into both
+    /// engines (`ritual_id/1`, `ritual_performance_id/1`,
+    /// `ritual_dis_domain/1`, `ritual_participants/1` in Prolog;
+    /// `(ritual-id)` etc. in CLIPS) so authored rule/goal code can read it —
+    /// e.g. to structure outbound `caws_*`/`coire_topic_*` messages/topics.
     #[cfg(feature = "ritual")]
     pub fn with_ritual(mut self, handle: clara_ritual::RitualHandle) -> Self {
+        if let Err(e) = self.session.seed_ritual_context(
+            handle.ritual_id,
+            handle.performance_id,
+            &handle.dis_domain,
+            &handle.participants,
+        ) {
+            log::warn!("with_ritual: failed to seed ritual context into Prolog/CLIPS: {e}");
+        }
         self.ritual_handle = Some(handle);
         self
     }
@@ -1509,6 +1521,66 @@ mod ritual_tests {
     ) -> CycleController {
         CycleController::new(session, 10, None, Arc::new(AtomicBool::new(false)))
             .with_ritual(handle)
+    }
+
+    // ── with_ritual: ritual context surfaced to Prolog/CLIPS ────────────────────
+
+    #[test]
+    fn with_ritual_seeds_ritual_context_into_prolog_and_clips() {
+        setup_coire();
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry.create(RitualConfig {
+            name: "context-test".into(),
+            participants: vec!["http://fp1:8080".into(), "http://fp2:8080".into()],
+        }).unwrap();
+        let handle = registry.join(ritual_id, None).unwrap();
+        let performance_id = handle.performance_id;
+
+        let session = DeductionSession::new().unwrap();
+        let mut ctrl = make_ctrl(session, handle);
+
+        let bindings = ctrl.session.prolog.query_with_bindings("ritual_id(Id)").unwrap();
+        assert!(bindings.contains(&ritual_id.to_string()),
+            "ritual_id/1 should bind to the joined ritual's id: {bindings}");
+
+        let perf = ctrl.session.prolog.query_with_bindings("ritual_performance_id(Id)").unwrap();
+        assert!(perf.contains(&performance_id.to_string()), "got: {perf}");
+
+        let domain = ctrl.session.prolog.query_with_bindings("ritual_dis_domain(D)").unwrap();
+        assert!(domain.contains("dis.test"), "got: {domain}");
+
+        let participants = ctrl.session.prolog.query_with_bindings("ritual_participants(P)").unwrap();
+        assert!(participants.contains("fp1") && participants.contains("fp2"), "got: {participants}");
+
+        let rid = ctrl.session.clips.eval("(ritual-id)").unwrap();
+        assert!(rid.contains(&ritual_id.to_string()), "got: {rid}");
+
+        let pid = ctrl.session.clips.eval("(ritual-performance-id)").unwrap();
+        assert!(pid.contains(&performance_id.to_string()), "got: {pid}");
+
+        let clips_domain = ctrl.session.clips.eval("(ritual-dis-domain)").unwrap();
+        assert!(clips_domain.contains("dis.test"), "got: {clips_domain}");
+
+        let clips_participants = ctrl.session.clips.eval("(ritual-participants)").unwrap();
+        assert!(clips_participants.contains("fp1") && clips_participants.contains("fp2"),
+            "got: {clips_participants}");
+    }
+
+    #[test]
+    fn without_ritual_context_predicates_reflect_absence() {
+        setup_coire();
+        let mut session = DeductionSession::new().unwrap();
+
+        // Prolog: ritual_id/1 etc. fail cleanly (no fact asserted).
+        assert!(session.prolog.query_once("ritual_id(_)").is_err()
+            || session.prolog.query_with_bindings("ritual_id(_)").unwrap() == "[]");
+        let participants = session.prolog.query_with_bindings("ritual_participants(P)").unwrap();
+        assert!(participants.contains("[]") || participants.contains("\"P\":[]"), "got: {participants}");
+
+        // CLIPS: globals stay at their defglobal defaults.
+        assert_eq!(session.clips.eval("(ritual-id)").unwrap().trim(), "\"\"");
+        let clips_participants = session.clips.eval("(ritual-participants)").unwrap();
+        assert!(!clips_participants.contains("fp1"), "got: {clips_participants}");
     }
 
     // ── ingest_tephra ─────────────────────────────────────────────────────────

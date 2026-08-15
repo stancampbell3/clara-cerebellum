@@ -14,7 +14,18 @@
     caws_edge_reply/3,         % +EdgeId, +Kind, +CorrelationId
     caws_emit/4,               % +TargetNodeId, +TopicPath, +Kind, +Payload
     caws_tee/5,                % +EdgeId, +TargetNodeId, +TopicPath, +Kind, +IncomingCid
-    caws_edge_message/3        % +EdgeId, +Kind, +CorrelationId
+    caws_edge_message/3,       % +EdgeId, +Kind, +CorrelationId
+    coire_topic_create/1,      % +SubjectPath
+    coire_topic_list/1,        % -Topics
+    coire_topic_delete/1,      % +SubjectPath
+    coire_topic_publish/2,     % +SubjectPath, +Payload
+    coire_topic_publish/3,     % +SubjectPath, +Payload, +Options
+    coire_topic_poll/2,        % +SubjectPath, -Envelopes
+    coire_topic_poll/4,        % +SubjectPath, +SinceOffset, -Envelopes, -NextOffset
+    ritual_id/1,               % -RitualId
+    ritual_performance_id/1,   % -PerformanceId
+    ritual_dis_domain/1,       % -DisDomain
+    ritual_participants/1      % -Participants
 ]).
 
 :- use_module(library(http/json)).
@@ -23,6 +34,16 @@
 % SWI-Prolog engines are independent threads for thread_local storage,
 % so this is per-engine (not per-OS-thread).
 :- thread_local coire_session_id/1.
+
+% Ritual identity — asserted by Rust (DeductionSession::seed_ritual_context,
+% called from CycleController::with_ritual) only when this deduction has
+% actually joined a Ritual. Left unasserted for ad hoc/non-Ritual deductions
+% and both REPLs, so ritual_id/1 etc. simply fail rather than raising an
+% existence_error — read-only context, not settable from Prolog code.
+:- thread_local ritual_id_fact/1.             % RitualId
+:- thread_local ritual_performance_id_fact/1. % PerformanceId — this deduction's own
+:- thread_local ritual_dis_domain_fact/1.     % DisDomain
+:- thread_local ritual_participants_fact/1.   % Participants — RitualConfig's roster, not the live join map
 
 % Per-engine caws state. Offers are memoized by (Target, Topic, Payload) so
 % re-running a goal (the cycle re-queries the root goal when mailboxes drain)
@@ -400,4 +421,121 @@ caws_edge_message(EdgeId, Kind, Cid) :-
         assertz(user:edge_message(EdgeId, Kind, Payload)),
         ignore(catch(user:on_edge_message(EdgeId, Kind, Payload), _, true))
     ;   true
+    ).
+
+% ── coire_topic_*: ad hoc, non-Ritual Kafka topics ───────────────────────────
+%
+% Unlike caws_offer/caws_squawk/caws_emit above (addressed traffic on a
+% Ritual's single Kafka topic, requiring a joined RitualHandle), coire_topic_*
+% talks directly to clara_ritual's global KafkaBridge singleton — freeform
+% topics named `{dis_domain}.coire.{SubjectPath}`, independent of any joined
+% Ritual. Injected into the deduction process, prolog-repl, and clips-repl
+% alike by clara_ritual::init_global/2 at startup (see clara-ritual/src/lib.rs
+% and clara-ritual/src/bridge.rs). A research agent can create a topic,
+% publish/poll on it, and let other agents discover it later via
+% coire_topic_list/1 — no prior coordination required.
+
+%!  coire_topic_create(+SubjectPath)
+%
+%   Ensure an ad hoc topic exists (1 partition, replication factor 1).
+%   Idempotent — safe to call every time before publishing.
+coire_topic_create(SubjectPath) :- ritual_topic_create(SubjectPath).
+
+%!  coire_topic_list(-Topics)
+%
+%   List the subject paths of every ad hoc topic in the ambient Dis domain.
+coire_topic_list(Topics) :-
+    ritual_topic_list(Json),
+    open_string(Json, Stream),
+    call_cleanup(json_read_dict(Stream, Topics, []), close(Stream)).
+
+%!  coire_topic_delete(+SubjectPath)
+%
+%   Delete an ad hoc topic. Deleting one that doesn't exist is not an error.
+coire_topic_delete(SubjectPath) :- ritual_topic_delete(SubjectPath).
+
+%!  coire_topic_publish(+SubjectPath, +Payload)
+%!  coire_topic_publish(+SubjectPath, +Payload, +Options)
+%
+%   Publish a JSON body to an ad hoc topic. Payload is a dict or
+%   json([K=V,...]) (see caws_payload_dict/2), so it round-trips as genuine
+%   JSON for non-Prolog consumers. Options is a dict/json(...) with any of
+%   label, ttl_ms, target_node_id, source_node_id, correlation_id, tags —
+%   defaults are label="event", ttl_ms=60000, no routing. Returns nothing;
+%   use caws_uuid/1-style correlation via Options.correlation_id if a reply
+%   needs to find its way back.
+coire_topic_publish(SubjectPath, Payload) :-
+    coire_topic_publish(SubjectPath, Payload, _{}).
+coire_topic_publish(SubjectPath, Payload, Options) :-
+    caws_payload_dict(Payload, PayloadDict),
+    atom_json_dict(PayloadJson, PayloadDict, []),
+    caws_payload_dict(Options, OptionsDict),
+    dict_pairs(OptionsDict, _, OptionPairs),
+    (   OptionPairs == []
+    ->  OptionsJson = ''
+    ;   atom_json_dict(OptionsJson, OptionsDict, [])
+    ),
+    ritual_topic_publish(SubjectPath, PayloadJson, OptionsJson, _TephraId).
+
+%!  coire_topic_poll(+SubjectPath, -Envelopes)
+%
+%   Poll an ad hoc topic using an auto-advancing cursor tracked per this
+%   engine's Coire session id — repeated calls act like a stream, with no
+%   offset bookkeeping required of the caller.
+coire_topic_poll(SubjectPath, Envelopes) :-
+    coire_session(Session),
+    ritual_topic_poll(Session, SubjectPath, Json),
+    open_string(Json, Stream),
+    call_cleanup(json_read_dict(Stream, Envelopes, []), close(Stream)).
+
+%!  coire_topic_poll(+SubjectPath, +SinceOffset, -Envelopes, -NextOffset)
+%
+%   Explicit-offset variant — no cursor is tracked. Pass NextOffset back in
+%   as SinceOffset on the next call to avoid re-delivery.
+coire_topic_poll(SubjectPath, SinceOffset, Envelopes, NextOffset) :-
+    ritual_topic_poll_from(SubjectPath, SinceOffset, Json, NextOffset),
+    open_string(Json, Stream),
+    call_cleanup(json_read_dict(Stream, Envelopes, []), close(Stream)).
+
+% ── ritual_*: read-only current-Ritual context ───────────────────────────────
+%
+% Distinct from coire_session/1 (the local Coire mailbox's session UUID,
+% always present) and from coire_topic_*'s ambient Dis domain (used for ad
+% hoc topic naming regardless of any Ritual). These four predicates surface
+% the identity of the Ritual this deduction has actually joined — set once by
+% CycleController::with_ritual via DeductionSession::seed_ritual_context, and
+% re-seeded automatically after any CLIPS (reset). Useful for an evaluator
+% deciding how to address a caws_offer/caws_squawk or name a coire_topic_*
+% path relative to its own Ritual/performance.
+%
+% A deduction that never joins a Ritual (ad hoc topics, or either REPL) never
+% has these facts asserted: ritual_id/1, ritual_performance_id/1, and
+% ritual_dis_domain/1 simply fail; ritual_participants/1 still succeeds,
+% unifying with [] (no Ritual, so no participants to report).
+
+%!  ritual_id(-RitualId)
+%
+%   This deduction's joined Ritual UUID. Fails if not part of a Ritual.
+ritual_id(Id) :- ritual_id_fact(Id).
+
+%!  ritual_performance_id(-PerformanceId)
+%
+%   This deduction's own Performance UUID within the joined Ritual. Fails
+%   if not part of a Ritual.
+ritual_performance_id(Id) :- ritual_performance_id_fact(Id).
+
+%!  ritual_dis_domain(-DisDomain)
+%
+%   The joined Ritual's Dis domain. Fails if not part of a Ritual.
+ritual_dis_domain(Domain) :- ritual_dis_domain_fact(Domain).
+
+%!  ritual_participants(-Participants)
+%
+%   The joined Ritual's participant roster (as declared in RitualConfig at
+%   creation, not the live join map) — a list of atoms. [] if not part of a
+%   Ritual, or if the Ritual was created with no participants.
+ritual_participants(Participants) :-
+    (   ritual_participants_fact(P)
+    ->  Participants = P
+    ;   Participants = []
     ).

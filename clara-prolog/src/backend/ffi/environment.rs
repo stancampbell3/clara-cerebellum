@@ -84,6 +84,7 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
         // call them again later from new(); they will just return the cached result.
         super::callbacks::register_clara_evaluate();
         super::coire_bridge::register_coire_predicates();
+        super::ritual_bridge::register_ritual_predicates();
 
         // Load the_coire.pl now that its foreign predicates are registered.
         // Must happen here (in the main-engine thread) not in a separate OnceLock

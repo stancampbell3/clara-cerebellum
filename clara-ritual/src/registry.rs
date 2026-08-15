@@ -162,6 +162,7 @@ impl RitualRegistry {
             ritual_id,
             performance_id,
             self.dis_domain.clone(),
+            ritual.config.participants.clone(),
             self.broker.clone(),
             ritual.topic.clone(),
             initial_offset,
@@ -349,6 +350,29 @@ mod tests {
         let registry  = make_registry();
         let ritual_id = registry.create(make_config("r")).unwrap();
         assert!(registry.join(ritual_id, None).is_ok());
+    }
+
+    #[test]
+    fn join_carries_config_participants_onto_handle() {
+        let registry = make_registry();
+        let config = RitualConfig {
+            name: "r".into(),
+            participants: vec!["http://fp1:8080".into(), "http://fp2:8080".into()],
+        };
+        let ritual_id = registry.create(config).unwrap();
+        let handle = registry.join(ritual_id, None).unwrap();
+        assert_eq!(
+            handle.participants,
+            vec!["http://fp1:8080".to_string(), "http://fp2:8080".to_string()]
+        );
+    }
+
+    #[test]
+    fn join_ad_hoc_config_has_empty_participants() {
+        let registry  = make_registry();
+        let ritual_id = registry.create(make_config("r")).unwrap();
+        let handle = registry.join(ritual_id, None).unwrap();
+        assert!(handle.participants.is_empty());
     }
 
     #[test]

@@ -11,12 +11,14 @@ pub mod callbacks;
 pub mod coire_bridge;
 pub mod conversion;
 pub mod environment;
+pub mod ritual_bridge;
 
 pub use bindings::*;
 pub use callbacks::register_clara_evaluate;
 pub use coire_bridge::register_coire_predicates;
 pub use conversion::*;
 pub use environment::PrologEnvironment;
+pub use ritual_bridge::register_ritual_predicates;
 
 // Re-export FFI functions from clara-toolbox for convenience
 pub use clara_toolbox::ffi::{evaluate_json_string, free_c_string};

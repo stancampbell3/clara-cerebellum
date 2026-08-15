@@ -63,6 +63,14 @@ fn main() -> std::io::Result<()> {
         Arc::new(InMemoryBroker::new())
     };
 
+    // Make the same broker reachable ad hoc, outside any formally-joined
+    // Ritual — this is what makes the coire_topic_*/coire-topic-* predicates
+    // work from Prolog and CLIPS during a deduction, independent of
+    // RitualRegistry/CycleController::with_ritual.
+    let dis_domain = config.server.dis_domain_id.clone().unwrap_or_else(|| "dis.local".to_string());
+    clara_ritual::init_global(ritual_broker.clone(), dis_domain)
+        .expect("Failed to initialize ritual bridge");
+
     // Start the async runtime and server
     actix_web::rt::System::new().block_on(async {
         start_server("0.0.0.0", 8080, ritual_broker, config).await

@@ -16,7 +16,26 @@ pub fn topic_name(dis_domain: &str, ritual_id: Uuid) -> Result<String, RitualErr
     Ok(name)
 }
 
-fn validate_topic_name(name: &str) -> Result<(), RitualError> {
+/// Build a Kafka-safe topic name for an ad hoc, non-Ritual topic.
+///
+/// Format: `{dis_domain}.coire.{subject_path}`
+///
+/// The `coire` segment is a fixed, non-ritual designation that segregates
+/// these freeform topics from Ritual topics (`{dis_domain}.ritual.{uuid}`)
+/// sharing the same Dis domain namespace. Forward slashes in both
+/// `dis_domain` and `subject_path` are replaced with dots (so a caller can
+/// write a hierarchical path like `"research/edge-detection"`), then the
+/// result is validated against the same Kafka naming constraints as
+/// [`topic_name`].
+pub fn coire_topic_name(dis_domain: &str, subject_path: &str) -> Result<String, RitualError> {
+    let domain = dis_domain.replace('/', ".");
+    let subject = subject_path.replace('/', ".");
+    let name = format!("{}.coire.{}", domain, subject);
+    validate_topic_name(&name)?;
+    Ok(name)
+}
+
+pub(crate) fn validate_topic_name(name: &str) -> Result<(), RitualError> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(RitualError::InvalidTopicName(format!(
             "topic name cannot be empty, '.', or '..': {:?}",
@@ -95,5 +114,33 @@ mod tests {
         assert!(validate_topic_name("dis.local.ritual.550e8400-e29b-41d4-a716-446655440000").is_ok());
         assert!(validate_topic_name("my_domain.ritual.abc123").is_ok());
         assert!(validate_topic_name("Dis-Node_1.ritual.xyz").is_ok());
+    }
+
+    // ── coire_topic_name ─────────────────────────────────────────────────────
+
+    #[test]
+    fn basic_coire_topic_name() {
+        let name = coire_topic_name("dis.local", "research.edge-detection").unwrap();
+        assert_eq!(name, "dis.local.coire.research.edge-detection");
+    }
+
+    #[test]
+    fn coire_topic_name_normalizes_slashes_in_both_parts() {
+        let name = coire_topic_name("dis/local/node", "research/edge-detection").unwrap();
+        assert_eq!(name, "dis.local.node.coire.research.edge-detection");
+    }
+
+    #[test]
+    fn coire_topic_name_distinct_from_ritual_topic_name() {
+        let coire = coire_topic_name("dis.local", "abc").unwrap();
+        let ritual = topic_name("dis.local", fixed()).unwrap();
+        assert!(coire.contains(".coire."));
+        assert!(ritual.contains(".ritual."));
+    }
+
+    #[test]
+    fn coire_topic_name_rejects_illegal_characters() {
+        assert!(coire_topic_name("dis.local", "bad subject").is_err());
+        assert!(coire_topic_name("dis.local", "bad@subject").is_err());
     }
 }

@@ -26,7 +26,9 @@ pub trait KafkaBridge: Send + Sync {
 
     /// Ensure the given topic exists in the broker, creating it if necessary.
     ///
-    /// On `InMemoryBroker` this is a no-op.
+    /// On `InMemoryBroker` this materializes an empty topic so it is
+    /// immediately visible to `list_topics`, even before anything is
+    /// published to it.
     /// On `RsKafkaClient` this calls `ControllerClient::create_topic()`.
     /// Calling this when the topic already exists is not an error.
     fn ensure_topic(
@@ -46,6 +48,20 @@ pub trait KafkaBridge: Send + Sync {
     /// On `RsKafkaClient` this calls `PartitionClient::get_offset(OffsetAt::Latest)`.
     /// Returns 0 if the topic does not exist yet.
     fn latest_offset(&self, topic: &str) -> Result<i64, RitualError>;
+
+    /// List all topic names currently known to the broker.
+    ///
+    /// On `InMemoryBroker` this returns the topics that have been published
+    /// to (or `ensure_topic`'d) so far. On `RsKafkaClient` this queries
+    /// cluster metadata via `Client::list_topics()`.
+    fn list_topics(&self) -> Result<Vec<String>, RitualError>;
+
+    /// Delete a topic. Deleting a topic that does not exist is not an error.
+    ///
+    /// On `InMemoryBroker` this simply drops the topic's `Vec` (and its
+    /// history) from the map. On `RsKafkaClient` this calls
+    /// `ControllerClient::delete_topic()`.
+    fn delete_topic(&self, topic: &str) -> Result<(), RitualError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,15 +107,28 @@ impl KafkaBridge for InMemoryBroker {
         Ok((slice.to_vec(), next_offset))
     }
 
-    fn ensure_topic(&self, _topic: &str, _num_partitions: i32, _replication_factor: i16)
+    fn ensure_topic(&self, topic: &str, _num_partitions: i32, _replication_factor: i16)
         -> Result<(), RitualError>
     {
-        Ok(()) // InMemoryBroker creates topics implicitly on first publish.
+        // Materialize an empty entry so the topic shows up in `list_topics`
+        // immediately, matching a real broker's `create_topic` — not just
+        // implicitly on first publish.
+        self.topics.lock().unwrap().entry(topic.to_string()).or_default();
+        Ok(())
     }
 
     fn latest_offset(&self, topic: &str) -> Result<i64, RitualError> {
         let guard = self.topics.lock().unwrap();
         Ok(guard.get(topic).map(|v| v.len() as i64).unwrap_or(0))
+    }
+
+    fn list_topics(&self) -> Result<Vec<String>, RitualError> {
+        Ok(self.topics.lock().unwrap().keys().cloned().collect())
+    }
+
+    fn delete_topic(&self, topic: &str) -> Result<(), RitualError> {
+        self.topics.lock().unwrap().remove(topic);
+        Ok(())
     }
 }
 
@@ -288,6 +317,38 @@ impl KafkaBridge for RsKafkaClient {
             pc.get_offset(rskafka::client::partition::OffsetAt::Latest).await
         }).map_err(|e| RitualError::BrokerError(format!("get_offset failed on '{topic}': {e}")))
     }
+
+    fn list_topics(&self) -> Result<Vec<String>, RitualError> {
+        let client = self.client.clone();
+        self.runtime.as_ref().unwrap().block_on(async move {
+            client.list_topics().await
+        })
+        .map(|topics| topics.into_iter().map(|t| t.name).collect())
+        .map_err(|e| RitualError::BrokerError(format!("list_topics failed: {e}")))
+    }
+
+    fn delete_topic(&self, topic: &str) -> Result<(), RitualError> {
+        let client    = self.client.clone();
+        let topic_str = topic.to_string();
+        self.partitions.lock().unwrap().remove(topic);
+        self.runtime.as_ref().unwrap().block_on(async move {
+            let ctrl = client.controller_client()
+                .map_err(|e| RitualError::BrokerError(
+                    format!("controller_client failed: {e}")
+                ))?;
+            match ctrl.delete_topic(topic_str, 5_000).await {
+                Ok(()) => Ok(()),
+                Err(rskafka::client::error::Error::ServerError {
+                    protocol_error: rskafka::client::error::ProtocolError::UnknownTopicOrPartition,
+                    ..
+                }) => {
+                    log::debug!("delete_topic: topic '{topic}' does not exist — treating as success");
+                    Ok(())
+                }
+                Err(e) => Err(RitualError::BrokerError(format!("delete_topic failed: {e}"))),
+            }
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -426,5 +487,47 @@ mod tests {
         broker.publish(topic, &make_envelope(ritual_id, perf_id, label::OFFERING)).unwrap();
         broker.publish(topic, &make_envelope(ritual_id, perf_id, label::HOHI)).unwrap();
         assert_eq!(broker.latest_offset(topic).unwrap(), 2);
+    }
+
+    // ── list_topics / delete_topic ───────────────────────────────────────────
+
+    #[test]
+    fn list_topics_empty_broker() {
+        let broker = InMemoryBroker::new();
+        assert!(broker.list_topics().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_topics_reflects_published_topics() {
+        let broker = InMemoryBroker::new();
+        let ritual_id = Uuid::new_v4();
+        let perf_id   = Uuid::new_v4();
+        broker.publish("topic.a", &make_envelope(ritual_id, perf_id, label::OFFERING)).unwrap();
+        broker.publish("topic.b", &make_envelope(ritual_id, perf_id, label::OFFERING)).unwrap();
+
+        let mut topics = broker.list_topics().unwrap();
+        topics.sort();
+        assert_eq!(topics, vec!["topic.a".to_string(), "topic.b".to_string()]);
+    }
+
+    #[test]
+    fn delete_topic_removes_it_from_list_and_broker() {
+        let broker = InMemoryBroker::new();
+        let ritual_id = Uuid::new_v4();
+        let perf_id   = Uuid::new_v4();
+        let topic     = "dis.local.coire.scratch";
+        broker.publish(topic, &make_envelope(ritual_id, perf_id, label::OFFERING)).unwrap();
+
+        broker.delete_topic(topic).unwrap();
+
+        assert!(broker.list_topics().unwrap().is_empty());
+        assert_eq!(broker.latest_offset(topic).unwrap(), 0);
+        assert!(broker.poll(topic, 0).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn delete_nonexistent_topic_is_ok() {
+        let broker = InMemoryBroker::new();
+        assert!(broker.delete_topic("no.such.topic").is_ok());
     }
 }

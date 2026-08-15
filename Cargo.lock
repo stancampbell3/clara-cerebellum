@@ -1078,6 +1078,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "clara-coire",
+ "clara-ritual",
  "clara-toolbox",
  "demonic-voice",
  "dirs",
@@ -1231,6 +1232,7 @@ name = "clara-prolog"
 version = "0.1.0"
 dependencies = [
  "clara-coire",
+ "clara-ritual",
  "clara-toolbox",
  "demonic-voice",
  "dirs",
@@ -1252,6 +1254,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clara-coire",
+ "libc",
  "log",
  "rskafka",
  "serde",
