@@ -1,8 +1,10 @@
 # Chewing the Cud: SnekEvaluator results → Edgequake knowledge base
 
-**Status: planning draft, feedback incorporated (2026-08-16), not yet
-implemented.** All four open questions below are now resolved — see
-"Resolutions" under each. Scope deliberately narrowed
+**Status: implemented and verified live, 2026-08-16.** All four open
+questions below were resolved with the team, then built —
+`lildaemon` commit `4a55cfd`, pushed to `github`/`origin`. See "Verified
+live" near the end for real evidence (a real crawl, a real Edgequake
+workspace, real ingested documents). Scope deliberately narrowed
 per direction: **document submission only**. Asserting graph entities/
 relationships directly is a separate, later step — Edgequake's own
 ingestion pipeline builds the graph from submitted documents automatically,
@@ -74,12 +76,12 @@ anything under `/api/v1/graph/*` writes (deferred, per direction).
   edgequake.rs`'s `EdgequakeClient`/`ClaraEdgequakeTool` supports `Query`,
   four `Graph*` read ops, and three list ops. **No document-ingestion
   operation exists there at all.**
-- **Zero Edgequake references anywhere in lildaemon** (`grep -rl
-  edgequake` across `goat/`, case-insensitive, empty) — confirmed, not
-  assumed. `the_cow_planning.md`'s original plan named "extending support
-  to the lildaemon side... so Evaluators can create and modify knowledge
-  in Edgequake workspaces" as a later goal; this is that goal's first
-  concrete slice.
+- **Zero Edgequake references anywhere in lildaemon** at planning time
+  (`grep -rl edgequake` across `goat/`, case-insensitive, empty) —
+  confirmed, not assumed. `the_cow_planning.md`'s original plan named
+  "extending support to the lildaemon side... so Evaluators can create and
+  modify knowledge in Edgequake workspaces" as a later goal; this is that
+  goal's first concrete slice, now implemented — see "Verified live" below.
 - **`SnekEvaluator`** has the page data (`url, title, text_sample,
   confidence, reason`) and the ad hoc topic (`snek.{slug}`) already
   building, from this session's earlier work.
@@ -117,7 +119,7 @@ picking one.
 
 [STAN] I agree with the new separate python consumer approach.
 
-### Sketch: `goat/models/EdgequakeClient.py` (new, lildaemon)
+### `goat/models/EdgequakeClient.py` (implemented, lildaemon commit `4a55cfd`)
 
 Mirrors `CoireTopicClient`'s shape — a thin, purpose-built async HTTP
 client, not a general Edgequake SDK:
@@ -126,45 +128,61 @@ client, not a general Edgequake SDK:
 class EdgequakeClient:
     def __init__(self, base_url: str, api_key: str | None = None,
                  tenant: str | None = None): ...
-    # No longer a fixed `workspace` at construction — see Q4: workspace is
+    # No fixed `workspace` at construction — see Q4: workspace is
     # resolved per query slug, not fixed for the client's lifetime.
 
     async def get_or_create_workspace(self, slug: str, name: str | None = None) -> str:
-        """GET /api/v1/tenants/{tenant}/workspaces/slug/{slug}; on 404,
-        POST /api/v1/tenants/{tenant}/workspaces. Returns workspace_id.
-        Idempotent — safe to call every time, no local creation-state
-        tracking needed."""
+        """GET /api/v1/tenants/{tenant}/workspaces/by-slug/{slug}; on 404,
+        POST /api/v1/tenants/{tenant}/workspaces. On a 409 (lost a
+        creation race to another consumer instance), re-GET by slug
+        instead of erroring. Returns workspace_id. Idempotent — safe to
+        call every time, no local creation-state tracking needed."""
 
     async def submit_document(
         self, workspace_id: str, content: str, title: str | None = None,
         metadata: dict | None = None,
     ) -> str:
         """POST /api/v1/documents (scoped via X-Workspace-ID), async_processing=true.
-        Returns task_id. Dedup (Q2) is automatic on Edgequake's side, keyed
-        by content hash within workspace_id — nothing extra to do here."""
+        Returns track_id — not task_id as originally sketched here.
+        Found while implementing: the upload response carries both
+        `task_id` (Optional, only set when async_processing=true) and
+        `track_id` (always present); the progress route is keyed by
+        `track_id` (`edgequake-api/src/routes.rs`:
+        "/ingestion/{track_id}/progress"), so that's what's returned.
+        Dedup (Q2) is automatic on Edgequake's side, keyed by content
+        hash within workspace_id — nothing extra to do here."""
 
-    async def ingestion_progress(self, task_id: str) -> dict:
-        """GET /api/v1/ingestion/{task_id}/progress. Unused in the
+    async def ingestion_progress(self, track_id: str) -> dict:
+        """GET /api/v1/ingestion/{track_id}/progress. Unused in the
         fire-and-forget first version (Q3) — kept for later if task
         tracking is ever added."""
 ```
 
 Config: `EDGEQUAKE_BASE_URL`, `EDGEQUAKE_API_KEY`,
-`EDGEQUAKE_DEFAULT_TENANT`, `EDGEQUAKE_DEFAULT_WORKSPACE` — all already
-present as env vars in `docker-compose.yml`'s `lildaemon` service, just
-unread by any Python code today.
+`EDGEQUAKE_DEFAULT_TENANT` — read by `edgequake_ingest_consumer.py`'s CLI
+wiring (`--edgequake-base-url`/`--edgequake-api-key`/`--tenant`, each
+defaulting from the matching env var), not by `EdgequakeClient` itself.
+`EDGEQUAKE_DEFAULT_WORKSPACE` is unused by this pipeline — Q4 resolved to
+a workspace *per query slug*, not the shared default workspace.
 
-### Sketch: the consumer
+### `goat/models/EdgequakeIngestConsumer.py` + `edgequake_ingest_consumer.py` (implemented)
 
-A small script/module in the same spirit as `examples_ritual_snek_splinter.py`
-— polls `snek.{slug}` via `CoireTopicClient.poll(subject, consumer_id="edgequake-ingest")`.
-Per envelope: derive the workspace slug (`{ritual_id-or-"adhoc"}.{query_slug}`
-— the envelope's `query` field, slugified the same way `topic_subject_for`
-already does, plus whatever ritual/adhoc qualifier the envelope's
-provenance carries), resolve it via `EdgequakeClient.get_or_create_workspace(slug)`
-(idempotent — cheap to call on every envelope, no cache needed for a first
-version), then call `EdgequakeClient.submit_document(workspace_id, ...)`
-with:
+Logic lives in `EdgequakeIngestConsumer` (testable, no CLI/env concerns);
+`edgequake_ingest_consumer.py` at the repo root is thin CLI wiring, in the
+same spirit as `examples_ritual_snek_splinter.py` (`--once` for a single
+poll cycle, otherwise a standing `run_forever` loop).
+
+`poll_once()`: lists ad hoc topics via `CoireTopicClient.list_topics()`,
+filters to `topic_prefix` (default `"snek."`), then per matching subject
+polls with `CoireTopicClient.poll(subject, consumer_id="edgequake-ingest")`
+— reusing `CoireTopicClient`'s own per-`(consumer_id, topic)` cursor, so a
+second `poll_once()` call never re-submits an envelope already handled.
+Per envelope: derive the workspace slug (`{workspace_qualifier}.{query_slug}`,
+default qualifier `"adhoc"` — the envelope's `query` field, slugified with
+the same `coire_topic_naming.slugify` SnekEvaluator itself uses), resolve
+it via `EdgequakeClient.get_or_create_workspace(slug)` (idempotent — called
+on every envelope, no cache needed), then call
+`EdgequakeClient.submit_document(workspace_id, ...)` with:
 
 | Edgequake field | From Snek's payload |
 |---|---|
@@ -280,12 +298,10 @@ confirmed:**
   qualifier prepended so a workspace slug is predictable from the same
   inputs that produce the topic name. The consumer resolves this
   idempotently rather than tracking creation state itself: try
-  `GET /api/v1/tenants/{tenant}/workspaces/slug/{slug}`
+  `GET /api/v1/tenants/{tenant}/workspaces/by-slug/{slug}`
   (`get_workspace_by_slug`, already exists in `workspace_crud.rs`) first,
-  `POST .../workspaces` on 404. `EdgequakeClient`'s sketch below needs a
-  `get_or_create_workspace(slug)` method to cover this, not just
-  `submit_document`.
-
+  `POST .../workspaces` on 404. Implemented as `EdgequakeClient.get_or_create_workspace(slug)`
+  above.
 
 ## Explicitly out of scope (for now)
 
@@ -301,15 +317,53 @@ confirmed:**
   directly too), but not needed for this slice.
 - PDF/file-based ingestion paths — irrelevant to Snek's plain-text output.
 
+## Verified live (2026-08-16)
+
+Not just unit-tested — run end to end against the real Docker stack and
+the real Edgequake instance at `EDGEQUAKE_BASE_URL`
+(`http://10.0.0.192:8082`), same live-verification discipline as
+`ritual_snek_splinter_example.md`:
+
+1. **Real crawl.** Rebuilt/restarted the `lildaemon` container with the
+   new code, then ran `SnekEvaluator.evaluate_async` for query `"CalFresh
+   eligibility requirements"` (`max_crawls=3`) against real Ollama/Google
+   Custom Search. 10 pages judged relevant, all saved to the ad hoc topic
+   `snek.calfresh-eligibility-requirements`.
+2. **Real ingest.** Ran `python edgequake_ingest_consumer.py --once`
+   inside the container against `clara-api` and the live Edgequake
+   instance. Log evidence: `GET .../workspaces/by-slug/adhoc.calfresh-eligibility-requirements`
+   → `404`, then `POST .../workspaces` → `201`; every subsequent envelope's
+   lookup for the same slug → `200` (the idempotent get-or-create working
+   exactly as designed, no duplicate workspace created). Each
+   `POST /api/v1/documents` → `202 Accepted`. **9 of 10** pages submitted —
+   the 10th was correctly skipped (`_ingest_envelope`'s `not text` guard)
+   because that one page's `html_to_text()` extraction came back empty;
+   not a bug, real-world data variance the guard exists for.
+3. **Real documents, not truncated snippets.** `GET /api/v1/documents`
+   (scoped to the new workspace, `X-Workspace-ID: 5ef0254c-2ce1-4dc3-be9c-8817783bb426`)
+   confirmed real ingested content: titles matching the crawl
+   (`"CalFresh Eligibility Criteria"`, `"Eligibility Requirements"`, etc.),
+   `content_length` in the 3,073–8,970 char range per page — proof Q1's
+   full-text change actually reached Edgequake, not the old 500-char
+   `text_sample`.
+
+Left in place deliberately, not cleaned up: `adhoc.calfresh-eligibility-requirements`
+is a real workspace on the shared dev Edgequake instance now — fine per
+direction, since that instance gets refreshed often anyway.
+
 ## Next step
 
-Open questions are resolved; this is ready to move from planning draft to
-an implementation plan (Plan-mode pass covering `SnekEvaluator`'s full-text
-change, `EdgequakeClient`, and the consumer) whenever you're ready — not
-started yet, since the doc review was the checkpoint.
+Implemented and verified; nothing further planned for this slice. Next
+possible work (not started, not scoped here): Rust/Prolog/CLIPS-side
+symmetry (`the_cow.pl`/`.clp` ingestion wrapper, deferred in "Explicitly
+out of scope" above), or watching the `max_workspaces` quota as
+workspace-per-query usage grows over time.
 
 ## Related reading
 
+- `lildaemon/goat/models/EdgequakeClient.py`, `EdgequakeIngestConsumer.py`,
+  `lildaemon/edgequake_ingest_consumer.py` — the actual implementation
+  (lildaemon commit `4a55cfd`).
 - `~/moonpool/tools/edgequake/docs/api-reference/document-upload-quick-reference.md`
   — the source of truth this plan is grounded in.
 - `~/moonpool/tools/edgequake/edgequake/crates/edgequake-api/src/services/workspace_content_hash_dedup.rs`,
