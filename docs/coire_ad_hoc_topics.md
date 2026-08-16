@@ -232,6 +232,58 @@ proxying of message traffic.
   shorthand, alongside the pre-existing `coire-emit`/`coire-poll` (mailbox)
   shorthand.
 
+## SnekEvaluator — a second FieryPit adopter, and a naming-convention decision
+
+`SnekEvaluator` (`lildaemon/goat/evaluators/custom/snek_evaluator.py`, an
+LLM-directed web crawler) is the second Evaluator to adopt
+`CoireTopicClient`, and demonstrates the durability half of the feature
+that `KindlingEvaluator`'s Offering-key surface alone doesn't: before this,
+`SnekEvaluator` only saved anything **after the entire crawl finished**,
+and only into a specific session's ephemeral `/cycle/coire/push` mailbox
+(gated on a caller-supplied `coire_session_id`) — a crashed or timed-out
+crawl lost every page already judged relevant, and nothing else could
+discover results without already knowing that session id. Now each
+relevant page is published to an ad hoc topic **as it's found**, inside the
+crawler's per-page handler, not batched at the end; `_emit_to_coire`/
+`/cycle/coire/push` is untouched and still runs when `coire_session_id` is
+given.
+
+**Naming convention, decided during planning:** the first draft proposed
+`{evaluator_name}.{fierypit_id}.{subject}` — prepending a per-deployment
+FieryPit identity to the topic path. Rejected: that partitions the topic
+*name* by producer, which defeats the "shared rendezvous by subject, no
+prior coordination" property ad hoc topics exist for in the first place —
+two FieryPits crawling the same research query would land on two different
+topics, and a consumer would need to already know every FieryPit id to find
+all the work. Settled on **`{evaluator_name}.{subject}`** (e.g.
+`snek.edge-detection-kernels`) with no FieryPit segment, so repeated or
+concurrent crawls of the same subject, from any FieryPit, converge on one
+topic.
+
+FieryPit identity is still worth having — just not there. New
+`lildaemon/goat/models/fierypit_identity.py::fierypit_id()` (`FIERYPIT_ID`
+env var, else a sanitized hostname from `LILDAEMON_BASE_URL`, else
+`"fierypit-local"`) is used purely as **provenance**: it's `SnekEvaluator`'s
+`CoireTopicClient` `producer_node` (`snek-{fierypit_id()}`), and it's also
+stamped as a `fierypit_id` field inside each published document's own
+payload — so origin travels with the data itself, not just envelope
+metadata a consumer might not propagate, e.g. if the payload later gets
+asserted as a Prolog/CLIPS fact somewhere downstream.
+
+**Bug caught by live verification, not unit tests:** `CoireTopicClient.
+publish()` defaults `ttl_ms` to 60 seconds — reasonable for the ephemeral
+event notifications it was originally built for, wrong for "save this
+durably." The first live run of `SnekEvaluator`'s new save-as-you-go path
+published 10 pages successfully, but a poll a few minutes later (after
+enough wall-clock time had passed while verifying other things) came back
+empty — `next_offset` had advanced past all 10, but every envelope had
+already expired and been filtered out by `poll_topic_from`'s expiry check.
+Fixed by having `SnekEvaluator` pass an explicit `ttl_ms=
+SnekEvaluator.COIRE_TOPIC_TTL_MS` (24h) on every save, rather than relying
+on `CoireTopicClient`'s short default. Worth remembering for any future
+adopter: **the default TTL is for ephemera, not persistence — pass your own
+if you mean "save this."**
+
 ## Example
 
 ```prolog
@@ -300,3 +352,13 @@ Outside a joined Ritual, `ritual_id(Id)` fails and `(ritual-id)` returns
   stamped it with. Confirms the full path: containerized Python Evaluator →
   real Kafka → separate host Prolog/CLIPS processes, no shared memory, no
   prior coordination beyond the topic's subject path.
+- `SnekEvaluator` live verification: rebuilt/restarted the `lildaemon`
+  container, set it to the `snek` evaluator, and ran a real crawl (query:
+  "edge detection kernels in image processing", real Google Custom Search
+  seeding, real Ollama relevance judging). 10 relevant pages landed on
+  `snek.edge-detection-kernels-in-image-processi` with no FieryPit segment
+  in the name, each envelope's `producer_node` = `snek-lildaemon` and
+  payload body carrying `fierypit_id: "lildaemon"`. This run is what
+  surfaced the `ttl_ms` default bug above — a follow-up poll from a
+  separate host `clips-repl` process 75+ seconds later confirmed all 10
+  pages still present and correctly decoded after the fix.
