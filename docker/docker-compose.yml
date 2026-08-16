@@ -36,6 +36,19 @@ services:
     networks:
       - clara-net
 
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    ports:
+      - "0.0.0.0:8083:8080"
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - clara-net
+
   clara-api:
     build:
       context: ../..
