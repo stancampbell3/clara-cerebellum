@@ -1,14 +1,18 @@
 # Ad Hoc Coire Topics & Ritual Context — Implementation Write-up
 
-**Status: implemented and verified live, 2026-08-15.**
+**Status: implemented and verified live, 2026-08-15 through 2026-08-16.**
 
-Two related additions to the Coire/Ritual stack: (1) freeform, non-Ritual
+Three related additions to the Coire/Ritual stack: (1) freeform, non-Ritual
 Kafka topics reachable from Prolog and CLIPS — previously the Kafka bridge
 (`clara-ritual`) was only constructible inside `clara-api` and only usable
-via a formally-joined Ritual; and (2) read-only predicates exposing the
+via a formally-joined Ritual; (2) read-only predicates exposing the
 current deduction's Ritual identity (`ritual_id`, `performance_id`,
 `dis_domain`, `participants`) to authored rule/goal code, which was
-previously entirely opaque to Prolog/CLIPS.
+previously entirely opaque to Prolog/CLIPS; and (3) the same ad hoc topic
+capability extended to FieryPit Evaluators in `lildaemon` (Python), so work
+happening outside Dis entirely — a web crawl, an LLM turn, a CLIPS/Prolog
+reasoning step — can publish to or poll from a research topic that a Ritual
+in Dis might also be touching. See "FieryPit side" below for (3).
 
 ## What changed, in one paragraph
 
@@ -70,6 +74,29 @@ relative to their own Ritual and performance.
   rust_ritual_topic_{create,list,delete,publish,poll,poll_from}` — the C-ABI
   glue linked into CLIPS's `userfunctions.c`, mirroring
   `clara-coire/src/clips_bridge.rs`'s existing pattern exactly.
+
+### clara-api — HTTP admin surface (`/coire/topics*`)
+
+Added in a follow-up commit so non-Prolog/CLIPS callers (any HTTP client,
+in particular lildaemon's FieryPit Evaluators — see "FieryPit side" below)
+can reach ad hoc topics without a live Prolog/CLIPS session:
+
+- `src/handlers/coire_topics_handler.rs` (new): thin `web::block` wrappers
+  around `clara_ritual::adhoc::{create_topic,list_topics,delete_topic}` +
+  `clara_ritual::global()`, mirroring `handlers/ritual_handler.rs`'s
+  `create_ritual`/`list_rituals`/`terminate_ritual` exactly (`InvalidTopicName`
+  → 400, everything else → 500). Deliberately separate from
+  `handlers/coire_handler.rs`, which is the unrelated `/cycle/coire/*`
+  in-memory-mailbox surface (`clara_coire`, no Kafka).
+- `src/routes/coire_topics.rs` (new) + `routes/mod.rs`: `POST /coire/topics`
+  (body `{subject_path, num_partitions?, replication_factor?}` → 201
+  `{topic, dis_domain, bootstrap_servers}`), `GET /coire/topics` (→
+  `{topics: [...]}`, subject paths only), `DELETE /coire/topics/{subject:.*}`
+  (greedy tail segment since subject paths contain dots; not an error if the
+  topic is already gone). `bootstrap_servers` is the operator's real Kafka
+  address (or `null` under the in-memory broker, dev mode) — the same
+  "Dis hands out routing info, caller connects to Kafka directly" precedent
+  `GET /ritual/{id}/join` already sets for Ritual topics.
 
 ### clara-prolog — foreign predicates + `the_coire.pl`
 
@@ -154,6 +181,57 @@ relative to their own Ritual and performance.
   Rust code calls them by name — they're only ever reached from
   `userfunctions.c`).
 
+## FieryPit side — lildaemon's CoireTopicClient
+
+`lildaemon` (`/mnt/moonpool/Development/lildaemon`) is the Python FastAPI
+server hosting CLIPS/Prolog/LLM Evaluators inside FieryPits. Its only
+pre-existing Kafka code, `goat/models/RitualParticipant.py`, is scoped
+entirely to formal, already-joined Ritual topics (one continuous
+consume-evaluate-publish loop per `(ritual_id, topic, bootstrap_servers,
+dis_domain)` — all four handed to it by Dis's `GET /ritual/{id}/join`), and
+lildaemon already overloads the word "Coire" for something unrelated —
+`KindlingEvaluator`'s `coire_emit`/`coire-poll` bridge and `SnekEvaluator`'s
+`POST /cycle/coire/push`, both talking to clara-cerebellum's per-session
+in-memory mailbox (`clara_coire`, no Kafka). New code keeps the ad hoc
+Kafka-topic concept namespaced as `coire_topic_*` throughout, on both sides
+of the stack, to keep the two mechanisms unambiguous.
+
+Architecture mirrors the Ritual precedent exactly: Dis owns topic naming
+and admin (the new `/coire/topics*` endpoints above); lildaemon resolves
+`{topic, dis_domain, bootstrap_servers}` from Dis and then talks to that
+Kafka broker **directly** via `confluent-kafka` for publish/poll — no HTTP
+proxying of message traffic.
+
+- `goat/models/CoireTopicClient.py` (new): one-shot (not a background
+  loop) `ensure_topic`/`list_topics`/`delete_topic`/`publish`/`poll`.
+  `publish` builds a `TephraEnvelope`-shaped dict matching
+  `clara-ritual/src/envelope.rs` field-for-field (`ritual_id`/
+  `performance_id` stamped as the nil UUID, same ad hoc-traffic convention
+  `clara_ritual::adhoc::publish_topic` uses). `poll` uses **manual
+  partition assignment + seek** (`assign()`/`seek()`, no `subscribe()`, a
+  fresh throwaway `group.id` per call) rather than a consumer group, so ad
+  hoc polls never join or interfere with a `RitualParticipant`'s
+  auto-committed group on the same broker; an optional `consumer_id`
+  tracks an auto-advancing per-`(consumer_id, topic)` cursor, mirroring
+  `clara_ritual::adhoc::poll_topic_cursor`.
+- `goat/app/dis_client.py`: `create_coire_topic`/`list_coire_topics`/
+  `delete_coire_topic`, mirroring the existing `create_ritual`/
+  `join_ritual`/`delete_ritual` methods.
+- `goat/evaluators/custom/kindling_evaluator.py`: new `coire_topic_create`/
+  `coire_topic_list`/`coire_topic_delete`/`coire_topic_publish`/
+  `coire_topic_poll` Offering keys, dispatched in both `evaluate()` (via a
+  small sync-over-async bridge, `asyncio.run` when no loop is already
+  running) and `evaluate_async()` (awaited directly). `ClaraMindSplinter`
+  (a `KindlingEvaluator` subclass) inherits the capability for free.
+  Default poll `consumer_id` is the evaluator's own `shared_session_id`, so
+  repeated `coire_topic_poll` calls behave like a per-evaluator stream
+  cursor with no offset bookkeeping required by the caller.
+- `goat/repl/fishes/StickFish.py`: matching `coire-topic-create <path>`,
+  `coire-topic-list`, `coire-topic-delete <path>`,
+  `coire-topic-publish <path> <json>`, `coire-topic-poll <path> [offset]`
+  shorthand, alongside the pre-existing `coire-emit`/`coire-poll` (mailbox)
+  shorthand.
+
 ## Example
 
 ```prolog
@@ -203,3 +281,22 @@ Outside a joined Ritual, `ritual_id(Id)` fails and `(ritual-id)` returns
   from a separate `clips-repl` process, over a real Kafka broker — confirmed
   the full ad hoc, cross-process, cross-language round trip this feature was
   built for.
+- `cargo test -p clara-api`: full suite green after adding
+  `coire_topics_handler.rs`.
+- lildaemon: `pytest` (984 passed) with everything mocked, plus a
+  `@pytest.mark.integration` suite (`tests/test_coire_topic_client_integration.py`,
+  skipped unless `KAFKA_BOOTSTRAP` is set, excluded from CI the same way the
+  existing Ollama integration tests are) exercising `CoireTopicClient`
+  against a real broker directly — publish/poll round trip, cursor
+  advancement without redelivery, independent per-consumer cursors.
+- Live cross-repo smoke test: rebuilt and restarted the `clara-api` and
+  `lildaemon` containers (`docker compose`) from current source; created an
+  ad hoc topic via `POST /coire/topics`; published through the
+  containerized `lildaemon`'s `clara_mind_splinter` evaluator
+  (`coire_topic_publish`); polled the same message back from two separate
+  **host** processes, `prolog-repl` (`coire_topic_poll/2`) and `clips-repl`
+  (`(coire-topic-poll ...)`) — both decoded the envelope correctly, with
+  `producer_node` showing the `kindling-<uuid>` id the FieryPit Evaluator
+  stamped it with. Confirms the full path: containerized Python Evaluator →
+  real Kafka → separate host Prolog/CLIPS processes, no shared memory, no
+  prior coordination beyond the topic's subject path.
