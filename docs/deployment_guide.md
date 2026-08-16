@@ -16,6 +16,7 @@ frontdesk demo and EdgeQuake are reachable from the public internet; all other s
 | clips-mcp-adapter | 1951 | No — internal |
 | clara-frontdesk (demo) | 8088 | Yes — `/frontdesk/` |
 | lildaemon (FieryPit) | 6666 | No — internal |
+| redpanda-console (Kafka UI) | 8083 | No — internal |
 | edgequake-api | 8082 | Auth only — `/edgequake/api/` |
 | edgequake-frontend | 3000 | Auth only — `/edgequake/` |
 | edgequake-postgres | 5432 | No — internal |
