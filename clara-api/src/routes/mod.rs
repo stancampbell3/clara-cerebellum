@@ -8,6 +8,7 @@ pub mod coire;
 pub mod trace;
 pub mod source;
 pub mod ritual;
+pub mod coire_topics;
 pub mod transduce;
 
 use actix_web::web;
@@ -71,5 +72,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/ritual/{id}/join",     web::get().to(ritual::join_ritual))
             .route("/ritual/{id}/status",   web::get().to(ritual::ritual_status))
             .route("/ritual/{id}",          web::delete().to(ritual::terminate_ritual))
+            // Ad hoc Coire topics (literal sub-paths before parameterised)
+            .route("/coire/topics",         web::post().to(coire_topics::create_topic))
+            .route("/coire/topics",         web::get().to(coire_topics::list_topics))
+            .route("/coire/topics/{subject:.*}", web::delete().to(coire_topics::delete_topic))
     );
 }
