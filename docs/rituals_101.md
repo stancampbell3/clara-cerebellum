@@ -603,6 +603,16 @@ existing proxy at port 5001. No direct Dis calls from the browser.
 
 ## Further reading
 
+- `lildaemon/docs/ritual_snek_splinter_example.md` — worked example one
+  level up from this doc's own step-3 example: addressed, correlated
+  request/response between two *specific* named participants
+  (`caws_offer`/`caws_await`/`caws_consult`, hand-authored rather than via
+  a declared graph edge) plus an ad hoc Coire topic as a progress/partial-
+  results side-channel that doesn't block convergence. Start here once you
+  need more than one meaningfully different peer on the same Ritual.
+- `docs/ritual_typed_edges.md` — the addressed/correlated mechanism itself
+  (`target_node_id`/`self_node_id`, `pending_offers`, timeout-to-false
+  convergence) that example calls directly.
 - `docs/deduce_endpoint.md` — full Ritual integration in the deduction cycle,
   convergence conditions, and source code index
 - `docs/demonic_voice_api.md` — all Ritual and deduce HTTP endpoints on Dis
