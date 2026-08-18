@@ -359,6 +359,15 @@ symmetry (`the_cow.pl`/`.clp` ingestion wrapper, deferred in "Explicitly
 out of scope" above), or watching the `max_workspaces` quota as
 workspace-per-query usage grows over time.
 
+**Follow-on, 2026-08-18 (`cud_cycle_2.md`):** this pipeline's polling logic
+(`EdgequakeIngestConsumer.poll_subject_once`) has been promoted into a
+Ritual participant (`EdgequakeIngestEvaluator`) alongside Splinter and
+Snek, so a single Ritual run can converge on "ingestion caught up" as well
+as "crawl done" — see `lildaemon/docs/ritual_rumination_ingest_example.md`.
+The standalone CLI consumer this doc designed is unchanged and still works
+independently; the new evaluator reuses its ingest logic rather than
+replacing it.
+
 ## Related reading
 
 - `lildaemon/goat/models/EdgequakeClient.py`, `EdgequakeIngestConsumer.py`,
