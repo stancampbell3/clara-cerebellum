@@ -316,6 +316,42 @@ Echo suppression works by checking `producer_node == self.dis_domain`. If you
 pass Dis's domain, lildaemon thinks Dis is itself and drops every Offering it
 receives.
 
+### `evaluator` binding requires a dedicated wrangler slot (fixed 2026-08-18)
+
+`POST /ritual/join`'s `evaluator` field is supposed to pin this
+`RitualParticipant` to one specific evaluator, independent of whatever else
+is happening on the same FieryPit process — `RitualParticipant` evaluates
+every Offering via `wrangler.eval_slot(node_id, offering)`
+(`goat/models/RitualParticipant.py`), which is designed to bypass the
+shared, mutable "focused evaluator" entirely.
+
+That bypass only works if a wrangler slot actually exists under `node_id`.
+Before 2026-08-18, nothing ever spawned one at join time — `evaluator_name`
+was stored on the participant and never read again — so `eval_slot` always
+fell through to its fallback: whichever evaluator happened to be globally
+focused at the exact moment the Kafka message arrived. In practice this was
+a real race, not just latent risk: any other caller on the same FieryPit
+hitting `POST /evaluators/set` (e.g. a one-shot `/deduce` submission on the
+same process that also owns a standing Ritual participant) could silently
+redirect a joined participant's Offerings to the wrong evaluator.
+
+**Fixed**: `RitualManager.join()` now calls
+`wrangler.spawn_evaluator(evaluator_name, slot_name=node_id)` when
+`evaluator_name` is given, and `leave()` closes that slot again. Practical
+implications:
+
+- `node_id` doubles as the wrangler slot key. Two participants in the same
+  process must use distinct `node_id`s if both pass `evaluator` — expected,
+  since `(ritual_id, node_id)` already has to be unique to join at all.
+- A **legacy join with no `evaluator` set** (`evaluator_name=None`, e.g. the
+  bare `POST /ritual/join` this doc's own step 2 shows) still uses the
+  fallback path on purpose — that's the intended "use whatever's focused"
+  behavior for the single-participant case, unchanged by this fix.
+- A join that reuses a `node_id` still holding an active slot from an
+  earlier join whose `leave()` never ran (a crash, a skipped cleanup) reuses
+  that stale slot rather than failing — logged, not raised, since the slot
+  still evaluates correctly as long as it's the same evaluator name.
+
 ### Auto-bootstrap: token provisioning
 
 When you pass `"participants": ["http://fiery-pit-1:6666"]` to `POST /ritual`,
@@ -603,6 +639,9 @@ existing proxy at port 5001. No direct Dis calls from the browser.
 
 ## Further reading
 
+- `lildaemon/docs/ritual_start_here.md` — the lildaemon-side entry point
+  back to this doc, plus a reading-order map of lildaemon's own ritual docs
+  and the `docker-lildaemon-1` baked-image gotcha every session re-learns.
 - `lildaemon/docs/ritual_snek_splinter_example.md` — worked example one
   level up from this doc's own step-3 example: addressed, correlated
   request/response between two *specific* named participants
