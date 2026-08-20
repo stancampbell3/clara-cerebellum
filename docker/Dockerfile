@@ -152,7 +152,6 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /build/target/release/clara-frontdesk        /usr/local/bin/
 COPY clara-cerebellum/clara-frontdesk-poc/static                    /app/static
-COPY clara-cerebellum/clara-frontdesk-poc/roost                     /app/roost
 COPY clara-cerebellum/clara-frontdesk-poc/config/city_of_dis.toml  /etc/frontdesk/city_of_dis.toml
 
 ENV FRONTDESK_CONFIG=/etc/frontdesk/city_of_dis.toml

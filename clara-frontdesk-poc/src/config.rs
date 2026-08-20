@@ -4,58 +4,15 @@ use std::fs;
 #[derive(Debug, Clone, Deserialize)]
 pub struct FrontDeskConfig {
     pub company: CompanyConfig,
-    pub devilish_supervisor: DevilishSupervisorConfig,
-    #[serde(default)]
-    pub deduction: DeductionConfig,
     pub server: ServerConfig,
     pub paths: PathsConfig,
-}
-
-impl FrontDeskConfig {
-    /// System prompt used for the deduction LLM evaluate call.
-    pub fn deduction_system_prompt(&self) -> &str {
-        &self.devilish_supervisor.prompt
-    }
-
-    /// Model used for the deduction LLM evaluate call.
-    pub fn deduction_model(&self) -> &str {
-        &self.devilish_supervisor.model
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct DevilishSupervisorConfig {
-    pub prompt: String,
-    pub model: String,
-}
-
-fn default_persist() -> bool {
-    false
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct DeductionConfig {
-    #[serde(default = "default_persist")]
-    pub persist: bool,
-}
-
-fn default_model() -> String {
-    "qwen-clara:latest".to_string()
-}
-
-fn default_patience() -> u32 {
-    8
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CompanyConfig {
     pub name: String,
     pub agent_name: String,
-    pub system_prompt: String,
-    #[serde(default = "default_model")]
-    pub model: String,
-    #[serde(default = "default_patience")]
-    pub patience: u32,
+    pub greeting: String,
 }
 
 fn default_interface() -> String {
@@ -69,13 +26,28 @@ pub struct ServerConfig {
     pub interface: String,
 }
 
+fn default_service_username() -> String {
+    "frontdesk-service".to_string()
+}
+
+fn default_service_password() -> String {
+    "frontdesk-service-pw".to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct PathsConfig {
-    pub clara_api_url: String,
+    /// lildaemon's own base URL — hosts both FieryPit and the assistant
+    /// REST API (goat/app/assistant/) this frontend now talks to.
     pub fiery_pit_url: String,
-    pub clara_pl_path: String,
-    pub clara_clp_path: String,
     pub static_path: String,
+    /// Shared service account this frontend authenticates as. No
+    /// per-visitor identity yet — every WS connection gets its own
+    /// assistant session, but all sessions belong to this one account
+    /// (matches examples_ritual_*.py's own _fierypit_bearer_token pattern).
+    #[serde(default = "default_service_username")]
+    pub service_username: String,
+    #[serde(default = "default_service_password")]
+    pub service_password: String,
 }
 
 pub fn load_config() -> FrontDeskConfig {

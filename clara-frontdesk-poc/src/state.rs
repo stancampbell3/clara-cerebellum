@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use fiery_pit_client::FieryPitClient;
+use reqwest::blocking::Client;
 
 use crate::config::FrontDeskConfig;
 
 pub struct AppState {
-    pub fiery_pit: FieryPitClient,
-    pub clara_api_url: String,
-    pub clara_pl_path: String,
-    pub clara_clp_path: String,
+    pub http: Client,
+    pub fiery_pit_url: String,
+    /// Bearer JWT for the shared service account, obtained once at startup.
+    pub bearer_token: String,
     pub config: Arc<FrontDeskConfig>,
 }
