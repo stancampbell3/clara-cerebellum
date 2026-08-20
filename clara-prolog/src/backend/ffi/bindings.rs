@@ -243,6 +243,17 @@ extern "C" {
     /// Check if term is nil
     pub fn PL_get_nil(l: term_t) -> c_int;
 
+    /// Iterate the key/value pairs of a dict term, calling `func` once per
+    /// pair. `func` returns 0 to stop iteration early (error) or non-zero to
+    /// continue. Returns -1 on error (e.g. `t` is not a dict), 0 if `func`
+    /// stopped iteration early, 1 on success.
+    pub fn PL_for_dict(
+        dict: term_t,
+        func: extern "C" fn(key: term_t, value: term_t, closure: *mut c_void) -> c_int,
+        closure: *mut c_void,
+        flags: c_int,
+    ) -> c_int;
+
     // =========================================================================
     // Type Checking
     // =========================================================================

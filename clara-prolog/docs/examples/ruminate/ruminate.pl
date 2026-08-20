@@ -25,9 +25,15 @@ extract_hohi(JSON, Hohi) :-
   atom_json_dict(JSON, Dict, []),
   Hohi = Dict.hohi.
 
+%% NOTE: this dot-notation form only works because this file is normally
+%% `consult`ed (SWI expands Dict.key.key2 at clause-compile time). Copied
+%% verbatim into a hand-authored `prolog_clauses` list (loaded via `assert`,
+%% not `consult`), it silently mis-evaluates instead of throwing or failing —
+%% use get_dict/3 there instead. Confirmed live 2026-08-19, see
+%% clara-cerebellum/docs/ritual_rumination_answer_bugs_found.md, bug #4.
 extract_hohi_response(JSON, Response) :-
     atom_json_dict(JSON, Dict, []),
-    Response = Dict.hohi.response.response.
+    Response = Dict.hohi.response.content.
 
 grounded_ponder(Query, EdgeAnswer) :- ruminate_opts(Query, _{llm_provider: ollama, llm_model: "gemma4:e4b"}, R1),
   ruminate_answer(R1, EdgeAnswer),

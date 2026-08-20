@@ -2,8 +2,56 @@
 
 use super::bindings::*;
 use crate::error::{PrologError, PrologResult};
-use libc::c_char;
+use libc::{c_char, c_int, c_void};
 use std::ffi::{CStr, CString};
+
+/// Closure state for `collect_dict_pair`, threaded through `PL_for_dict`'s
+/// `void *closure` parameter.
+struct DictCollectCtx {
+    map:   serde_json::Map<String, serde_json::Value>,
+    error: Option<PrologError>,
+}
+
+/// `PL_for_dict` callback: converts one dict key/value pair and inserts it
+/// into the closure's map. Per `pl-dict.c`'s `PL_for_dict` doc comment, it
+/// "returns immediately with the return value of func if func returns
+/// non-zero" — so 0 means "keep iterating" and non-zero means "stop now".
+/// We only ever want to stop early on conversion failure, stashing the error
+/// in the closure for the caller to check afterward — `PrologResult` can't
+/// cross this C callback boundary directly, same as the other
+/// foreign-callback trampolines in this codebase (see `callbacks.rs`,
+/// `coire_bridge.rs`).
+extern "C" fn collect_dict_pair(key: term_t, value: term_t, closure: *mut c_void) -> c_int {
+    unsafe {
+        let ctx = &mut *(closure as *mut DictCollectCtx);
+
+        let key_str = match term_to_json(key) {
+            Ok(serde_json::Value::String(s)) => s,
+            Ok(_) => match term_to_string(key) {
+                Ok(s) => s,
+                Err(e) => {
+                    ctx.error = Some(e);
+                    return 1;
+                }
+            },
+            Err(e) => {
+                ctx.error = Some(e);
+                return 1;
+            }
+        };
+
+        match term_to_json(value) {
+            Ok(v) => {
+                ctx.map.insert(key_str, v);
+                0
+            }
+            Err(e) => {
+                ctx.error = Some(e);
+                1
+            }
+        }
+    }
+}
 
 /// Convert a Prolog term to a Rust string representation
 ///
@@ -115,6 +163,26 @@ pub unsafe fn term_to_json(t: term_t) -> PrologResult<serde_json::Value> {
             }
 
             Ok(serde_json::Value::Array(result))
+        }
+        PL_DICT => {
+            // SWI dict (e.g. `_{key: val, ...}`) - convert to a JSON object.
+            // Previously fell through to the wildcard string-fallback branch
+            // below, producing a lossy write/1-style string instead of a
+            // real JSON object/nested structure.
+            let mut ctx = DictCollectCtx { map: serde_json::Map::new(), error: None };
+            // 0 == every pair visited (our callback only ever requests an
+            // early stop via a non-zero return when ctx.error is set).
+            let rc = PL_for_dict(t, collect_dict_pair, &mut ctx as *mut DictCollectCtx as *mut c_void, 0);
+
+            if let Some(e) = ctx.error {
+                return Err(e);
+            }
+            if rc != 0 {
+                return Err(PrologError::ConversionError(
+                    "PL_for_dict failed".to_string(),
+                ));
+            }
+            Ok(serde_json::Value::Object(ctx.map))
         }
         PL_TERM => {
             // Compound term - convert to object with functor and args

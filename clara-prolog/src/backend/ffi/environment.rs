@@ -86,18 +86,28 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
         super::coire_bridge::register_coire_predicates();
         super::ritual_bridge::register_ritual_predicates();
 
-        // Load the_coire.pl now that its foreign predicates are registered.
-        // Must happen here (in the main-engine thread) not in a separate OnceLock
-        // that might execute from a worker thread with no engine context.
-        unsafe {
-            let goal = CString::new("use_module(library(the_coire))").unwrap();
-            let term = PL_new_term_ref();
-            if PL_chars_to_term(goal.as_ptr(), term) != 0 {
-                if PL_call(term, std::ptr::null_mut()) != 0 {
-                    log::info!("the_coire library loaded");
-                } else {
-                    log::warn!("Failed to load library(the_coire)");
-                    return Err("Failed to load library(the_coire)".to_string());
+        // Load the commonly-needed prolog-lib libraries now that their foreign
+        // predicates are registered. Must happen here (in the main-engine
+        // thread) not in a separate OnceLock that might execute from a
+        // worker thread with no engine context.
+        //
+        // the_rabbit/the_cow (ponder_text/2, ruminate_opts/3, etc.) are
+        // loaded alongside the_coire so every session has them without
+        // requiring an explicit `use_module` in hand-authored
+        // `prolog_clauses` — omitting it previously threw
+        // existence_error(procedure, ponder_text/2) at goal-execution time
+        // with no error visible outside this process's own log.
+        for library in ["the_coire", "the_rabbit", "the_cow"] {
+            unsafe {
+                let goal = CString::new(format!("use_module(library({library}))")).unwrap();
+                let term = PL_new_term_ref();
+                if PL_chars_to_term(goal.as_ptr(), term) != 0 {
+                    if PL_call(term, std::ptr::null_mut()) != 0 {
+                        log::info!("{library} library loaded");
+                    } else {
+                        log::warn!("Failed to load library({library})");
+                        return Err(format!("Failed to load library({library})"));
+                    }
                 }
             }
         }
@@ -294,13 +304,24 @@ impl PrologEnvironment {
 
     /// Load Prolog code from a string
     ///
-    /// Parses each clause and asserts it into the database.
+    /// Parses each clause and asserts it into the database. The first time a
+    /// given predicate indicator is seen, it is declared `thread_local`
+    /// before being asserted — SWI engines (as created by `PL_create_engine`,
+    /// see `PrologEnvironment::new`) share one global dynamic-predicate
+    /// database, like Prolog threads do, unless a predicate opts out via
+    /// `thread_local`. Without this, hand-authored clauses loaded this way
+    /// (e.g. a Ritual's `prolog_clauses`) would accumulate one extra clause
+    /// per call across the life of the process, with Prolog always trying
+    /// the oldest (possibly stale) matching clause first — this is the same
+    /// isolation mechanism `the_coire.pl` already relies on for its own
+    /// mutable predicates (see its `:- thread_local ...` declarations).
     pub fn consult_string(&self, code: &str) -> PrologResult<()> {
         // Use read_term_from_chars to parse and assert
         // This handles multiple clauses separated by '.'
         let escaped_code = code.replace("\\", "\\\\").replace("\"", "\\\"");
         let goal = format!(
-            "atom_codes(Code, \"{}\"), \
+            "nb_setval('$cs_seen', []), \
+             atom_codes(Code, \"{}\"), \
              open_string(Code, S), \
              call_cleanup(\
                  (repeat, read_term(S, T, []), \
@@ -308,12 +329,19 @@ impl PrologEnvironment {
                    (  T = (:-G)  -> ignore(call(G)) \
                    ;  T = (?-G)  -> ignore(call(G)) \
                    ;  functor(T, F, A), \
-                      memberchk(F/A, [consult/1, \
-                                      use_module/1, use_module/2, \
-                                      ensure_loaded/1, \
-                                      load_files/1, load_files/2]) \
+                      ( memberchk(F/A, [consult/1, \
+                                        use_module/1, use_module/2, \
+                                        ensure_loaded/1, \
+                                        load_files/1, load_files/2]) \
                       -> ignore(call(T)) \
-                   ;  assertz(T) \
+                      ;  ( nb_getval('$cs_seen', Seen0), memberchk(F/A, Seen0) \
+                         -> true \
+                         ;  catch(thread_local(F/A), _, true), \
+                            nb_getval('$cs_seen', Seen1), \
+                            nb_setval('$cs_seen', [F/A|Seen1]) \
+                         ), \
+                         assertz(T) \
+                      ) \
                    ), fail)), \
                  close(S))",
             escaped_code

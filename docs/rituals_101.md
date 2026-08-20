@@ -435,6 +435,49 @@ Hohi or Tabu, the `CycleController` injects a synthetic
 so the cycle can continue. Prolog rules can pattern-match on this event to
 implement graceful degradation.
 
+### Hand-authored `prolog_clauses`: what's auto-loaded, what's isolated
+
+Found while building the rumination-answer example
+(`lildaemon/docs/ritual_rumination_answer_example.md`,
+`clara-cerebellum/docs/ritual_rumination_answer_bugs_found.md`); fixed per
+`clara-cerebellum/docs/ritual_rumination_answer_bugs_fix_plan.md`.
+
+- **`prolog-lib`'s commonly-needed libraries are auto-loaded into every
+  session** — `the_coire` (`caws_offer`/`caws_await`/`coire_topic_poll`),
+  `the_rabbit` (`ponder_text/2`), and `the_cow` (`ruminate_opts/3` and
+  friends) are all `use_module`d once at process init
+  (`clara-prolog/src/backend/ffi/environment.rs::ensure_prolog_initialized`).
+  No explicit `use_module` needed in your own `prolog_clauses`. Anything
+  added to `prolog-lib/` later isn't automatically in that list — add it to
+  `ensure_prolog_initialized` too, or your own `prolog_clauses` will need an
+  explicit `use_module`.
+- **Hand-authored `prolog_clauses` predicates are session-isolated
+  (`thread_local`) automatically.** SWI engines (one per deduction, via
+  `PL_create_engine`) behave like Prolog threads: they share one global
+  dynamic-predicate database unless a predicate opts out. `consult_string`
+  now auto-declares every new predicate it asserts as `thread_local` on
+  first sight, so clauses from one `/deduce` call never bleed into the next
+  — no more restarting clara-api between debugging iterations to clear out
+  a stale clause from an earlier run. This only protects predicates loaded
+  through hand-authored `prolog_clauses` itself — it can't rescue a
+  predicate name that's already been compiled *static* by a genuine
+  `consult/1` of a real file elsewhere in the same process (static
+  procedures can never become `dynamic`/`thread_local` afterward). Avoid
+  giving your `prolog_clauses` predicates the same name as one defined in an
+  actual `.pl` library file, or you'll get a
+  `permission_error(modify, static_procedure, ...)` that only a container
+  restart clears.
+- **Dict dot-notation (`Dict.key.key2`) only works in normally-`consult`ed
+  library files**, never in hand-authored `prolog_clauses` — SWI expands
+  that syntax at clause-*compile* time, which doesn't happen the same way
+  for `assert`ed clauses. Use `get_dict/3` instead in anything you pass as
+  `prolog_clauses`.
+- **Nested `/evaluate` calls** (e.g. `ponder_text/2`'s `splinteredmind` tool
+  calling back into the same FieryPit's own `/evaluate` endpoint) cost real
+  sequential wall-clock time, not more cycles — budget your poll timeout
+  accordingly rather than assuming a slow response means something is
+  hung.
+
 ---
 
 ## What lildaemon owns
