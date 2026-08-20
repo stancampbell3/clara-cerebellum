@@ -17,6 +17,21 @@ clarify_clara_citations(Citations) :-
     ruminate_opts("what is a clara?", _{llm_provider: ollama, llm_model: "gemma4:e4b"}, Result),
     ruminate_citations(Result, Citations).
 
+%% clarify_clara_asserted/1 - same call, via ruminate_and_assert_citations/3
+%%   instead of ruminate_opts/3: asserts every citation as a citation/8 fact
+%%   (deduped by id, thread_local — scoped to this one deduction call), links
+%%   this specific conclusion to all of them via cite/2, and returns the
+%%   linked citation ids. Downstream rules can then look up
+%%   citation(CitationId, SourceType, DocumentId, FilePath, StartLine,
+%%   EndLine, Score, Snippet) for any id in the list instead of re-parsing
+%%   Result.sources themselves.
+clarify_clara_asserted(CitationIds) :-
+    ruminate_and_assert_citations("what is a clara?",
+                                   _{llm_provider: ollama, llm_model: "gemma4:e4b"},
+                                   Result),
+    ruminate_citations(Result, Sources),
+    findall(Id, (member(S, Sources), Id = S.id, cite(clarify_clara, Id)), CitationIds).
+
 extract_status(JSON, Status) :-
     atom_json_dict(JSON, Dict, []),
     Status = Dict.status.
