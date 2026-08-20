@@ -1,30 +1,84 @@
-# City of Dis — Front Desk POC
+# Clara — general-purpose learning assistant
 
-A self-contained Rust binary that demonstrates the Clara neurosymbolic reasoning stack in a visitor intake scenario set at the infernal City of Dis administrative offices.
+A Rust/actix-web WebSocket frontend for `lildaemon`'s
+`goat/app/assistant/` API — a general-purpose assistant that researches
+what it doesn't already know (via a standing Snek + Edgequake-ingest
+Ritual) and gets visibly better-grounded over time as more topics get
+asked about. Successor to the earlier "City of Dis" visitor-intake demo,
+which this crate used to be; same Rust service, WS protocol, and Docker
+deploy shape, entirely different backend.
 
 ## What it does
 
-A visitor chats with **Agent Minos** via a browser-based WebSocket UI. Each visitor turn drives two parallel reasoning calls:
+A user chats with **Clara** via a browser-based WebSocket UI. Each message
+triggers one call to lildaemon's `POST /assistant/sessions/{id}/send`,
+which:
 
-1. **Suggestions** — `clara-api /deduce` runs `suggestion(visitor, S)` against the Prolog+CLIPS knowledge base and returns actionable hints to guide the conversation.
-2. **Admittance** — `clara-api /deduce` runs `admit(visitor, Reason)` to evaluate whether the visitor qualifies for entry under the five admittance rules.
+1. **Classifies** the message as `chat` or `knowledge_query`, via a
+   Prolog predicate the active *ruleset* defines (see below) — a
+   deterministic policy, not an LLM call (see
+   `lildaemon/docs/assistant_demo.md` for why).
+2. For `chat`: answers directly from Clara's own knowledge.
+3. For `knowledge_query`: resolves the topic's Edgequake workspace
+   (`adhoc.{slugify(query)}`) — researching it first (a real Snek crawl +
+   Edgequake ingest, via a **standing Ritual** joined once and reused
+   across every turn, not re-created per query) only if that workspace
+   doesn't already exist — then answers using Clara's own knowledge *and*
+   Edgequake grounding, reconciled into one response. Every ingested page
+   also lands in a second, shared, ever-growing workspace
+   (`assistant.general`), so grounding keeps improving across *unrelated*
+   topics over the session's lifetime, not just repeated questions on the
+   same topic.
 
-Both results are injected into the system prompt of a **FieryPit `/evaluate`** call that generates Agent Minos's response. The session ends in one of three terminal states: **Admitted**, **Denied**, or **Redirected** (e.g., to the map kiosk).
+This frontend itself is thin: it authenticates once at startup as a
+shared service account, creates one assistant session per WebSocket
+connection, and relays each message to `/send`. No admit/deny/redirect
+terminal states — this is continuous chat, not a gated interaction.
 
 ## Architecture
 
 ```
 Browser (WS) ──► clara-frontdesk (8088)
                       │
-                      ├─► clara-api /deduce (8080)
-                      │       └─► clara-cycle: Prolog + CLIPS + Dagda tableau
-                      │
-                      └─► FieryPit /evaluate (6666)
-                              └─► KindlingEvaluator (LLM)
+                      └─► lildaemon /assistant/* (6666)
+                              ├─► standing Ritual (Snek + EdgequakeIngest,
+                              │     joined once, reused every turn)
+                              ├─► clara-api /deduce (8080)
+                              │     └─► clara-cycle: Prolog + CLIPS
+                              └─► Edgequake (graph RAG) — per-topic +
+                                    cumulative workspaces
 ```
 
-**Knowledge base source:** `roost/front_desk_poc_reprise.pl`
-Five admittance rules and six suggestion predicates. Each rule may use either symbolic Prolog facts (asserted per turn) or `clara_fy/3` LLM-mediated checks for conditions that cannot be verified symbolically.
+## Rulesets: how behavior is swapped
+
+The frontend never changes — a ruleset is a plain Prolog file, selected
+entirely **server-side** (lildaemon's `ASSISTANT_RULESET_PATH` env var,
+or the default `goat/app/assistant/rulesets/general_assistant.pl`).
+Every ruleset must implement this contract:
+
+```prolog
+assistant_turn(+Query, -Action, -Reply) is semidet.
+%   Action ∈ {chat, knowledge_query}.
+%   chat: also bind Reply — sent straight to the user.
+%   knowledge_query: bind Reply = none — the platform runs its own fixed
+%   research_step/8 + answer_step/9 pipeline and generates the reply.
+
+research_step/8, answer_step/9, extract_hohi_response/2
+%   Fixed platform predicates every ruleset must copy verbatim (see
+%   general_assistant.pl for the reference implementation) — only
+%   assistant_turn/3 is meant to actually vary between rulesets.
+```
+
+Two rulesets exist today:
+
+| Ruleset | Classification policy | Chat tone |
+|---|---|---|
+| `general_assistant.pl` (default) | Research everything except obvious small talk | Whatever Clara's model returns, unmodified |
+| `terse_analyst.pl` | Only research when explicitly asked ("research", "look up", "latest", ...) | Forced one-sentence, no-pleasantries |
+
+Swap by setting `ASSISTANT_RULESET_PATH` on the lildaemon process and
+restarting **clara-api** (see "Known constraints" below — this is not a
+hot-swap today).
 
 ## File layout
 
@@ -32,108 +86,90 @@ Five admittance rules and six suggestion predicates. Each rule may use either sy
 clara-frontdesk-poc/
 ├── Cargo.toml
 ├── config/
-│   └── city_of_dis.toml         # company persona + service URLs + file paths
-├── roost/
-│   ├── front_desk_poc_reprise.pl          # source Prolog (edit this)
-│   ├── front_desk_poc_reprise_clara.pl    # generated — do not edit
-│   └── front_desk_poc_reprise_clara.clp   # generated — do not edit
+│   ├── city_of_dis.toml       # Docker deploy: persona copy + service URLs
+│   └── localnet_dis.toml      # local dev variant
 ├── src/
-│   ├── main.rs      # server init (FieryPitClient before actix runtime)
-│   ├── config.rs    # TOML config structs
-│   ├── state.rs     # AppState shared across WS connections
-│   ├── session.rs   # VisitorSession per-connection state + fact accumulation
-│   ├── deduce.rs    # blocking POST+poll client for /deduce
-│   └── ws.rs        # WebSocket actor, per-turn reasoning loop
+│   ├── main.rs               # server init, auth-once-at-startup
+│   ├── config.rs              # TOML config structs
+│   ├── state.rs                # AppState shared across WS connections
+│   ├── assistant_client.rs    # blocking REST client for /assistant/*
+│   └── ws.rs                  # WebSocket actor: one session per connection
 └── static/
-    └── index.html   # single-file chat UI (infernal theme)
+    └── index.html              # single-file chat UI
 ```
 
-## Prerequisites
+(`lildaemon/goat/app/assistant/rulesets/` — not in this crate — is where
+the actual ruleset `.pl` files live, since ruleset selection is entirely
+lildaemon-side.)
 
-### 1. Build the workspace
+## Running it
+
+### Docker (normal path)
+
+Part of the standard `./clara.sh up -d` stack (see the workspace root) —
+builds from `docker/Dockerfile`'s `frontdesk` stage, config baked in from
+`config/city_of_dis.toml`. Open `http://localhost:8088`.
+
+### Local dev
 
 ```bash
 cargo build -p clara-frontdesk-poc
-```
-
-### 2. Transduce the Prolog source
-
-Run this once from the workspace root whenever `front_desk_poc_reprise.pl` changes:
-
-```bash
-transduction --decorate clara-frontdesk-poc/roost/front_desk_poc_reprise.pl
-```
-
-This produces:
-- `roost/front_desk_poc_reprise_clara.pl`
-- `roost/front_desk_poc_reprise_clara.clp`
-
-### 3. Update the config with absolute paths
-
-Edit `clara-frontdesk-poc/config/city_of_dis.toml` and replace the `CHANGE_ME` placeholders with the absolute paths to the generated files **as seen by the `clara-api` process**:
-
-```toml
-[paths]
-clara_api_url  = "http://localhost:8080"
-fiery_pit_url  = "http://localhost:6666"
-clara_pl_path  = "/abs/path/to/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.pl"
-clara_clp_path = "/abs/path/to/clara-cerebrum/clara-frontdesk-poc/roost/front_desk_poc_reprise_clara.clp"
-```
-
-The paths must be absolute because `clara-api` reads these files from its own working directory.
-
-### 4. Start the dependent services
-
-| Service | Default port | How to start |
-|---------|-------------|--------------|
-| FieryPit (lildaemon) | 6666 | per your local setup |
-| clara-api | 8080 | `cargo run -p clara-api` |
-
-### 5. Run the front desk server
-
-```bash
-FRONTDESK_CONFIG=clara-frontdesk-poc/config/city_of_dis.toml \
+FRONTDESK_CONFIG=clara-frontdesk-poc/config/localnet_dis.toml \
     RUST_LOG=clara_frontdesk=debug \
     cargo run -p clara-frontdesk-poc
 ```
 
-Open `http://localhost:8088` in a browser.
-
-## Visitor test scenarios
-
-| Scenario | Facts to trigger | Expected outcome |
-|----------|-----------------|-----------------|
-| Summoned visitor with three artifacts | `summoned_by`, three `has_artifact` facts | Admitted |
-| Urgent message, came directly | `urgent_message`, no `stopped_elsewhere` | Admitted |
-| Flamefruit carrier before sundown | `carries_flamefruit`, no `after_sundown` | Admitted |
-| Critical info + completed task | `has_critical_info`, `performed_task` | Admitted |
-| Lost or confused visitor | LLM-detected via `clara_fy` | Redirected to map kiosk |
-
-Facts are accumulated as Prolog clauses in `VisitorSession` and injected into every `/deduce` call. The LLM-mediated rules (`clara_fy/3`) extract conditions from conversation context when symbolic facts are absent.
+Requires lildaemon and clara-api already running and reachable at the
+URLs in the config file (`fiery_pit_url`).
 
 ## Configuration reference
 
 ```toml
 [company]
-name          = "City of Dis Administrative Office"
-agent_name    = "Agent Minos"
-system_prompt = "..."   # injected into every /evaluate call
+name       = "Clara"
+agent_name = "Clara"
+greeting   = "..."   # sent as the first WS message on connect
 
 [server]
-port = 8088             # override with FRONTDESK_PORT not yet supported; edit this field
+port = 8088
 
 [paths]
-clara_api_url  = "http://localhost:8080"
-fiery_pit_url  = "http://localhost:6666"
-clara_pl_path  = "..."  # absolute path to _clara.pl
-clara_clp_path = "..."  # absolute path to _clara.clp
+fiery_pit_url     = "http://lildaemon:6666"  # hosts both FieryPit and /assistant/*
+static_path       = "/app/static"
+service_username  = "frontdesk-service"       # shared account, no per-visitor identity yet
+service_password  = "frontdesk-service-pw"
 ```
 
-Config file location is read from the `FRONTDESK_CONFIG` environment variable; defaults to `clara-frontdesk-poc/config/city_of_dis.toml` (relative to workspace root).
+Config file location is read from the `FRONTDESK_CONFIG` environment
+variable; defaults to `clara-frontdesk-poc/config/city_of_dis.toml`
+(relative to workspace root).
 
 ## Known constraints
 
-- **`FieryPitClient` must be created before the actix runtime.** The blocking `reqwest` client panics if dropped inside a tokio context. `main.rs` constructs it before `actix_web::rt::System::new()`.
-- **Transduced files are not committed.** They are generated artefacts; regenerate after every edit to the source `.pl`.
-- **Fixed visitor atom.** The Prolog atom `visitor` is used throughout for simplicity; dynamic name extraction from conversation is not implemented in the POC.
-- **`/evaluate` payload shape.** The current payload uses `{ prompt, context, model }` matching the KindlingEvaluator's OllamaFish backend. Adjust `session.rs::evaluate_data()` if the evaluator changes.
+- **Ruleset swapping is not a safe hot-swap.** Restart **clara-api**
+  after changing `ASSISTANT_RULESET_PATH`, not just lildaemon. Confirmed
+  live: SWI's `thread_local` clause isolation doesn't survive `tokio`'s
+  OS-thread-pool reuse (see project memory `thread_local_os_thread_reuse_bug`
+  and `clara-cerebellum/docs/ritual_rumination_answer_bugs_fix_plan.md`'s
+  "Regression found after shipping" section) — two rulesets sharing
+  predicate names (`assistant_turn/3`, `research_step/8`, etc., required
+  by the contract above) can silently cross-contaminate within one
+  clara-api process lifetime otherwise.
+- **No per-visitor identity yet.** Every WS connection authenticates as
+  the same shared `service_username` account; only the assistant
+  `session_id` distinguishes conversations. Workspaces are also global,
+  not scoped per user — see `lildaemon/docs/assistant_demo.md`.
+- **`reqwest` client needs a generous timeout.** A `knowledge_query` turn
+  can legitimately take minutes (research + answer legs chained
+  sequentially) — `main.rs` sets an explicit 420s timeout; don't remove it.
+- **No workspace lifecycle automation yet.** `POST /assistant/workspaces/
+  reap` on lildaemon exists but is manually-triggered only.
+
+## Related reading
+
+- `lildaemon/docs/assistant_demo.md` — the full design, verified-live
+  results, and every bug found building this.
+- `clara-cerebellum/docs/edgequake_workspace_capabilities.md` — why
+  ingest-time duplication (not real set operations) backs the cumulative
+  workspace, and why there's no server-side TTL to lean on.
+- `clara-cerebellum/docs/rituals_101.md` — general Ritual mechanics.
