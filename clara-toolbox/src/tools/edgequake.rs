@@ -9,6 +9,7 @@ use reqwest::blocking::Client;
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::Value;
+use std::time::Duration;
 
 /// Operations supported by the Edgequake tool
 #[derive(Debug, Clone, Deserialize)]
@@ -91,7 +92,19 @@ impl EdgequakeClient {
             api_key,
             default_tenant,
             default_workspace,
-            http: Client::new(),
+            // Explicit generous timeout — confirmed live (2026-08-20) that
+            // reqwest's default is too short for a hybrid-mode query
+            // against a large/growing workspace (e.g. goat/app/assistant/'s
+            // ever-growing cumulative workspace): TCP connectivity to
+            // Edgequake was fine, but the query itself took long enough to
+            // trip the default and return "operation timed out" on every
+            // single call, not intermittently. 90s leaves headroom under
+            // the two other LLM legs in answer_step/9's own ~180s budget
+            // (lildaemon/goat/app/assistant/rulesets/general_assistant.pl).
+            http: Client::builder()
+                .timeout(Duration::from_secs(90))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 
