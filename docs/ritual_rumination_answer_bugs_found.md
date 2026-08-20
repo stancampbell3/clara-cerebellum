@@ -1,5 +1,10 @@
 # Bugs found building the rumination-answer example (2026-08-19)
 
+**Status: all four fixed.** See `docs/ritual_rumination_answer_bugs_fix_plan.md`
+for the upstream fixes (implemented and committed) and a fifth, related
+regression found and fixed the following day. This doc is the original,
+point-in-time bug report — read the fix-plan doc for current status.
+
 Four real bugs surfaced while building `lildaemon/examples_ritual_rumination_answer.py`
 (a Ritual that answers a query using both Clara's own model and Edgequake,
 combined — see `lildaemon/docs/ritual_rumination_answer_example.md` for the

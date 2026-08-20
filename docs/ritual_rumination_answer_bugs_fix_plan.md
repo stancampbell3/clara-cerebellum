@@ -231,7 +231,12 @@ in parallel by different people, but 5 (the doc update) should come last since
 it documents the post-fix state. 2 carries the most risk and is worth its own
 review/testing pass separate from the others.
 
-## Verification plan (after items 1-4 land)
+## Verification plan (after items 1-4 land) — completed
+
+All six steps below were run live against the rebuilt stack when items
+1-4 shipped; see `docs/ritual_rumination_answer_bugs_found.md`'s status
+line and the "Regression found after shipping" section above for the
+follow-up verification after the item-2 fix itself needed fixing.
 
 1. Rebuild clara-api and restart the container.
 2. Re-run `examples_ritual_rumination_answer.py --skip-ingest` against the
