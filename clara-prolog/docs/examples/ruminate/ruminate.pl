@@ -31,9 +31,22 @@ extract_hohi(JSON, Hohi) :-
 %% not `consult`), it silently mis-evaluates instead of throwing or failing —
 %% use get_dict/3 there instead. Confirmed live 2026-08-19, see
 %% clara-cerebellum/docs/ritual_rumination_answer_bugs_found.md, bug #4.
+%%
+%% ponder_text/2's envelope shape also isn't constant: sometimes the leaf
+%% field is `hohi.response.content` (a reduced/tool-wrapped Hohi), other
+%% times it's Ollama's native generate shape with `hohi.response.response`
+%% and no `content` key at all — confirmed live 2026-08-20, same call
+%% returning one shape or the other depending on evaluator routing, not the
+%% query. get_dict/3 with a fallback handles both; plain dot-notation can't
+%% (it throws on a missing key rather than trying an alternative).
 extract_hohi_response(JSON, Response) :-
     atom_json_dict(JSON, Dict, []),
-    Response = Dict.hohi.response.content.
+    get_dict(hohi, Dict, D1),
+    get_dict(response, D1, D2),
+    (   get_dict(content, D2, Response)
+    ->  true
+    ;   get_dict(response, D2, Response)
+    ).
 
 grounded_ponder(Query, EdgeAnswer) :- ruminate_opts(Query, _{llm_provider: ollama, llm_model: "gemma4:e4b"}, R1),
   ruminate_answer(R1, EdgeAnswer),

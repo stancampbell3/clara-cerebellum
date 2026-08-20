@@ -1,6 +1,9 @@
 # Fix plan: the 4 bugs (+1 related issue) from the rumination-answer example
 
-**Status**: proposed, not yet implemented. For team review.
+**Status**: implemented and committed (`bcca6f0`, 2026-08-20). See
+"Regression found after shipping" below for a real gap discovered in item 2
+after this landed — read it before assuming clause isolation is fully
+solved.
 
 **Companion doc**: `docs/ritual_rumination_answer_bugs_found.md` — the original
 bug report (symptoms, root causes, example-local workarounds) written while
@@ -181,6 +184,44 @@ new `rituals_101.md` subsection (avoid naming collisions between real
 library predicates and hand-authored `prolog_clauses` predicate names), but
 not a code fix: the alternative (forcing every `consult/1`'d predicate to
 also be thread_local) would break normal library-loading semantics.
+
+## Regression found after shipping: thread_local doesn't survive OS thread reuse
+
+**Found 2026-08-20, day after item 2 shipped, building
+`lildaemon/goat/app/assistant/`.** The `thread_local` fix does **not**
+give true per-`/deduce`-call isolation. Confirmed live: after registering
+several different Prolog sources over one evening that each defined their
+own version of the same predicate (`assistant_turn/3`, different bodies), a
+`/deduce` call referencing the *current* source's `prolog_source_id`
+returned a result consistent with an *older*, different version of that
+predicate — despite `resolve_prolog_source` only loading the one referenced
+source's content. Restarting `docker-clara-api-1` (fresh OS thread pool)
+made the identical call behave correctly.
+
+**Likely root cause**: the actual blocking Prolog work runs inside
+`tokio::task::spawn_blocking` (`deduce_handler.rs`), which pulls worker
+threads from a bounded, **reused** OS thread pool. SWI's `thread_local`
+storage appears to be keyed by OS-thread-identity, not by the logical
+`PL_engine_t` — so a later, unrelated deduce call scheduled onto a
+previously-used pooled thread can inherit that thread's stale thread-local
+clause storage for a given predicate name, and (Prolog trying the oldest
+matching clause first) that stale clause can shadow the new engine's own
+fresh one.
+
+**Practically**: this mostly stays invisible during a single ruleset's
+normal life (re-registering identical content is idempotent, so even a
+"stale" clause matches the current one) — it bites when the *same*
+predicate name gets a genuinely different body across several registered
+sources without a clara-api restart in between (iterative diagnostic
+testing, or swapping which ruleset file is active). Same restart-to-reset
+workaround as before item 2 shipped, just needed less often now.
+
+**Not fixed here** — full memory write-up (with more implementation detail)
+at the project memory `thread_local_os_thread_reuse_bug`. The likely real
+fix is per-request Prolog **modules** (keyed by a fresh unique atom, not
+OS-thread-identity) instead of `thread_local` for this kind of isolation —
+worth its own ticket and a closer look at SWI's actual thread_local
+implementation before attempting it, not a quick re-patch.
 
 ## Suggested order of work
 
