@@ -305,16 +305,46 @@ impl PrologEnvironment {
     /// Load Prolog code from a string
     ///
     /// Parses each clause and asserts it into the database. The first time a
-    /// given predicate indicator is seen, it is declared `thread_local`
-    /// before being asserted — SWI engines (as created by `PL_create_engine`,
-    /// see `PrologEnvironment::new`) share one global dynamic-predicate
-    /// database, like Prolog threads do, unless a predicate opts out via
-    /// `thread_local`. Without this, hand-authored clauses loaded this way
-    /// (e.g. a Ritual's `prolog_clauses`) would accumulate one extra clause
-    /// per call across the life of the process, with Prolog always trying
-    /// the oldest (possibly stale) matching clause first — this is the same
-    /// isolation mechanism `the_coire.pl` already relies on for its own
-    /// mutable predicates (see its `:- thread_local ...` declarations).
+    /// given predicate indicator is seen, it is declared `thread_local` and
+    /// any pre-existing clauses for it are retracted, before the new clause
+    /// is asserted — see the two-part rationale below. Getting the predicate
+    /// indicator itself right for *rule* clauses (`Head :- Body`, as opposed
+    /// to bare facts) needs its own care: `functor/3` on the whole clause
+    /// term gives the functor of the top-level `:-`/2 control construct
+    /// (`:-`, arity 2), not the head's own indicator — so this extracts `F/A`
+    /// from `Head`, not from the raw parsed term, whenever the parsed term is
+    /// a rule. Confirmed live (2026-08-20): getting this wrong made every
+    /// rule after the first one in a multi-predicate `prolog_clauses`/source
+    /// silently skip `thread_local`/`retractall` entirely (each one's real `F/A`
+    /// came back as `:-/2`, which the "already seen" bookkeeping then matched
+    /// against the *first* rule's entry) — a 100%-reproducible bug, not a
+    /// timing-dependent one, that single-predicate testing never exercised.
+    ///
+    /// Both `thread_local` and `retractall` are needed together, for two
+    /// distinct reasons:
+    ///
+    /// - `thread_local` — SWI engines (as created by `PL_create_engine`, see
+    ///   `PrologEnvironment::new`) share one global dynamic-predicate
+    ///   database, like Prolog threads do, unless a predicate opts out. This
+    ///   is what protects two *genuinely concurrent* engines (running on two
+    ///   different OS threads at the same time, e.g. two real concurrent
+    ///   `/deduce` requests) from clobbering each other — the same isolation
+    ///   mechanism `the_coire.pl` already relies on for its own mutable
+    ///   predicates (see its `:- thread_local ...` declarations).
+    /// - `retractall` — belt-and-braces alongside `thread_local`, not a
+    ///   substitute for it: retracting any existing clauses for a predicate
+    ///   indicator before asserting this call's own version means whatever
+    ///   this engine ends up seeing for a given predicate is always exactly
+    ///   what this call itself loaded, regardless of what state (thread-local
+    ///   or otherwise) an earlier, unrelated call left behind. An earlier
+    ///   investigation this session suspected `tokio::task::spawn_blocking`'s
+    ///   reused OS thread pool (`clara-api/src/handlers/deduce_handler.rs`)
+    ///   interacting with `thread_local`'s OS-thread-keyed storage as the
+    ///   root cause of stale clauses winning — that mechanism is real and
+    ///   worth keeping this defense-in-depth for, but the rule-clause
+    ///   `functor/3` bug above turned out to be the actual, 100%-reproducible
+    ///   cause of the specific failures observed; the thread-reuse theory was
+    ///   never conclusively confirmed as more than a secondary risk.
     pub fn consult_string(&self, code: &str) -> PrologResult<()> {
         // Use read_term_from_chars to parse and assert
         // This handles multiple clauses separated by '.'
@@ -328,7 +358,10 @@ impl PrologEnvironment {
                   (T == end_of_file -> ! ; \
                    (  T = (:-G)  -> ignore(call(G)) \
                    ;  T = (?-G)  -> ignore(call(G)) \
-                   ;  functor(T, F, A), \
+                   ;  ( T = (ClauseHead :- _ClauseBody) \
+                      -> functor(ClauseHead, F, A) \
+                      ;  functor(T, F, A) \
+                      ), \
                       ( memberchk(F/A, [consult/1, \
                                         use_module/1, use_module/2, \
                                         ensure_loaded/1, \
@@ -337,6 +370,8 @@ impl PrologEnvironment {
                       ;  ( nb_getval('$cs_seen', Seen0), memberchk(F/A, Seen0) \
                          -> true \
                          ;  catch(thread_local(F/A), _, true), \
+                            functor(Head, F, A), \
+                            catch(retractall(Head), _, true), \
                             nb_getval('$cs_seen', Seen1), \
                             nb_setval('$cs_seen', [F/A|Seen1]) \
                          ), \
