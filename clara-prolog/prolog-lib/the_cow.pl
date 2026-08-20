@@ -17,11 +17,27 @@
     ruminate_opts/3,
     ruminate_status/2,
     ruminate_answer/2,
-    ruminate_citations/2
+    ruminate_citations/2,
+    ruminate_and_assert_citations/3,
+    cite/2,
+    citation/8,
+    cites/2
 ]).
 
 :- use_module(library(http/json)).
 :- use_module(library(the_rabbit), [dict_to_json/2]).
+
+% citation/8 and cites/2 hold per-deduction state (populated by
+% ruminate_and_assert_citations/3), so they need the same thread_local
+% isolation the_coire.pl's mutable predicates already rely on: each /deduce
+% call runs on its own SWI engine, but engines share one global dynamic-
+% predicate database unless declared thread_local (see consult_string's doc
+% comment in clara-prolog/src/backend/ffi/environment.rs for the full
+% mechanism). This also settles citation lifecycle for free: with
+% thread_local, asserted citations are naturally scoped to the one
+% deduction call that asserted them and never leak into the next.
+:- thread_local citation/8.
+:- thread_local cites/2.
 
 %% ruminate/2 - Query Edgequake's RAG API with default (hybrid) retrieval mode.
 ruminate(Query, Result) :-
@@ -113,3 +129,47 @@ ruminate_answer(Result, Answer) :-
 %%   Defaults to [] rather than failing when sources is absent.
 ruminate_citations(Result, Citations) :-
     Citations = Result.get(sources, []).
+
+%% ruminate_and_assert_citations/3 - Like ruminate_opts/3, but also asserts
+%%   each citation in Result's `sources` list as a citation/8 fact, so
+%%   downstream rules/conclusions can point at a citation by its stable id
+%%   (cite/2) instead of each embedding its own copy. A separate predicate
+%%   from ruminate_opts/3 rather than a side effect of every call: plain
+%%   ruminate/2 callers who only want text shouldn't be forced into
+%%   mutating the fact base. Dedups by id (Edgequake's own SourceReference.id
+%%   doc comment guarantees it's stable/unique) — calling this repeatedly
+%%   with overlapping citations across a session does not accumulate
+%%   duplicate facts.
+%%   citation(Id, SourceType, DocumentId, FilePath, StartLine, EndLine,
+%%            Score, Snippet) - fields Edgequake omits (e.g. entity-type
+%%   sources have no file/line) are bound to the atom `none`.
+ruminate_and_assert_citations(Query, Opts, Result) :-
+    ruminate_opts(Query, Opts, Result),
+    ruminate_citations(Result, Sources),
+    maplist(assert_citation, Sources).
+
+assert_citation(Source) :-
+    Id = Source.id,
+    ( citation(Id, _, _, _, _, _, _, _)
+    -> true
+    ;  SourceType = Source.get(source_type, none),
+       DocumentId = Source.get(document_id, none),
+       FilePath = Source.get(file_path, none),
+       StartLine = Source.get(start_line, none),
+       EndLine = Source.get(end_line, none),
+       Score = Source.get(score, none),
+       Snippet = Source.get(snippet, none),
+       assertz(citation(Id, SourceType, DocumentId, FilePath, StartLine,
+                         EndLine, Score, Snippet))
+    ).
+
+%% cite/2 - Record that a conclusion (any caller-chosen id — the rule/
+%%   session context knows what conclusion it's drawing, ruminate_opts/3
+%%   itself has no notion of "conclusion") rests on a given citation id.
+%%   Idempotent: calling cite/2 twice with the same pair asserts one fact,
+%%   not two.
+cite(ConclusionId, CitationId) :-
+    ( cites(ConclusionId, CitationId)
+    -> true
+    ;  assertz(cites(ConclusionId, CitationId))
+    ).

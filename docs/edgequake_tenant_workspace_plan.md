@@ -91,9 +91,22 @@ CLIPS side: same idea, a `ruminate-opts` deffunction that takes a pre-built JSON
 2. End-to-end `llm_provider`/`llm_model` plumbing through the new Rust code — call `ruminate_opts` with `llm_provider: "ollama", llm_model: "gemma4:e4b"` (i.e., the existing default, made explicit). This exercises the whole path — Prolog → tool → Edgequake body field → real dispatch — at zero cost since it's local Ollama, and proves the field-name plumbing without needing to spend on OpenAI/Anthropic/etc.
 3. Do **not** live-test cloud providers (openai/anthropic/gemini/...) as part of this work unless Stan wants to spend the credits to confirm end-to-end — the validation-error probe technique above already confirms the field names are correct without dispatching a real completion.
 
-## Future: surface citations as first-class Prolog/CLIPS assertions
+## Citations as first-class Prolog assertions — done (2026-08-20)
 
-A `ruminate`/`ruminate_opts` success response's `sources` array carries real, per-citation data, not just an opaque answer string. Right now all of that is thrown away: `ruminate_mode`/`ruminate_opts` return the raw JSON blob as an atom, and any Prolog/CLIPS caller that wants a specific citation has to re-parse it themselves — confirmed hands-on while debugging `docs/examples/ruminate/ruminate.pl` (2026-08-11): there's no `dict_get/3` in SWI, and the value handed back isn't a dict anyway, so today's only working pattern is `atom_json_dict(Raw, Dict, [value_string_as(atom)])` at every call site.
+_Originally written as speculative future work below; updated in place now that all three proposed changes have landed and been verified live. The original "Authoritative response shape" research (still accurate) is kept as-is._
+
+A `ruminate`/`ruminate_opts` success response's `sources` array carries real, per-citation data, not just an opaque answer string. Previously all of that was thrown away: `ruminate_mode`/`ruminate_opts` returned the raw JSON blob as an atom, and any Prolog caller that wanted a specific citation had to re-parse it themselves — confirmed hands-on while debugging `docs/examples/ruminate/ruminate.pl` (2026-08-11): there's no `dict_get/3` in SWI, and the value handed back wasn't a dict anyway, so the only working pattern was `atom_json_dict(Raw, Dict, [value_string_as(atom)])` at every call site.
+
+**Changes #1 and #2 (return a parsed dict, add `ruminate_status/2`/`ruminate_answer/2`/`ruminate_citations/2` accessors) shipped same-day as this doc's original writing, commit `a5dcef3` (2026-08-11)** — the "Proposed change" wording below was left stale until this update; the code was never actually behind the doc.
+
+**Change #3 (citation assertion) implemented and verified live 2026-08-20**, in `clara-prolog/prolog-lib/the_cow.pl`:
+- `citation/8` (`Id, SourceType, DocumentId, FilePath, StartLine, EndLine, Score, Snippet`) and `cites/2` (`ConclusionId, CitationId`), both `:- thread_local` — same isolation mechanism `the_coire.pl`'s mutable predicates already rely on (each `/deduce` call is a separate SWI engine sharing one global dynamic-predicate database unless declared `thread_local`; see `environment.rs`'s `consult_string` doc comment). This also resolves the lifecycle question below for free: thread_local scopes asserted citations to the one deduction call that asserted them, with no manual retraction needed.
+- `ruminate_and_assert_citations/3` — a separate predicate from `ruminate_opts/3` (not a side effect of every call), per the "leaning toward the explicit wrapper" note below. Dedups by `Id` before asserting.
+- `cite/2` — idempotent conclusion→citation linker.
+- **Verified live** (`prolog-repl`, local Ollama, zero cost): a real `ruminate_and_assert_citations("what is a clara?", ...)` call asserted 90 real `citation/8` facts from Edgequake's actual response; calling it again with the same query held at 90 (no duplicates from overlapping citation sets across two live calls) — confirms both the live wiring and the dedup logic together, not just the dedup logic in isolation.
+- **CLIPS side deliberately left as raw JSON text, not a gap**: `the_cow.clp` has no equivalent accessors or assertion predicates. This matches this codebase's established, documented convention (`the_coire.clp`'s "Notes on consumption" section: "CLIPS cannot parse JSON natively... use the Rust API") — inventing ad hoc CLIPS-side JSON string-parsing here would contradict that convention, not extend it.
+
+The rest of this section is kept for historical context (the original research and design questions, now resolved as described above):
 
 **Authoritative response shape** (read directly from Edgequake's source, not inferred from a live sample — `edgequake-api/src/handlers/query_types.rs::QueryResponse`/`SourceReference`, `clara-toolbox/src/tool.rs::ToolResponse`):
 
@@ -101,24 +114,21 @@ A `ruminate`/`ruminate_opts` success response's `sources` array carries real, pe
   - `answer` (string), `mode` (string), `sources` (array, see below), `stats` (object: `sources_retrieved`, `total_time_ms`, `retrieval_time_ms`, `generation_time_ms`, `embedding_time_ms`, etc.), `reranked` (bool), and optionally `subgraph`, `conversation_id`, `explain`.
 - Each `sources[]` entry (`SourceReference`): `source_type` (`"chunk"`/`"entity"`/`"relationship"`), `id` (stable, unique — the natural fact key), `score`, `snippet`, and optionally `rerank_score`, `reference_id`, `document_id`, `file_path`, `start_line`/`end_line`, `chunk_index`, `page_start`/`page_end`, plus entity-only fields (`entity_type`, `degree`, `source_chunk_ids`) when `source_type = "entity"`.
 
-**Proposed change #1 — stop returning raw text.** `ruminate/2`, `ruminate_with_context/3`, `ruminate_mode/3`, `ruminate_opts/3` already parse the response internally to check `status`; they should return that `Dict` instead of `Raw`. This is the fix for the dereferencing pain hit today — no design risk, just stop throwing away work already done. (Breaking change to the return value's type, but the only caller today is the example file, and per repo convention we change the API directly rather than keeping both shapes around.)
+**Change #1 (was "proposed", now done)** — `ruminate/2`, `ruminate_with_context/3`, `ruminate_mode/3`, `ruminate_opts/3` return the parsed `Dict`, not the raw JSON atom.
 
-**Proposed change #2 — accessor predicates**, once `Result` is a dict:
+**Change #2 (was "proposed", now done)** — accessor predicates in `the_cow.pl`:
 ```prolog
 ruminate_status(Result, Status)      :- Status = Result.status.
 ruminate_answer(Result, Answer)      :- Answer = Result.answer.
 ruminate_citations(Result, Sources)  :- Sources = Result.get(sources, []).
 ```
-Thin on purpose — `Result.status`/`.answer` are already one-liners; the value is a stable, documented name to call instead of every site re-deriving the dict-functional path, and a seam for change #3 below.
 
-**Proposed change #3 — citation assertion.** Needs a decision, not yet designed:
-- *Where the assert happens*: inside `ruminate_opts` itself (every call populates the fact base) vs. an explicit `ruminate_and_assert_citations(Query, Opts, Result)` wrapper, so plain `ruminate/2` callers who just want text aren't forced into mutating global state. Leaning toward the explicit wrapper — asserting on every call is a surprising side effect for a predicate that reads like a pure query.
-- *Fact shape*: Prolog — `:- dynamic citation/8.` with `citation(Id, SourceType, DocumentId, FilePath, StartLine, EndLine, Score, Snippet)` (optional fields default to `none`/unbound where Edgequake omits them, e.g. entity-type sources have no file/line). CLIPS — a mirroring `citation` deftemplate with the same slots.
-- *Linking conclusions*: a separate `cites(ConclusionId, CitationId)` fact/deftemplate-instance, so a rule firing or derived conclusion can point at one or more citations by `Id` without embedding a copy. `ConclusionId` would need to come from the caller (the rule/session context knows what conclusion it's drawing) — `ruminate_opts` itself has no notion of "conclusion," only "these are the citations available from this answer."
-- *Dedup*: `Id` (the chunk/entity id) is already stable and unique per Edgequake's own doc comment on `SourceReference::id`, so `citation/8` assertion should check `citation(Id, _, _, _, _, _, _, _)` first and skip re-asserting rather than accumulating duplicates across multiple `ruminate` calls in the same session.
-- *Lifecycle*: not addressed yet — whether asserted citations get retracted between sessions/queries, or persist for the life of the Prolog process, needs a decision once there's a real multi-query rule scenario to test against.
-
-Worth doing after the current tenant/workspace/provider/model work and the two deferred Edgequake items ([[edgequake-stack-integration-deferred]], [[edgequake-query-scoping-bug-upstream]] in memory) are further along, since it's new capability rather than a fix. Changes #1 and #2 are small and low-risk enough to do independently of #3 whenever it's convenient.
+**Change #3 (was "needs a decision", now decided and done)** — the questions below were resolved as follows, per the "Citations as first-class Prolog assertions — done" section above:
+- *Where the assert happens*: the explicit-wrapper option, as leaned toward here — `ruminate_and_assert_citations/3`, not a side effect of `ruminate_opts/3` itself.
+- *Fact shape*: exactly as sketched — Prolog `citation/8` with this field order, `none` for absent optional fields. No CLIPS deftemplate (see "CLIPS side deliberately left as raw JSON" above — a mirroring CLIPS shape would violate this codebase's own no-CLIPS-JSON-parsing convention).
+- *Linking conclusions*: exactly as sketched — `cites/2`, caller supplies `ConclusionId`.
+- *Dedup*: exactly as sketched — check-then-assert on `Id`, verified live (two overlapping live `ruminate_and_assert_citations` calls held at the same fact count, no duplicates).
+- *Lifecycle*: resolved by `thread_local`, not by explicit retraction — see above for why that's the correct scope (one deduction call), not a punt.
 
 ## Open questions / explicitly out of scope for this pass
 
