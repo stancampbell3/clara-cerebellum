@@ -175,6 +175,14 @@ services:
       # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
       - EDGEQUAKE_DEFAULT_TENANT=${EDGEQUAKE_DEFAULT_TENANT:-}
       - EDGEQUAKE_DEFAULT_WORKSPACE=${EDGEQUAKE_DEFAULT_WORKSPACE:-}
+      # Background reap scheduler (goat/models/ReapScheduler.py) for the
+      # assistant's shared Edgequake workspace — see lildaemon/docs/
+      # assistant_demo.md's "Reap scheduler" section. INTERVAL is how often
+      # the sweep runs; IDLE is how long a document must go uncited (or
+      # uncited-since-ingest, if never cited) before it's eligible for
+      # deletion.
+      - ASSISTANT_REAP_INTERVAL_SECONDS=${ASSISTANT_REAP_INTERVAL_SECONDS:-3600}
+      - ASSISTANT_REAP_IDLE_SECONDS=${ASSISTANT_REAP_IDLE_SECONDS:-86400}
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output
