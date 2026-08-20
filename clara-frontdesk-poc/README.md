@@ -19,16 +19,19 @@ which:
    deterministic policy, not an LLM call (see
    `lildaemon/docs/assistant_demo.md` for why).
 2. For `chat`: answers directly from Clara's own knowledge.
-3. For `knowledge_query`: resolves the topic's Edgequake workspace
-   (`adhoc.{slugify(query)}`) — researching it first (a real Snek crawl +
+3. For `knowledge_query`: checks whether this topic (`slugify(query)`) has
+   already been researched — researching it first (a real Snek crawl +
    Edgequake ingest, via a **standing Ritual** joined once and reused
-   across every turn, not re-created per query) only if that workspace
-   doesn't already exist — then answers using Clara's own knowledge *and*
-   Edgequake grounding, reconciled into one response. Every ingested page
-   also lands in a second, shared, ever-growing workspace
-   (`assistant.general`), so grounding keeps improving across *unrelated*
-   topics over the session's lifetime, not just repeated questions on the
-   same topic.
+   across every turn, not re-created per query) only if it hasn't — then
+   answers using Clara's own knowledge *and* Edgequake grounding,
+   reconciled into one response. Every ingested page is tagged (topic,
+   query, source URL) and lands in one shared, ever-growing Edgequake
+   workspace (`assistant.general`), so grounding keeps improving across
+   *unrelated* topics over the session's lifetime, not just repeated
+   questions on the same topic. A document's effective lifetime resets
+   every time any answer cites it, regardless of which topic first
+   crawled it (see `lildaemon/docs/assistant_demo.md`'s "Document tagging
+   redesign").
 
 This frontend itself is thin: it authenticates once at startup as a
 shared service account, creates one assistant session per WebSocket
@@ -45,8 +48,8 @@ Browser (WS) ──► clara-frontdesk (8088)
                               │     joined once, reused every turn)
                               ├─► clara-api /deduce (8080)
                               │     └─► clara-cycle: Prolog + CLIPS
-                              └─► Edgequake (graph RAG) — per-topic +
-                                    cumulative workspaces
+                              └─► Edgequake (graph RAG) — one shared
+                                    workspace, documents tagged per topic
 ```
 
 ## Rulesets: how behavior is swapped
@@ -153,14 +156,16 @@ variable; defaults to `clara-frontdesk-poc/config/city_of_dis.toml`
 - **`reqwest` client needs a generous timeout.** A `knowledge_query` turn
   can legitimately take minutes (research + answer legs chained
   sequentially) — `main.rs` sets an explicit 420s timeout; don't remove it.
-- **No workspace lifecycle automation yet.** `POST /assistant/workspaces/
-  reap` on lildaemon exists but is manually-triggered only.
+- **No reap scheduler yet.** `POST /assistant/documents/reap` on lildaemon
+  exists (deletes stale, uncited documents) but is manually-triggered only.
 
 ## Related reading
 
 - `lildaemon/docs/assistant_demo.md` — the full design, verified-live
-  results, and every bug found building this.
+  results, and every bug found building this, including the same-day
+  "Document tagging redesign" that replaced the per-topic-workspace +
+  dual-write design this README used to describe.
 - `clara-cerebellum/docs/edgequake_workspace_capabilities.md` — why
-  ingest-time duplication (not real set operations) backs the cumulative
-  workspace, and why there's no server-side TTL to lean on.
+  Edgequake has neither real cross-workspace set operations nor a
+  server-side TTL, which is what motivated tagging/reap in the first place.
 - `clara-cerebellum/docs/rituals_101.md` — general Ritual mechanics.
