@@ -1,9 +1,9 @@
 # Fix plan: the 4 bugs (+1 related issue) from the rumination-answer example
 
-**Status**: implemented and committed (`bcca6f0`, 2026-08-20). See
-"Regression found after shipping" below for a real gap discovered in item 2
-after this landed — read it before assuming clause isolation is fully
-solved.
+**Status**: implemented and committed (`bcca6f0`, 2026-08-20). A real gap
+in item 2 was found the same day (see "Regression found after shipping"
+below) and has since been **fixed** (`73cf2a5`) — clause isolation is now
+solid, verified live with a 10/10 and a 160/160 stress test.
 
 **Companion doc**: `docs/ritual_rumination_answer_bugs_found.md` — the original
 bug report (symptoms, root causes, example-local workarounds) written while
@@ -185,43 +185,44 @@ library predicates and hand-authored `prolog_clauses` predicate names), but
 not a code fix: the alternative (forcing every `consult/1`'d predicate to
 also be thread_local) would break normal library-loading semantics.
 
-## Regression found after shipping: thread_local doesn't survive OS thread reuse
+## Regression found after shipping, and fixed same day (`73cf2a5`)
 
 **Found 2026-08-20, day after item 2 shipped, building
-`lildaemon/goat/app/assistant/`.** The `thread_local` fix does **not**
+`lildaemon/goat/app/assistant/`.** The `thread_local` fix did **not**
 give true per-`/deduce`-call isolation. Confirmed live: after registering
 several different Prolog sources over one evening that each defined their
 own version of the same predicate (`assistant_turn/3`, different bodies), a
 `/deduce` call referencing the *current* source's `prolog_source_id`
 returned a result consistent with an *older*, different version of that
 predicate — despite `resolve_prolog_source` only loading the one referenced
-source's content. Restarting `docker-clara-api-1` (fresh OS thread pool)
-made the identical call behave correctly.
+source's content. Restarting `docker-clara-api-1` made the identical call
+behave correctly, which pointed toward an OS-thread-reuse race.
 
-**Likely root cause**: the actual blocking Prolog work runs inside
-`tokio::task::spawn_blocking` (`deduce_handler.rs`), which pulls worker
-threads from a bounded, **reused** OS thread pool. SWI's `thread_local`
-storage appears to be keyed by OS-thread-identity, not by the logical
-`PL_engine_t` — so a later, unrelated deduce call scheduled onto a
-previously-used pooled thread can inherit that thread's stale thread-local
-clause storage for a given predicate name, and (Prolog trying the oldest
-matching clause first) that stale clause can shadow the new engine's own
-fresh one.
+**That theory was wrong.** The actual root cause, found via a minimal
+isolated repro (one fact + one rule, both brand-new predicate names, one
+`consult_string` call, one engine, zero possibility of thread reuse — and
+it still failed 100% of the time): `consult_string`'s "have I seen this
+predicate before" bookkeeping used `functor(T, F, A)` on the whole parsed
+clause term. For a **rule** (`Head :- Body`), that returns `:-`/2 — the
+rule's own top-level functor/arity, since `:-` is a genuine binary
+operator once a clause has a body — not the head predicate's indicator.
+So every rule *after the first one* in a multi-predicate source got
+bookkept under the same wrong, shared `F/A`, which the "already seen"
+check then matched against the first rule's entry, silently skipping
+`thread_local`/`retractall` for every subsequent rule. 100%-reproducible,
+not timing-dependent — never caught earlier because every prior test used
+single-predicate or fact-only cases; `general_assistant.pl`/
+`terse_analyst.pl` (each with 4 rule predicates sharing names) were the
+first multi-*rule* files ever exercised against it.
 
-**Practically**: this mostly stays invisible during a single ruleset's
-normal life (re-registering identical content is idempotent, so even a
-"stale" clause matches the current one) — it bites when the *same*
-predicate name gets a genuinely different body across several registered
-sources without a clara-api restart in between (iterative diagnostic
-testing, or swapping which ruleset file is active). Same restart-to-reset
-workaround as before item 2 shipped, just needed less often now.
-
-**Not fixed here** — full memory write-up (with more implementation detail)
-at the project memory `thread_local_os_thread_reuse_bug`. The likely real
-fix is per-request Prolog **modules** (keyed by a fresh unique atom, not
-OS-thread-identity) instead of `thread_local` for this kind of isolation —
-worth its own ticket and a closer look at SWI's actual thread_local
-implementation before attempting it, not a quick re-patch.
+**Fixed**: extract `F/A` from `Head` when the parsed term unifies with
+`(Head :- Body)`, falling back to `functor(T, F, A)` only for bare facts.
+Verified live: the exact failing scenario (10 alternating `/deduce` calls
+between the two rulesets, no restart) went from 5/10 to 10/10; the
+original fix's own 160-call sequential+concurrent stress test (fact-only
+predicates) still passes 160/160 — no regression. Ruleset hot-swapping
+(no `clara-api` restart needed) is now confirmed safe. Full writeup:
+project memory `thread_local_os_thread_reuse_bug` (now marked RESOLVED).
 
 ## Suggested order of work
 

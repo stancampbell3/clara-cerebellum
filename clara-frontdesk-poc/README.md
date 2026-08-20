@@ -76,9 +76,9 @@ Two rulesets exist today:
 | `general_assistant.pl` (default) | Research everything except obvious small talk | Whatever Clara's model returns, unmodified |
 | `terse_analyst.pl` | Only research when explicitly asked ("research", "look up", "latest", ...) | Forced one-sentence, no-pleasantries |
 
-Swap by setting `ASSISTANT_RULESET_PATH` on the lildaemon process and
-restarting **clara-api** (see "Known constraints" below — this is not a
-hot-swap today).
+Swap by setting `ASSISTANT_RULESET_PATH` on the lildaemon process — no
+`clara-api` restart needed (confirmed live, 10/10 alternating calls with
+no restart in between).
 
 ## File layout
 
@@ -146,15 +146,6 @@ variable; defaults to `clara-frontdesk-poc/config/city_of_dis.toml`
 
 ## Known constraints
 
-- **Ruleset swapping is not a safe hot-swap.** Restart **clara-api**
-  after changing `ASSISTANT_RULESET_PATH`, not just lildaemon. Confirmed
-  live: SWI's `thread_local` clause isolation doesn't survive `tokio`'s
-  OS-thread-pool reuse (see project memory `thread_local_os_thread_reuse_bug`
-  and `clara-cerebellum/docs/ritual_rumination_answer_bugs_fix_plan.md`'s
-  "Regression found after shipping" section) — two rulesets sharing
-  predicate names (`assistant_turn/3`, `research_step/8`, etc., required
-  by the contract above) can silently cross-contaminate within one
-  clara-api process lifetime otherwise.
 - **No per-visitor identity yet.** Every WS connection authenticates as
   the same shared `service_username` account; only the assistant
   `session_id` distinguishes conversations. Workspaces are also global,
