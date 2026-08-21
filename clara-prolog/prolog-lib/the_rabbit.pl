@@ -64,11 +64,16 @@ enable_evaluator(Evaluator, Result) :-
     clara_evaluate(Json, Result).
 
 %% ponder_text/2 - Evaluate a prompt using the LLM
+%%   Model matches the assistant's Edgequake workspace default (gemma4:e4b,
+%%   set in the workspace's own tenant config) rather than a separate tag
+%%   ("gemma4:latest") — answer_step/9 already reconciles a ponder_text/2
+%%   answer with an Edgequake ruminate answer in the same turn; using the
+%%   same model for both avoids Ollama swapping models mid-turn.
 ponder_text(Text, Result) :-
     dict_to_json(_{tool: splinteredmind,
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
-                                         model: 'gemma4:latest'}}}, Json),
+                                         model: 'gemma4:e4b'}}}, Json),
     clara_evaluate(Json, Result).
 
 %% ponder_text_with_context/3 - Evaluate a prompt using the LLM with conversation context.
@@ -78,7 +83,7 @@ ponder_text_with_context(Text, Context, Result) :-
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
                                         context: Context,
-                                        model: 'gemma4:latest'}}}, Json),
+                                        model: 'gemma4:e4b'}}}, Json),
     clara_evaluate(Json, Result).
 
 %% current_context/1 - Retrieve the conversational context injected at deduce time.

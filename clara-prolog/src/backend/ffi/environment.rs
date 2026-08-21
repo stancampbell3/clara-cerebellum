@@ -97,7 +97,14 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
         // `prolog_clauses` — omitting it previously threw
         // existence_error(procedure, ponder_text/2) at goal-execution time
         // with no error visible outside this process's own log.
-        for library in ["the_coire", "the_rabbit", "the_cow"] {
+        //
+        // the_rat (clara_fy/2,3, reasoned_response/2,3) was missing from
+        // this list — confirmed live 2026-08-21 building
+        // progressive_research.pl, the first ruleset to ever call
+        // clara_fy/3: existence_error(procedure, clara_fy/3), same failure
+        // class as the ponder_text/2 case above, just never hit before
+        // since nothing had called it through this path.
+        for library in ["the_coire", "the_rabbit", "the_cow", "the_rat"] {
             unsafe {
                 let goal = CString::new(format!("use_module(library({library}))")).unwrap();
                 let term = PL_new_term_ref();

@@ -18,8 +18,14 @@
 :- use_module(library(the_rabbit)).
 :- use_module(library(http/json)).
 
-% We will be dealing with the base OllamaEvaluator
-:- enable_evaluator('ollama', _).
+% enable_evaluator/2 (the_rabbit.pl) is NOT auto-run at module load —
+% clara-api's own startup now loads this library alongside the_coire/
+% the_rabbit/the_cow (see clara-prolog/src/backend/ffi/environment.rs),
+% well before lildaemon is necessarily reachable; a load-time network
+% call here would race that ordering. lildaemon's own runtime already
+% focuses its evaluator lazily per-process (goat/app/assistant/
+% runtime.py's _ensure_default_evaluator). Callers that genuinely need to
+% force a specific evaluator can call enable_evaluator/2 explicitly.
 
 % Main entry point: Get Top K simplified labels
 extract_top_k_labels(Text, K, SimpleLabels) :-

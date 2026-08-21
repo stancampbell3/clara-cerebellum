@@ -87,9 +87,10 @@ delivers its fuller follow-up answer as a queued alert — a bell icon in
 the header, not an inline message — since it can arrive at any point in
 an ongoing conversation and shouldn't interrupt it. See
 `lildaemon/docs/assistant_demo.md`'s "Progressive research ruleset"
-section for the full async delivery design, its test coverage, and a
-known bug (`ponder_text_with_context/3` timing out) currently blocking
-live verification of the tier logic itself.
+section for the full async delivery design, its test coverage, and two
+real bugs found and fixed the same day (a missing HTTP client timeout in
+`fiery-pit-client`, and `the_rat` Prolog library never being loaded at
+all) — both confirmed fixed by a live end-to-end run of the tier logic.
 
 **Per-session, not a process-wide setting** (2026-08-21): each assistant
 session picks its own ruleset independently via the header dropdown,

@@ -9,6 +9,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -326,7 +327,21 @@ impl FieryPitClient {
         let base = base_url.into();
         FieryPitClient {
             base_url: Arc::new(base.trim_end_matches('/').to_string()),
-            client: Client::new(),
+            // Explicit generous timeout — same fix, same symptom, as
+            // clara-toolbox/src/tools/edgequake.rs's already-confirmed-live
+            // 2026-08-20 finding: reqwest's default is too short for a real
+            // LLM generation call under /evaluate (confirmed 2026-08-21
+            // building progressive_research.pl — ponder_text_with_context/3
+            // timed out here, "operation timed out", on every call, not
+            // intermittently, even with a trivially empty context. Plain
+            // ponder_text/2 calls happened to complete fast enough in
+            // testing to never trip it, but nothing about this client made
+            // that a guarantee). 120s leaves headroom over Edgequake's own
+            // 90s for a slower/larger local model response.
+            client: Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             service_key: None,
         }
     }
