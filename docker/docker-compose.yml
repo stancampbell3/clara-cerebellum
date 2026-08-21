@@ -183,6 +183,12 @@ services:
       # deletion.
       - ASSISTANT_REAP_INTERVAL_SECONDS=${ASSISTANT_REAP_INTERVAL_SECONDS:-3600}
       - ASSISTANT_REAP_IDLE_SECONDS=${ASSISTANT_REAP_IDLE_SECONDS:-86400}
+      # Background reap scheduler for expired REPL sessions
+      # (ServerReplSessionStore.reap_expired). INTERVAL is how often the
+      # sweep runs; IDLE is how long a session can go untouched before
+      # it's reaped.
+      - REPL_SESSION_REAP_INTERVAL_SECONDS=${REPL_SESSION_REAP_INTERVAL_SECONDS:-3600}
+      - REPL_SESSION_REAP_IDLE_SECONDS=${REPL_SESSION_REAP_IDLE_SECONDS:-3600}
     volumes:
       - ../lildaemon/data:/app/data
       - ../lildaemon/output:/app/output
