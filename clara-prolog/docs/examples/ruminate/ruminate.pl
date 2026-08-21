@@ -54,6 +54,16 @@ extract_hohi(JSON, Hohi) :-
 %% returning one shape or the other depending on evaluator routing, not the
 %% query. get_dict/3 with a fallback handles both; plain dot-notation can't
 %% (it throws on a missing key rather than trying an alternative).
+%%
+%% Root-caused 2026-08-21, not random: deterministic per evaluator class
+%% (lildaemon's ToolifiedOllamaEvaluator always returns {content,
+%% tool_call}; plain OllamaEvaluator always returns {response, ...}) —
+%% ponder_text/2 rides whatever evaluator is currently focused on
+%% lildaemon's shared GoatWrangler global, so the shape just reflects
+%% which one was focused at call time. See lildaemon/goat/app/assistant/
+%% rulesets/general_assistant.pl's copy of this comment for the full
+%% explanation and how the original focus-clobbering mechanism was
+%% removed the same day.
 extract_hohi_response(JSON, Response) :-
     atom_json_dict(JSON, Dict, []),
     get_dict(hohi, Dict, D1),
