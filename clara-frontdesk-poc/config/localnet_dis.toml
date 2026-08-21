@@ -13,9 +13,6 @@ interface = "0.0.0.0"
 fiery_pit_url = "http://localhost:6666"
 static_path   = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/static"
 
-service_username = "frontdesk-service"
-service_password = "frontdesk-service-pw"
-
 [log]
 level = "debug"
 format = "[${timestamp}] ${target} - ${message}"

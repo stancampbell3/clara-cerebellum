@@ -26,28 +26,12 @@ pub struct ServerConfig {
     pub interface: String,
 }
 
-fn default_service_username() -> String {
-    "frontdesk-service".to_string()
-}
-
-fn default_service_password() -> String {
-    "frontdesk-service-pw".to_string()
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct PathsConfig {
     /// lildaemon's own base URL — hosts both FieryPit and the assistant
     /// REST API (goat/app/assistant/) this frontend now talks to.
     pub fiery_pit_url: String,
     pub static_path: String,
-    /// Shared service account this frontend authenticates as. No
-    /// per-visitor identity yet — every WS connection gets its own
-    /// assistant session, but all sessions belong to this one account
-    /// (matches examples_ritual_*.py's own _fierypit_bearer_token pattern).
-    #[serde(default = "default_service_username")]
-    pub service_username: String,
-    #[serde(default = "default_service_password")]
-    pub service_password: String,
 }
 
 pub fn load_config() -> FrontDeskConfig {

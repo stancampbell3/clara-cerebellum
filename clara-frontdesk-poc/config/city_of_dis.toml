@@ -13,11 +13,6 @@ port = 8088
 fiery_pit_url = "http://lildaemon:6666"
 static_path   = "/app/static"
 
-# Shared service account this frontend authenticates as (no per-visitor
-# identity yet). Defaults match if omitted; set explicitly here for clarity.
-service_username = "frontdesk-service"
-service_password = "frontdesk-service-pw"
-
 [log]
 level = "debug"
 format = "[${timestamp}] ${target} - ${message}"

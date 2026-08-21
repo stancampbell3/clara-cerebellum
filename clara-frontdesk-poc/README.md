@@ -33,10 +33,11 @@ which:
    crawled it (see `lildaemon/docs/assistant_demo.md`'s "Document tagging
    redesign").
 
-This frontend itself is thin: it authenticates once at startup as a
-shared service account, creates one assistant session per WebSocket
-connection, and relays each message to `/send`. No admit/deny/redirect
-terminal states — this is continuous chat, not a gated interaction.
+This frontend itself is thin: each browser tab logs in with its own
+username (no password — see "Known constraints" below), creates one
+assistant session per WebSocket connection, and relays each message to
+`/send`. No admit/deny/redirect terminal states — this is continuous
+chat, not a gated interaction.
 
 ## Architecture
 
@@ -92,7 +93,7 @@ clara-frontdesk-poc/
 │   ├── city_of_dis.toml       # Docker deploy: persona copy + service URLs
 │   └── localnet_dis.toml      # local dev variant
 ├── src/
-│   ├── main.rs               # server init, auth-once-at-startup
+│   ├── main.rs               # server init, POST /login route
 │   ├── config.rs              # TOML config structs
 │   ├── state.rs                # AppState shared across WS connections
 │   ├── assistant_client.rs    # blocking REST client for /assistant/*
@@ -139,9 +140,11 @@ port = 8088
 [paths]
 fiery_pit_url     = "http://lildaemon:6666"  # hosts both FieryPit and /assistant/*
 static_path       = "/app/static"
-service_username  = "frontdesk-service"       # shared account, no per-visitor identity yet
-service_password  = "frontdesk-service-pw"
 ```
+
+No login credentials belong in config anymore — each browser tab logs in
+with its own username via the demo login screen (`POST /login` →
+lildaemon's `POST /auth/login-demo`, no password).
 
 Config file location is read from the `FRONTDESK_CONFIG` environment
 variable; defaults to `clara-frontdesk-poc/config/city_of_dis.toml`
@@ -149,15 +152,21 @@ variable; defaults to `clara-frontdesk-poc/config/city_of_dis.toml`
 
 ## Known constraints
 
-- **No per-visitor identity yet.** Every WS connection authenticates as
-  the same shared `service_username` account; only the assistant
-  `session_id` distinguishes conversations. Workspaces are also global,
-  not scoped per user — see `lildaemon/docs/assistant_demo.md`.
+- **Per-visitor identity, per-tab.** Each browser tab logs in independently
+  (username only, no password) via `POST /login`, which proxies to
+  lildaemon's `POST /auth/login-demo` and upserts a "service"-role account
+  by username. The resulting JWT and the tab's assistant `session_id` are
+  both stored in `sessionStorage` — a new tab always re-prompts; the same
+  tab's reload reuses its existing login. Two tabs logging in with the
+  same username share that one lildaemon identity, but get independent
+  assistant sessions.
 - **`reqwest` client needs a generous timeout.** A `knowledge_query` turn
   can legitimately take minutes (research + answer legs chained
   sequentially) — `main.rs` sets an explicit 420s timeout; don't remove it.
-- **No reap scheduler yet.** `POST /assistant/documents/reap` on lildaemon
-  exists (deletes stale, uncited documents) but is manually-triggered only.
+- **Reap scheduler runs automatically.** `goat/models/ReapScheduler.py`'s
+  `PeriodicReaper` reaps stale assistant documents and expired REPL
+  sessions on a timer (`ASSISTANT_REAP_*`/`REPL_SESSION_REAP_*` env vars);
+  `POST /assistant/documents/reap` still exists for a manual trigger.
 
 ## Related reading
 

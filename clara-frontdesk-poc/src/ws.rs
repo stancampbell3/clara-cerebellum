@@ -2,11 +2,18 @@ use actix::{Actor, ActorContext, AsyncContext, Handler, Message, StreamHandler};
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
 use reqwest::blocking::Client;
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
 use crate::assistant_client::{create_session, send, SendResponse};
 use crate::state::AppState;
+
+#[derive(Deserialize)]
+pub struct WsQuery {
+    /// Bearer JWT from POST /login (static/index.html's sessionStorage).
+    token: String,
+}
 
 // ─── Internal actor message carrying one completed turn ───────────────────────
 
@@ -23,13 +30,17 @@ pub struct FrontDeskActor {
     /// Lazily created on the first message — see handle().
     session_id: Option<String>,
     state: Arc<AppState>,
+    /// Bearer JWT for THIS visitor's logged-in identity — replaces the old
+    /// shared AppState.bearer_token every connection used to reuse.
+    token: String,
 }
 
 impl FrontDeskActor {
-    fn new(state: Arc<AppState>) -> Self {
+    fn new(state: Arc<AppState>, token: String) -> Self {
         Self {
             session_id: None,
             state,
+            token,
         }
     }
 }
@@ -57,7 +68,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
 
                 let http: Client = self.state.http.clone();
                 let base_url = self.state.fiery_pit_url.clone();
-                let token = self.state.bearer_token.clone();
+                let token = self.token.clone();
                 let existing_session_id = self.session_id.clone();
 
                 let addr = ctx.address();
@@ -158,6 +169,11 @@ pub async fn ws_index(
     req: HttpRequest,
     stream: web::Payload,
     state: web::Data<AppState>,
+    query: web::Query<WsQuery>,
 ) -> actix_web::Result<HttpResponse> {
-    ws::start(FrontDeskActor::new(state.into_inner()), &req, stream)
+    ws::start(
+        FrontDeskActor::new(state.into_inner(), query.into_inner().token),
+        &req,
+        stream,
+    )
 }

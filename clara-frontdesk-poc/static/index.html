@@ -384,9 +384,81 @@
     text-transform: uppercase;
     color: #333;
   }
+
+  /* ── Login screen ────────────────────────────────────────────────────── */
+
+  #login-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.25rem;
+    padding: 2rem;
+  }
+
+  #login-screen.hidden { display: none; }
+
+  #login-title {
+    font-family: var(--font-deco);
+    color: var(--ember);
+    font-size: clamp(1.4rem, 5vw, 2.2rem);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  #login-form {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  #login-username {
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    color: var(--bone);
+    padding: 0.55rem 0.8rem;
+    font-family: var(--font-body);
+    font-size: 0.95rem;
+    border-radius: 3px;
+    outline: none;
+    min-width: 220px;
+  }
+  #login-username:focus { border-color: var(--ember-lo); }
+
+  #login-submit {
+    background: var(--ember-lo);
+    border: none;
+    color: var(--bone);
+    padding: 0.55rem 1.1rem;
+    cursor: pointer;
+    font-family: var(--font-head);
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    border-radius: 3px;
+  }
+  #login-submit:hover { background: var(--ember); }
+  #login-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #login-error {
+    color: #ff9090;
+    font-size: 0.85rem;
+    min-height: 1.2em;
+  }
 </style>
 </head>
 <body>
+
+<div id="login-screen">
+  <div id="login-title">Who goes there?</div>
+  <form id="login-form">
+    <input id="login-username" type="text" placeholder="Enter a name…" autocomplete="off" maxlength="32" required>
+    <button id="login-submit" type="submit">Enter</button>
+  </form>
+  <div id="login-error"></div>
+</div>
 
 <header>
   <span id="conn-indicator" title="Connection status"></span>
@@ -570,9 +642,9 @@
 
   // ── WebSocket ──────────────────────────────────────────────────────────────
 
-  function connect() {
+  function connect(token) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
 
     ws.onopen = () => {
       connDot.className = 'open';
@@ -691,7 +763,54 @@
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
 
-  connect();
+  // ── Login (username only, no password — demo) ──────────────────────────────
+
+  const loginScreen   = document.getElementById('login-screen');
+  const loginForm     = document.getElementById('login-form');
+  const loginUsername = document.getElementById('login-username');
+  const loginSubmit    = document.getElementById('login-submit');
+  const loginError     = document.getElementById('login-error');
+
+  async function doLogin(username) {
+    loginSubmit.disabled = true;
+    loginError.textContent = '';
+    try {
+      const resp = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || `login failed (${resp.status})`);
+      }
+      const { token } = await resp.json();
+      sessionStorage.setItem('clara_token', token);
+      sessionStorage.setItem('clara_username', username);
+      loginScreen.classList.add('hidden');
+      connect(token);
+    } catch (e) {
+      loginError.textContent = e.message || 'Login failed — try again.';
+      loginSubmit.disabled = false;
+    }
+  }
+
+  loginForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const username = loginUsername.value.trim();
+    if (username) doLogin(username);
+  });
+
+  // A per-tab token already in sessionStorage (e.g. a same-tab reload)
+  // skips straight to the chat UI — a brand-new tab has no sessionStorage
+  // entry and re-prompts, matching per-session login semantics.
+  const existingToken = sessionStorage.getItem('clara_token');
+  if (existingToken) {
+    loginScreen.classList.add('hidden');
+    connect(existingToken);
+  } else {
+    loginUsername.focus();
+  }
 </script>
 </body>
 </html>

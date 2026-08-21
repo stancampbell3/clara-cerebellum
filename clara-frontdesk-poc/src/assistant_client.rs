@@ -18,43 +18,23 @@ pub enum AssistantError {
     Api(String),
 }
 
-/// POST /auth/register (409 on an already-registered username is fine),
-/// then POST /auth/token — returns a bearer JWT. Mirrors
-/// examples_ritual_rumination_ingest.py's `_fierypit_bearer_token`.
-pub fn register_and_login(
-    http: &Client,
-    base_url: &str,
-    username: &str,
-    password: &str,
-) -> Result<String, AssistantError> {
-    let register_resp = http
-        .post(format!("{base_url}/auth/register"))
-        .json(&json!({"username": username, "password": password}))
+/// POST /auth/login-demo — no-password, per-visitor login. Upserts a
+/// service-role account by username and returns a bearer JWT scoped to
+/// that one identity (replaces the old shared-service-account
+/// register_and_login, which every browser session used to reuse).
+pub fn login_demo(http: &Client, base_url: &str, username: &str) -> Result<String, AssistantError> {
+    let resp = http
+        .post(format!("{base_url}/auth/login-demo"))
+        .json(&json!({"username": username}))
         .send()?;
-    let status = register_resp.status();
-    if !status.is_success() && status.as_u16() != 409 {
-        let body = register_resp.text().unwrap_or_default();
-        return Err(AssistantError::Api(format!(
-            "register failed ({status}): {body}"
-        )));
-    }
-
-    let token_resp = http
-        .post(format!("{base_url}/auth/token"))
-        .form(&[
-            ("username", username),
-            ("password", password),
-            ("grant_type", "password"),
-        ])
-        .send()?;
-    let status = token_resp.status();
+    let status = resp.status();
     if !status.is_success() {
-        let body = token_resp.text().unwrap_or_default();
+        let body = resp.text().unwrap_or_default();
         return Err(AssistantError::Api(format!(
-            "login failed ({status}): {body}"
+            "login-demo failed ({status}): {body}"
         )));
     }
-    let body: Value = token_resp.json()?;
+    let body: Value = resp.json()?;
     body["access_token"]
         .as_str()
         .map(|s| s.to_string())
