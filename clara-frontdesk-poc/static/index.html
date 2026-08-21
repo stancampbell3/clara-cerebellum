@@ -92,6 +92,82 @@
   }
   #ruleset-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
+  /* ── Research-update notification queue ──────────────────────────────── */
+
+  #research-bell {
+    position: relative;
+    background: none;
+    border: none;
+    color: var(--bone);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 0.15rem 0.4rem;
+  }
+  #research-bell[hidden] { display: none; }
+
+  #research-badge-count {
+    position: absolute;
+    top: -2px;
+    right: -4px;
+    background: var(--ember);
+    color: #fff;
+    font-size: 0.62rem;
+    font-family: var(--font-head);
+    border-radius: 999px;
+    min-width: 15px;
+    height: 15px;
+    line-height: 15px;
+    text-align: center;
+    padding: 0 3px;
+  }
+  #research-badge-count[hidden] { display: none; }
+
+  #research-panel {
+    position: absolute;
+    top: 2.6rem;
+    right: 1rem;
+    width: min(320px, 80vw);
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    z-index: 20;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+  #research-panel[hidden] { display: none; }
+
+  #research-panel .empty {
+    padding: 0.9rem;
+    color: var(--ash);
+    font-size: 0.82rem;
+    font-style: italic;
+    text-align: center;
+  }
+
+  .research-item {
+    padding: 0.65rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 0.82rem;
+  }
+  .research-item:last-child { border-bottom: none; }
+  .research-item:hover { background: rgba(255,255,255,0.04); }
+  .research-item .q {
+    color: var(--ash);
+    font-style: italic;
+    margin-bottom: 0.2rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .research-item .cta { color: #ffd070; font-family: var(--font-head); font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase; }
+
+  .bubble.research-update {
+    border-color: #7a6a2a;
+  }
+  .bubble.research-update::before { background: #7a6a2a; }
+
   /* ── Messages container — holds Minos bg + scrollable messages ──────── */
 
   #messages-container {
@@ -477,6 +553,10 @@
   <span id="conn-indicator" title="Connection status"></span>
   <h1>Clara — Assistant</h1>
   <select id="ruleset-select" disabled title="Active ruleset"></select>
+  <button id="research-bell" hidden title="Research updates">
+    🔔<span id="research-badge-count" hidden>0</span>
+  </button>
+  <div id="research-panel" hidden></div>
   <span id="status-badge">connecting…</span>
 </header>
 
@@ -508,8 +588,12 @@
   const outcome       = document.getElementById('outcome');
   const minosBg       = document.getElementById('minos-bg');
   const rulesetSelect = document.getElementById('ruleset-select');
+  const researchBell  = document.getElementById('research-bell');
+  const researchCount = document.getElementById('research-badge-count');
+  const researchPanel = document.getElementById('research-panel');
 
   let ws;
+  let pendingResearch = []; // [{query, reply, citation_count}], undelivered alerts
   let thinkingEl       = null;
   let agentName        = 'Clara';
   let currentMinosState = 'rest';
@@ -659,7 +743,12 @@
 
   function connect(token) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+    let url = `${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`;
+    const existingSessionId = sessionStorage.getItem('clara_session_id');
+    if (existingSessionId) {
+      url += `&session_id=${encodeURIComponent(existingSessionId)}`;
+    }
+    ws = new WebSocket(url);
 
     ws.onopen = () => {
       connDot.className = 'open';
@@ -688,11 +777,13 @@
       } else if (data.type === 'error') {
         appendNote(data.text);
       } else if (data.type === 'session') {
-        // session_id lives server-side (ws.rs); nothing to do client-side yet.
+        sessionStorage.setItem('clara_session_id', data.session_id);
       } else if (data.type === 'rulesets') {
         populateRulesets(data.rulesets);
       } else if (data.type === 'ruleset_set') {
         appendNote(`Switched to the "${labelFor(data.ruleset_key)}" ruleset.`);
+      } else if (data.type === 'research_update') {
+        addPendingResearch(data);
       }
     };
 
@@ -750,9 +841,64 @@
     ws.send(JSON.stringify({ type: 'set_ruleset', ruleset_key: rulesetSelect.value }));
   });
 
+  // ── Research-update notification queue ──────────────────────────────────────
+  //
+  // A deferred_query reply already answered the question (a qualified
+  // "best answer so far"); this is the FOLLOW-UP once background research
+  // finishes. Deliberately NOT auto-injected into the live transcript —
+  // arriving mid-conversation would interrupt whatever the visitor is
+  // doing. It waits in this queue until they open it.
+
+  function addPendingResearch(item) {
+    pendingResearch.push(item);
+    renderResearchQueue();
+  }
+
+  function renderResearchQueue() {
+    researchBell.hidden = pendingResearch.length === 0;
+    researchCount.hidden = pendingResearch.length === 0;
+    researchCount.textContent = pendingResearch.length;
+
+    researchPanel.innerHTML = '';
+    if (pendingResearch.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'No research updates waiting.';
+      researchPanel.appendChild(empty);
+      return;
+    }
+    pendingResearch.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'research-item';
+      const q = document.createElement('div');
+      q.className = 'q';
+      q.textContent = item.query;
+      const cta = document.createElement('div');
+      cta.className = 'cta';
+      cta.textContent = 'View fuller answer →';
+      row.appendChild(q);
+      row.appendChild(cta);
+      row.addEventListener('click', () => deliverPendingResearch(idx));
+      researchPanel.appendChild(row);
+    });
+  }
+
+  function deliverPendingResearch(idx) {
+    const item = pendingResearch[idx];
+    if (!item) return;
+    pendingResearch.splice(idx, 1);
+    researchPanel.hidden = true;
+    renderResearchQueue();
+    appendBubble('agent', item.reply || '(no answer)', agentName, 'research-update');
+  }
+
+  researchBell.addEventListener('click', () => {
+    researchPanel.hidden = !researchPanel.hidden;
+  });
+
   // ── DOM helpers ────────────────────────────────────────────────────────────
 
-  function appendBubble(role, text, speaker) {
+  function appendBubble(role, text, speaker, extraClass) {
     if (role === 'system-note') {
       const div = document.createElement('div');
       div.className = 'system-note';
@@ -770,7 +916,7 @@
     lbl.textContent = role === 'user' ? 'Visitor' : (speaker || agentName);
 
     const bub = document.createElement('div');
-    bub.className = `bubble ${role}`;
+    bub.className = extraClass ? `bubble ${role} ${extraClass}` : `bubble ${role}`;
     bub.textContent = text;
 
     wrap.appendChild(lbl);
@@ -832,6 +978,7 @@
         throw new Error(body.error || `login failed (${resp.status})`);
       }
       const { token } = await resp.json();
+      sessionStorage.removeItem('clara_session_id'); // fresh login, fresh session
       sessionStorage.setItem('clara_token', token);
       sessionStorage.setItem('clara_username', username);
       loginScreen.classList.add('hidden');

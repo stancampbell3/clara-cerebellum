@@ -59,24 +59,37 @@ A ruleset is a plain Prolog file. Every ruleset must implement this
 contract:
 
 ```prolog
-assistant_turn(+Query, -Action, -Reply) is semidet.
-%   Action ∈ {chat, knowledge_query}.
-%   chat: also bind Reply — sent straight to the user.
+assistant_turn(+Query, -Action, -Reply, -Citations, -CitationCount) is semidet.
+%   Action ∈ {chat, knowledge_query, deferred_query}.
+%   chat: also bind Reply/Citations/CitationCount — sent straight to the user.
 %   knowledge_query: bind Reply = none — the platform runs its own fixed
 %   research_step/8 + answer_step/9 pipeline and generates the reply.
+%   deferred_query: bind Reply/Citations/CitationCount to a qualified
+%   "best answer so far" — the platform returns it immediately and fires
+%   research_step/8 in the background rather than blocking on it.
 
 research_step/8, answer_step/9, extract_hohi_response/2
 %   Fixed platform predicates every ruleset must copy verbatim (see
 %   general_assistant.pl for the reference implementation) — only
-%   assistant_turn/3 is meant to actually vary between rulesets.
+%   assistant_turn/5 is meant to actually vary between rulesets.
 ```
 
-Two rulesets exist today:
+Three rulesets exist today:
 
 | Ruleset | Classification policy | Chat tone |
 |---|---|---|
 | `general_assistant.pl` (default) | Research everything except obvious small talk | Whatever Clara's model returns, unmodified |
 | `terse_analyst.pl` | Only research when explicitly asked ("research", "look up", "latest", ...) | Forced one-sentence, no-pleasantries |
+| `progressive_research.pl` | Tries pondering, then Edgequake-grounded pondering, both self-checked with `clara_fy`, before falling back to background research | Whatever the sufficient tier's answer is |
+
+`progressive_research.pl`'s background-research path (`deferred_query`)
+delivers its fuller follow-up answer as a queued alert — a bell icon in
+the header, not an inline message — since it can arrive at any point in
+an ongoing conversation and shouldn't interrupt it. See
+`lildaemon/docs/assistant_demo.md`'s "Progressive research ruleset"
+section for the full async delivery design, its test coverage, and a
+known bug (`ponder_text_with_context/3` timing out) currently blocking
+live verification of the tier logic itself.
 
 **Per-session, not a process-wide setting** (2026-08-21): each assistant
 session picks its own ruleset independently via the header dropdown,

@@ -138,3 +138,34 @@ pub fn send(
     }
     Ok(resp.json()?)
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PendingResearchInfo {
+    pub request_id: String,
+    pub query: String,
+    pub reply: Option<String>,
+    #[serde(default)]
+    pub citation_count: u32,
+}
+
+/// GET /assistant/sessions/{id}/pending-research — ready deferred_query
+/// background-research results (drains and marks them delivered).
+pub fn list_pending_research(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    session_id: &str,
+) -> Result<Vec<PendingResearchInfo>, AssistantError> {
+    let resp = http
+        .get(format!("{base_url}/assistant/sessions/{session_id}/pending-research"))
+        .bearer_auth(token)
+        .send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(AssistantError::Api(format!(
+            "list_pending_research failed ({status}): {body}"
+        )));
+    }
+    Ok(resp.json()?)
+}

@@ -1,20 +1,35 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use actix::{Actor, ActorContext, AsyncContext, Handler, Message, StreamHandler};
 use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde_json::json;
-use std::sync::Arc;
 
 use crate::assistant_client::{
-    create_session, list_rulesets, send, set_session_ruleset, RulesetInfo, SendResponse,
+    create_session, list_pending_research, list_rulesets, send, set_session_ruleset,
+    PendingResearchInfo, RulesetInfo, SendResponse,
 };
 use crate::state::AppState;
+
+/// Poll interval for GET /assistant/sessions/{id}/pending-research — how
+/// often a "research update" alert can appear after a deferred_query
+/// reply. Independent of, and much shorter than, lildaemon's own
+/// PENDING_RESEARCH_POLL_INTERVAL_SECONDS (how often IT advances a
+/// request's state) — this just checks for anything already marked ready.
+const PENDING_RESEARCH_TICK: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 pub struct WsQuery {
     /// Bearer JWT from POST /login (static/index.html's sessionStorage).
     token: String,
+    /// Set on reconnect if the browser remembered a prior session_id
+    /// (same sessionStorage entry as the token) — lets that session's
+    /// pending-research alerts actually reach it again after a page
+    /// reload. Absent on a brand-new tab, which gets a fresh session.
+    session_id: Option<String>,
 }
 
 /// Incoming WS frames are JSON-enveloped by `type` — plain-text chat was
@@ -35,9 +50,9 @@ struct TurnResult {
     outcome: Result<SendResponse, String>,
 }
 
-/// Session created and rulesets fetched eagerly on connect (not lazily on
-/// first message) — the ruleset dropdown needs a session_id to target
-/// before the visitor has sent anything.
+/// Session created (or resumed) and rulesets fetched eagerly on connect
+/// (not lazily on first message) — the ruleset dropdown needs a
+/// session_id to target before the visitor has sent anything.
 #[derive(Message)]
 #[rtype(result = "()")]
 struct SessionReady {
@@ -50,24 +65,35 @@ struct RulesetSetResult {
     outcome: Result<String, String>,
 }
 
+#[derive(Message)]
+#[rtype(result = "()")]
+struct PendingResearchTick {
+    outcome: Result<Vec<PendingResearchInfo>, String>,
+}
+
 // ─── Actor ───────────────────────────────────────────────────────────────────
 
 pub struct FrontDeskActor {
-    /// Set once SessionReady arrives; a chat message that races ahead of
-    /// that still falls back to lazy creation in run_turn.
+    /// Set once SessionReady arrives (or immediately, if resumed from a
+    /// query-param session_id) — a chat message that races ahead of that
+    /// still falls back to lazy creation in run_turn.
     session_id: Option<String>,
     state: Arc<AppState>,
     /// Bearer JWT for THIS visitor's logged-in identity — replaces the old
     /// shared AppState.bearer_token every connection used to reuse.
     token: String,
+    /// From the WS query string, if the browser remembered a prior
+    /// session — consumed once in started(), then cleared.
+    resume_session_id: Option<String>,
 }
 
 impl FrontDeskActor {
-    fn new(state: Arc<AppState>, token: String) -> Self {
+    fn new(state: Arc<AppState>, token: String, resume_session_id: Option<String>) -> Self {
         Self {
-            session_id: None,
+            session_id: resume_session_id.clone(),
             state,
             token,
+            resume_session_id,
         }
     }
 }
@@ -83,17 +109,43 @@ impl Actor for FrontDeskActor {
         let http: Client = self.state.http.clone();
         let base_url = self.state.fiery_pit_url.clone();
         let token = self.token.clone();
+        let resume_session_id = self.resume_session_id.clone();
         let addr = ctx.address();
 
         actix::spawn(async move {
-            let result = tokio::task::spawn_blocking(move || init_session(&http, &base_url, &token))
-                .await;
+            let result = tokio::task::spawn_blocking(move || {
+                init_session(&http, &base_url, &token, resume_session_id)
+            })
+            .await;
             let outcome = match result {
                 Ok(Ok(ready)) => Ok(ready),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(e) => Err(format!("internal fault: {}", e)),
             };
             addr.do_send(SessionReady { outcome });
+        });
+
+        ctx.run_interval(PENDING_RESEARCH_TICK, |act, ctx| {
+            let Some(session_id) = act.session_id.clone() else {
+                return;
+            };
+            let http: Client = act.state.http.clone();
+            let base_url = act.state.fiery_pit_url.clone();
+            let token = act.token.clone();
+            let addr = ctx.address();
+
+            actix::spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    list_pending_research(&http, &base_url, &token, &session_id)
+                })
+                .await;
+                let outcome = match result {
+                    Ok(Ok(items)) => Ok(items),
+                    Ok(Err(e)) => Err(e.to_string()),
+                    Err(e) => Err(format!("internal fault: {}", e)),
+                };
+                addr.do_send(PendingResearchTick { outcome });
+            });
         });
     }
 }
@@ -238,6 +290,32 @@ impl Handler<RulesetSetResult> for FrontDeskActor {
     }
 }
 
+impl Handler<PendingResearchTick> for FrontDeskActor {
+    type Result = ();
+
+    fn handle(&mut self, tick: PendingResearchTick, ctx: &mut Self::Context) {
+        match tick.outcome {
+            Ok(items) => {
+                for item in items {
+                    ctx.text(
+                        json!({
+                            "type": "research_update",
+                            "query": item.query,
+                            "reply": item.reply,
+                            "citation_count": item.citation_count,
+                        })
+                        .to_string(),
+                    );
+                }
+            }
+            Err(e) => {
+                // Not fatal — a transient failure just gets retried next tick.
+                log::warn!("pending-research poll failed: {}", e);
+            }
+        }
+    }
+}
+
 impl Handler<TurnResult> for FrontDeskActor {
     type Result = ();
 
@@ -269,13 +347,18 @@ impl Handler<TurnResult> for FrontDeskActor {
 
 // ─── Blocking work (runs in spawn_blocking) ───────────────────────────────────
 
-/// Eagerly create the session and fetch the ruleset list on connect.
+/// Resume the browser-supplied session (if any), else create a new one;
+/// fetch the ruleset list either way.
 fn init_session(
     http: &Client,
     base_url: &str,
     token: &str,
+    resume_session_id: Option<String>,
 ) -> Result<(String, Vec<RulesetInfo>), crate::assistant_client::AssistantError> {
-    let session_id = create_session(http, base_url, token)?;
+    let session_id = match resume_session_id {
+        Some(id) => id,
+        None => create_session(http, base_url, token)?,
+    };
     let rulesets = list_rulesets(http, base_url, token)?;
     Ok((session_id, rulesets))
 }
@@ -313,8 +396,9 @@ pub async fn ws_index(
     state: web::Data<AppState>,
     query: web::Query<WsQuery>,
 ) -> actix_web::Result<HttpResponse> {
+    let query = query.into_inner();
     ws::start(
-        FrontDeskActor::new(state.into_inner(), query.into_inner().token),
+        FrontDeskActor::new(state.into_inner(), query.token, query.session_id),
         &req,
         stream,
     )
