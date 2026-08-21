@@ -79,6 +79,19 @@
   #status-badge.redirected { background: var(--redirect); color: #ffd070; border-color: #8a7a3a; }
   #status-badge.active     { color: var(--bone); }
 
+  #ruleset-select {
+    background: #111;
+    border: 1px solid var(--border);
+    color: var(--bone);
+    font-family: var(--font-head);
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    outline: none;
+  }
+  #ruleset-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
   /* ── Messages container — holds Minos bg + scrollable messages ──────── */
 
   #messages-container {
@@ -463,6 +476,7 @@
 <header>
   <span id="conn-indicator" title="Connection status"></span>
   <h1>Clara — Assistant</h1>
+  <select id="ruleset-select" disabled title="Active ruleset"></select>
   <span id="status-badge">connecting…</span>
 </header>
 
@@ -486,13 +500,14 @@
 </div>
 
 <script>
-  const messages  = document.getElementById('messages');
-  const input     = document.getElementById('input');
-  const sendBtn   = document.getElementById('send-btn');
-  const badge     = document.getElementById('status-badge');
-  const connDot   = document.getElementById('conn-indicator');
-  const outcome   = document.getElementById('outcome');
-  const minosBg   = document.getElementById('minos-bg');
+  const messages      = document.getElementById('messages');
+  const input         = document.getElementById('input');
+  const sendBtn       = document.getElementById('send-btn');
+  const badge         = document.getElementById('status-badge');
+  const connDot       = document.getElementById('conn-indicator');
+  const outcome       = document.getElementById('outcome');
+  const minosBg       = document.getElementById('minos-bg');
+  const rulesetSelect = document.getElementById('ruleset-select');
 
   let ws;
   let thinkingEl       = null;
@@ -672,6 +687,12 @@
         showOutcome(data.status, data.text, data.reason, data.where);
       } else if (data.type === 'error') {
         appendNote(data.text);
+      } else if (data.type === 'session') {
+        // session_id lives server-side (ws.rs); nothing to do client-side yet.
+      } else if (data.type === 'rulesets') {
+        populateRulesets(data.rulesets);
+      } else if (data.type === 'ruleset_set') {
+        appendNote(`Switched to the "${labelFor(data.ruleset_key)}" ruleset.`);
       }
     };
 
@@ -700,8 +721,34 @@
     appendBubble('user', text);
     input.value = '';
     showThinking();
-    ws.send(text);
+    ws.send(JSON.stringify({ type: 'chat', text }));
   }
+
+  // ── Ruleset selection ───────────────────────────────────────────────────────
+
+  let rulesetLabels = {};
+
+  function labelFor(key) {
+    return (rulesetLabels[key] && rulesetLabels[key].label) || key;
+  }
+
+  function populateRulesets(rulesets) {
+    rulesetLabels = Object.fromEntries(rulesets.map(r => [r.ruleset_key, r]));
+    rulesetSelect.innerHTML = '';
+    for (const r of rulesets) {
+      const opt = document.createElement('option');
+      opt.value = r.ruleset_key;
+      opt.textContent = r.label;
+      opt.title = r.description;
+      rulesetSelect.appendChild(opt);
+    }
+    rulesetSelect.disabled = false;
+  }
+
+  rulesetSelect.addEventListener('change', () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'set_ruleset', ruleset_key: rulesetSelect.value }));
+  });
 
   // ── DOM helpers ────────────────────────────────────────────────────────────
 

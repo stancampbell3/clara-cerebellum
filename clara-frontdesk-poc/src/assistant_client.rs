@@ -6,7 +6,7 @@
 //! auth + three simple REST calls.
 
 use reqwest::blocking::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 
@@ -59,6 +59,52 @@ pub fn create_session(http: &Client, base_url: &str, token: &str) -> Result<Stri
         .as_str()
         .map(|s| s.to_string())
         .ok_or_else(|| AssistantError::Api(format!("no session_id in response: {body}")))
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RulesetInfo {
+    pub ruleset_key: String,
+    pub label: String,
+    pub description: String,
+}
+
+/// GET /assistant/rulesets — available rulesets for the ruleset dropdown.
+pub fn list_rulesets(http: &Client, base_url: &str, token: &str) -> Result<Vec<RulesetInfo>, AssistantError> {
+    let resp = http
+        .get(format!("{base_url}/assistant/rulesets"))
+        .bearer_auth(token)
+        .send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(AssistantError::Api(format!(
+            "list_rulesets failed ({status}): {body}"
+        )));
+    }
+    Ok(resp.json()?)
+}
+
+/// PUT /assistant/sessions/{id}/ruleset — set this session's active ruleset.
+pub fn set_session_ruleset(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    session_id: &str,
+    ruleset_key: &str,
+) -> Result<(), AssistantError> {
+    let resp = http
+        .put(format!("{base_url}/assistant/sessions/{session_id}/ruleset"))
+        .bearer_auth(token)
+        .json(&json!({"ruleset_key": ruleset_key}))
+        .send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(AssistantError::Api(format!(
+            "set_session_ruleset failed ({status}): {body}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

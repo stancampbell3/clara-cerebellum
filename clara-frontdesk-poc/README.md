@@ -55,10 +55,8 @@ Browser (WS) ──► clara-frontdesk (8088)
 
 ## Rulesets: how behavior is swapped
 
-The frontend never changes — a ruleset is a plain Prolog file, selected
-entirely **server-side** (lildaemon's `ASSISTANT_RULESET_PATH` env var,
-or the default `goat/app/assistant/rulesets/general_assistant.pl`).
-Every ruleset must implement this contract:
+A ruleset is a plain Prolog file. Every ruleset must implement this
+contract:
 
 ```prolog
 assistant_turn(+Query, -Action, -Reply) is semidet.
@@ -80,9 +78,17 @@ Two rulesets exist today:
 | `general_assistant.pl` (default) | Research everything except obvious small talk | Whatever Clara's model returns, unmodified |
 | `terse_analyst.pl` | Only research when explicitly asked ("research", "look up", "latest", ...) | Forced one-sentence, no-pleasantries |
 
-Swap by setting `ASSISTANT_RULESET_PATH` on the lildaemon process — no
-`clara-api` restart needed (confirmed live, 10/10 alternating calls with
-no restart in between).
+**Per-session, not a process-wide setting** (2026-08-21): each assistant
+session picks its own ruleset independently via the header dropdown,
+populated from `GET /assistant/rulesets` and set with
+`PUT /assistant/sessions/{id}/ruleset` — the frontend's ruleset dropdown
+sends this as a `set_ruleset` WS message rather than a direct REST call,
+since the WS actor already holds the session's token. Two sessions can
+run different rulesets side by side. (`ASSISTANT_RULESET_PATH`'s old
+manual env-var swap — 10/10 alternating calls confirmed live without a
+restart — is what proved a hot-swap was even safe in the first place;
+`ASSISTANT_DEFAULT_RULESET_KEY` now overrides only the *default* a new
+session starts with, not a live-swap mechanism.)
 
 ## File layout
 
