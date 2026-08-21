@@ -1,3 +1,12 @@
+**Earlier planning document.** This design was built and is now the finished
+`context` field on `POST /deduce` — see `deduce_endpoint.md`'s "Walkthrough:
+context-grounded LLM reasoning" section (`current_context/1`,
+`ponder_text_with_context/3`, `clara_fy/3`) for the actual reference. Kept as
+the original design conversation, not as documentation of the shipped
+feature.
+
+---
+
 Let's plan an extension to our /deduce endpoint.
 We need to pass optional context information into the request.
 This data corresponds to the conversation or message history for the Deduction session.

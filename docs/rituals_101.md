@@ -444,13 +444,23 @@ Found while building the rumination-answer example
 
 - **`prolog-lib`'s commonly-needed libraries are auto-loaded into every
   session** — `the_coire` (`caws_offer`/`caws_await`/`coire_topic_poll`),
-  `the_rabbit` (`ponder_text/2`), and `the_cow` (`ruminate_opts/3` and
-  friends) are all `use_module`d once at process init
+  `the_rabbit` (`ponder_text/2`), `the_cow` (`ruminate_opts/3` and
+  friends), and `the_rat` (`clara_fy/2,3`, `reasoned_response/2,3`) are all
+  `use_module`d once at process init
   (`clara-prolog/src/backend/ffi/environment.rs::ensure_prolog_initialized`).
   No explicit `use_module` needed in your own `prolog_clauses`. Anything
   added to `prolog-lib/` later isn't automatically in that list — add it to
   `ensure_prolog_initialized` too, or your own `prolog_clauses` will need an
   explicit `use_module`.
+  **This isn't hypothetical**: `the_rat` was missing from this exact list
+  until 2026-08-21 — `goat/app/assistant/rulesets/progressive_research.pl`
+  (a ruleset registered via `POST /source`, not a hand-authored
+  `prolog_clauses` with its own `use_module`) was the first thing in the
+  whole codebase to ever call `clara_fy/3` through a live `/deduce` call,
+  and got `existence_error(procedure, clara_fy/3)` — silent until then
+  because nothing had exercised that path. See
+  `lildaemon/docs/assistant_demo.md`'s "Progressive research ruleset"
+  section for the full incident.
 - **Hand-authored `prolog_clauses` predicates are session-isolated
   (`thread_local`) automatically.** SWI engines (one per deduction, via
   `PL_create_engine`) behave like Prolog threads: they share one global
@@ -476,7 +486,20 @@ Found while building the rumination-answer example
   calling back into the same FieryPit's own `/evaluate` endpoint) cost real
   sequential wall-clock time, not more cycles — budget your poll timeout
   accordingly rather than assuming a slow response means something is
-  hung.
+  hung. This is about your own `/deduce` **poll loop's** timeout (Python/
+  client-side, however long you're willing to wait for convergence) — a
+  separate layer from the Rust-side HTTP client `FieryPitClient` (used
+  internally by every `splinteredmind` tool call to reach that
+  `/evaluate` endpoint) actually making the call. That client had *no*
+  timeout at all until 2026-08-21 (`reqwest::blocking::Client::new()`,
+  no `.timeout()`) — confirmed live as `ponder_text_with_context/3`
+  failing with `"operation timed out"` after ~30s on every single call,
+  not intermittently, even with a trivial payload. Fixed with an explicit
+  120s timeout (`fiery-pit-client/src/lib.rs`), matching the same fix
+  already applied to `clara-toolbox/src/tools/edgequake.rs`'s client.
+  If a tool call fails with this exact message again, check whether
+  *its* underlying HTTP client has an explicit timeout before assuming
+  the poll budget above is the problem.
 
 ---
 

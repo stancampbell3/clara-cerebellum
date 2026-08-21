@@ -909,6 +909,17 @@ triage_visitor(Visitor, proceed) :-
 statement against the conversation history and returns a judgement that
 `descriminate_k` maps to `true`, `false`, or `unresolved`.
 
+> **Registered sources (`POST /source` + `prolog_source_id`) don't get the
+> explicit `:- use_module(library(the_rat))` shown above for free** — this
+> walkthrough's `prolog_clauses` snippet imports it itself, but a ruleset
+> registered as a source and reused across calls (e.g. `lildaemon/goat/
+> app/assistant/rulesets/*.pl`) relies instead on `the_rat` being in
+> clara-api's own global preload list. That list was missing `the_rat`
+> until 2026-08-21 — see `rituals_101.md`'s "Hand-authored `prolog_clauses`"
+> section for the incident. If `clara_fy`/`reasoned_response*` throws
+> `existence_error(procedure, ...)` from a *registered* source, that's the
+> first thing to check, not this walkthrough's pattern.
+
 ### Prolog predicates for context
 
 All context predicates live in `library(the_rabbit)` (imported automatically by
