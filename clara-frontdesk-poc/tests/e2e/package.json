@@ -1,0 +1,12 @@
+{
+  "name": "clara-frontdesk-poc-e2e",
+  "version": "1.0.0",
+  "description": "Playwright e2e tests for the clara-frontdesk-poc chat UI",
+  "private": true,
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

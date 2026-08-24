@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
+<script src="vendor/highlight.min.js" defer></script>
 <style>
   :root {
     --bg:           #0d0d0d;
@@ -333,6 +334,110 @@
     clip-path: polygon(0 0, 0 100%, 100% 50%);
   }
 
+  /* ── Copy button (per-bubble) ─────────────────────────────────────────── */
+
+  .bubble .copy-btn {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.4rem;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid var(--border);
+    color: var(--ash);
+    font-size: 0.72rem;
+    line-height: 1;
+    padding: 0.2rem 0.35rem;
+    border-radius: 3px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .bubble.user .copy-btn { right: auto; left: 0.4rem; }
+  .bubble:hover .copy-btn,
+  .bubble .copy-btn:focus-visible { opacity: 1; }
+  .bubble .copy-btn.copied { color: #7effa0; opacity: 1; }
+  .bubble .copy-btn.copy-failed { color: var(--ember); opacity: 1; }
+
+  /* ── Code blocks ──────────────────────────────────────────────────────── */
+
+  .bubble pre.code-block {
+    margin: 0.5rem 0;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .bubble pre.code-block:first-child { margin-top: 0; }
+  .bubble pre.code-block:last-child { margin-bottom: 0; }
+
+  .code-block-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.25rem 0.6rem;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-head);
+    font-size: 0.65rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ash);
+  }
+
+  .copy-code-btn {
+    background: none;
+    border: none;
+    color: var(--ash);
+    cursor: pointer;
+    font-size: 0.75rem;
+    line-height: 1;
+    padding: 0.1rem 0.3rem;
+  }
+  .copy-code-btn:hover { color: var(--bone); }
+  .copy-code-btn.copied { color: #7effa0; }
+  .copy-code-btn.copy-failed { color: var(--ember); }
+
+  .bubble pre.code-block code {
+    display: block;
+    padding: 0.6rem 0.8rem;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    white-space: pre;
+  }
+
+  code.inline-code {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0.05rem 0.3rem;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 0.88em;
+  }
+
+  /* highlight.js token colors, tuned to this page's ember/bone palette
+     instead of importing an off-the-shelf theme */
+  .hljs                 { color: var(--bone); background: none; }
+  .hljs-comment,
+  .hljs-quote            { color: var(--ash); font-style: italic; }
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-literal,
+  .hljs-built_in,
+  .hljs-name              { color: var(--ember); }
+  .hljs-string,
+  .hljs-attr,
+  .hljs-symbol,
+  .hljs-bullet             { color: #ffd070; }
+  .hljs-number,
+  .hljs-title,
+  .hljs-type,
+  .hljs-variable            { color: #4a8ab8; }
+  .hljs-title.function_,
+  .hljs-title.class_        { color: #7effa0; }
+  .hljs-emphasis { font-style: italic; }
+  .hljs-strong    { font-weight: bold; }
+
   /* System notes — no balloon */
   .system-note {
     align-self: center;
@@ -362,6 +467,7 @@
     border-top: 1px solid var(--border);
     padding: 0.75rem 1rem;
     display: flex;
+    align-items: flex-end;
     gap: 0.5rem;
     position: relative;
     z-index: 10;
@@ -378,9 +484,22 @@
     border-radius: 3px;
     outline: none;
     transition: border-color 0.2s;
+    resize: none;
+    min-height: 2.3rem;
+    max-height: 40vh;
+    overflow-y: auto;
+    line-height: 1.4;
   }
   #input:focus { border-color: var(--ember-lo); }
   #input:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #send-hint {
+    align-self: center;
+    color: var(--ash);
+    font-size: 0.68rem;
+    font-style: italic;
+    white-space: nowrap;
+  }
 
   #send-btn {
     background: var(--ember-lo);
@@ -566,7 +685,8 @@
 </div>
 
 <footer>
-  <input id="input" type="text" placeholder="State your business…" disabled autocomplete="off">
+  <textarea id="input" rows="1" placeholder="State your business…" disabled autocomplete="off"></textarea>
+  <span id="send-hint">Ctrl+Enter to send</span>
   <button id="send-btn" disabled>Submit</button>
 </footer>
 
@@ -806,11 +926,17 @@
     };
   }
 
+  function autoGrowInput() {
+    input.style.height = 'auto';
+    input.style.height = `${input.scrollHeight}px`;
+  }
+
   function send() {
     const text = input.value.trim();
     if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
     appendBubble('user', text);
     input.value = '';
+    autoGrowInput();
     showThinking();
     ws.send(JSON.stringify({ type: 'chat', text }));
   }
@@ -896,6 +1022,96 @@
     researchPanel.hidden = !researchPanel.hidden;
   });
 
+  // ── Message rendering: fenced code blocks + inline code ─────────────────────
+  //
+  // Deliberately not a full markdown renderer — just enough to make fenced
+  // ```lang code blocks and `inline` spans readable, since that's the only
+  // markdown shape LLM/assistant replies (and pasted-in visitor prompts)
+  // realistically use here.
+
+  const bubbleRawText = new WeakMap(); // bubble element -> original unescaped text
+
+  function escapeHtml(s) {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function renderInlineCode(escapedText) {
+    return escapedText.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
+  }
+
+  function renderMessageHtml(text) {
+    const fenceRe = /```(\w+)?\n?([\s\S]*?)```/g;
+    let html = '';
+    let lastIndex = 0;
+    let match;
+    while ((match = fenceRe.exec(text)) !== null) {
+      const plain = text.slice(lastIndex, match.index);
+      html += renderInlineCode(escapeHtml(plain));
+      const lang = (match[1] || 'text').toLowerCase();
+      const code = match[2].replace(/\n$/, '');
+      html += `<pre class="code-block"><div class="code-block-bar"><span class="code-lang">${escapeHtml(lang)}</span><button type="button" class="copy-code-btn" title="Copy code">⧉ copy</button></div><code class="language-${escapeHtml(lang)}">${escapeHtml(code)}</code></pre>`;
+      lastIndex = fenceRe.lastIndex;
+    }
+    html += renderInlineCode(escapeHtml(text.slice(lastIndex)));
+    return html;
+  }
+
+  function legacyCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.left = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (err) {
+      console.warn('Fallback copy failed:', err);
+    }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  async function copyToClipboard(text, btn) {
+    let ok = false;
+    // navigator.clipboard only exists in secure contexts (HTTPS or
+    // localhost) — plain-HTTP access over a hostname/IP falls through
+    // to the execCommand fallback below.
+    if (window.isSecureContext && navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      } catch (err) {
+        console.warn('navigator.clipboard.writeText failed:', err);
+      }
+    }
+    if (!ok) ok = legacyCopy(text);
+
+    if (!btn) return;
+    const prev = btn.textContent;
+    const isCodeBtn = btn.classList.contains('copy-code-btn');
+    if (ok) {
+      btn.textContent = isCodeBtn ? '✓ copied' : '✓';
+      btn.classList.add('copied');
+    } else {
+      btn.textContent = isCodeBtn ? '✗ failed' : '✗';
+      btn.classList.add('copy-failed');
+    }
+    setTimeout(() => {
+      btn.textContent = prev;
+      btn.classList.remove('copied', 'copy-failed');
+    }, 1200);
+  }
+
   // ── DOM helpers ────────────────────────────────────────────────────────────
 
   function appendBubble(role, text, speaker, extraClass) {
@@ -917,7 +1133,24 @@
 
     const bub = document.createElement('div');
     bub.className = extraClass ? `bubble ${role} ${extraClass}` : `bubble ${role}`;
-    bub.textContent = text;
+    bub.innerHTML = renderMessageHtml(text);
+    bubbleRawText.set(bub, text);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'copy-btn';
+    copyBtn.title = 'Copy message';
+    copyBtn.textContent = '⧉';
+    copyBtn.addEventListener('click', () => copyToClipboard(bubbleRawText.get(bub) ?? text, copyBtn));
+    bub.appendChild(copyBtn);
+
+    bub.querySelectorAll('pre.code-block code').forEach((el) => {
+      if (window.hljs) window.hljs.highlightElement(el);
+    });
+    bub.querySelectorAll('.copy-code-btn').forEach((btn) => {
+      const codeEl = btn.closest('pre.code-block').querySelector('code');
+      btn.addEventListener('click', () => copyToClipboard(codeEl.textContent, btn));
+    });
 
     wrap.appendChild(lbl);
     wrap.appendChild(bub);
@@ -954,7 +1187,15 @@
   }
 
   sendBtn.addEventListener('click', send);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      send();
+    }
+    // plain Enter / Shift+Enter: fall through to the textarea's default
+    // newline behavior — never submits.
+  });
+  input.addEventListener('input', autoGrowInput);
 
   // ── Login (username only, no password — demo) ──────────────────────────────
 
