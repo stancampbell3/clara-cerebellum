@@ -157,10 +157,29 @@ response_shortcut(Response, Shortcut) :-
     ; sub_string(Trim, 0, _, _, "that's incorrect") -> Shortcut = false
     ).
 
+%% extract_llm_response/2 - Extract the LLM's text response from a
+%%   ponder_text/2-family JSON result, handling both response envelope
+%%   shapes a Hohi can carry (deterministic per currently-focused
+%%   evaluator class, not random — confirmed live: a tool-calling
+%%   evaluator, e.g. ClaraMindSplinter/GroqEvaluator, always nests the
+%%   text under hohi.response.content; a plain, non-tool-calling
+%%   OllamaEvaluator always nests it under hohi.response.response — see
+%%   examples_ritual_rumination_answer.py's own extract_hohi_response/2
+%%   for the original root-cause writeup). descriminate/2 and friends
+%%   below previously only handled the plain-Ollama shape, so clara_fy
+%%   failed outright whenever a tool-calling evaluator happened to be
+%%   focused (confirmed live 2026-08-25 via
+%%   examples_ritual_progressive_consult.py, the first caller to run
+%%   clara_fy under such a focus).
+extract_llm_response(RawJson, Response) :-
+    extract_nested(RawJson, [hohi, response, content], Response), !.
+extract_llm_response(RawJson, Response) :-
+    extract_nested(RawJson, [hohi, response, response], Response).
+
 %% descriminate - Extract the response from the LLM and classify it
 descriminate(Text, TruthValue) :-
     ponder_text(Text, LLMSez), % Get the JSON response from the LLM
-    extract_nested(LLMSez, [hohi, response, response], Response),
+    extract_llm_response(LLMSez, Response),
     !,
     % If the LLM response begins with an explicit token, shortcut and return
     % a single high-confidence result instead of calling the classifier.
@@ -181,7 +200,7 @@ descriminate(_, _) :-
 %% descriminate_k - Extract the response from the LLM and classify it with top K results
 descriminate_k(Text, K, Results) :-
     ponder_text(Text, LLMSez), % Get the JSON response from the LLM
-    extract_nested(LLMSez, [hohi, response, response], Response),
+    extract_llm_response(LLMSez, Response),
     !,
     ( response_shortcut(Response, Shortcut) ->
         shortcut_label(Shortcut, LabelStr),
@@ -201,7 +220,7 @@ descriminate_k(_, _, _) :-
 %%   call with a conversation context list.
 descriminate_k_with_context(Text, K, Context, Results) :-
     ponder_text_with_context(Text, Context, LLMSez),
-    extract_nested(LLMSez, [hohi, response, response], Response),
+    extract_llm_response(LLMSez, Response),
     !,
     ( response_shortcut(Response, Shortcut) ->
         shortcut_label(Shortcut, LabelStr),
