@@ -1,13 +1,21 @@
 # Progressive-consult Ritual example: live verification status
 
-**Status: verified live end-to-end, 2026-08-25.** Implementation
-(`examples_ritual_progressive_consult.py`, Option 1 from
+**Status: verified live end-to-end at tier 1 only, 2026-08-25. Tiers 2-4 are
+currently blocked by an open Dis engine bug — see
+[`dis_sequential_caws_await_bug.md`](dis_sequential_caws_await_bug.md).**
+Implementation (`examples_ritual_progressive_consult.py`, Option 1 from
 `ritual_progressive_consult_plan.md`, plus the `cow` evaluator) is
 committed. All four tiers were verified individually via a new
 `tests/test_ritual_progressive_consult_example.py` integration suite, plus
 one full end-to-end run — 5/5 passing against the real dev stack. Six real
 issues were found and fixed along the way (four code bugs, one deployment
-gap, one test-authoring gotcha); see below for each.
+gap, one test-authoring gotcha); see below for each. **A later pass
+(same day) building deterministic mocked tests to force the full
+orchestrator through tiers 2-4 found that `consult_step/15`'s tiers 2-4
+never actually complete in production**: any second `caws_offer`/
+`caws_await` round trip issued after an earlier one has resolved, within
+the same deduction goal, never converges to a solution. Full writeup,
+repro steps, and root-cause hypotheses: `dis_sequential_caws_await_bug.md`.
 
 ## Summary
 
@@ -305,9 +313,12 @@ future live run with a query engineered to need genuine escalation
 2. Rebuild (not just live-patch) is already done for both fixes shipped
    today — future changes should follow the same discipline rather than
    live-patching only.
-3. A live run that genuinely escalates through tiers 2-4 via the full
-   orchestrator (not just each tier individually) would be a nice-to-have
-   further confirmation, not required for "verified live" status.
+3. **Blocking, newly found 2026-08-25**: tiers 2-4 of the full orchestrator
+   don't actually work — see `dis_sequential_caws_await_bug.md` for the
+   full writeup and suggested triage options. This supersedes item 3's
+   original "nice-to-have" framing from earlier today: it turned out to be
+   a genuine, previously-undetected production bug, not just a missing
+   test.
 4. GPU/Groq offload architecture discussion (see above) — separate from
    this example's own correctness.
 5. Carried over, unrelated to this work: `ritual_multi_evaluator_plan.md`
