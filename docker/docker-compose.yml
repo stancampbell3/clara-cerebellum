@@ -74,6 +74,8 @@ services:
       # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
       - EDGEQUAKE_DEFAULT_TENANT=${EDGEQUAKE_DEFAULT_TENANT:-}
       - EDGEQUAKE_DEFAULT_WORKSPACE=${EDGEQUAKE_DEFAULT_WORKSPACE:-}
+      # Dagda model (fasttext) supporting the "classify" tool
+      - DAGDA_MODEL_PATH=${DAGDA_MODEL_PATH:-/etc/clara/models/dagda-0.2.bin}
     depends_on:
       kafka:
         condition: service_healthy
