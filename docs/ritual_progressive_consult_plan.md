@@ -43,7 +43,10 @@ Order of consultation, stopping at the first tier whose answer is judged
 sufficient by the **local** Clara LLM (`clara_fy`):
 
 1. Local LLM (`clara_mind_splinter`, qwen-clara:latest)
-2. Local knowledge (Edgequake, via `the_cow.pl`'s `ruminate_and_assert_citations/3`)
+2. Local knowledge (Edgequake, via a new `cow` evaluator/Ritual participant —
+   see "Team input: a `cow` evaluator" below; adopted after team review,
+   replacing the original plan's direct in-engine
+   `ruminate_and_assert_citations/3` call)
 3. Remote LLM (`clara_mind_splinter_groq`)
 4. Web research (`snek` + `edgequakeingest`, same as the existing 3-party example)
 
@@ -350,6 +353,119 @@ chain in one shot — a single, less transparent clock instead of Option 1's
 top-level `max_cycles`/`patience_cycles`. It would also be the first live
 exercise of `peer_consult` in this codebase.
 
+## Team input: a `cow` evaluator (Edgequake query-side, like Snek) — adopted
+
+Team feedback on the first draft: could we have a `cow` evaluator, the
+Edgequake counterpart to `snek`, so tier 2 is a Ritual participant like
+every other tier instead of a direct in-engine Prolog call? Adopted — and
+it turns out to fix something bigger than symmetry: it closes Option 2's
+citation-fidelity gap (above), because citations can now travel as *data*
+in a Hohi reply instead of as `the_cow.pl`'s thread-local `citation/8`
+facts, which never survive a `caws_offer`/`caws_await` hop across engine
+boundaries. This benefits both options, not just Option 2.
+
+Confirmed by reading the actual Edgequake query path: `EdgequakeClient`
+(`goat/models/EdgequakeClient.py`) currently only has *ingest*-side
+methods (`submit_document`, `get_or_create_workspace`, etc.) — no query
+method. The real RAG-query endpoint, used today only from Rust via
+`clara-toolbox/src/tools/edgequake.rs`'s `query()` (line 161), is
+`POST /api/v1/query` with `{query, mode, max_results?, llm_provider?,
+llm_model?}` and an `X-Workspace-ID` header — the same shape
+`the_cow.pl`'s `ruminate_opts/3` reaches indirectly through that Rust
+tool. `cow` calls it directly over HTTP, the same way
+`EdgequakeIngestEvaluator` already calls Edgequake's document API
+directly rather than going through Prolog.
+
+**1. `EdgequakeClient.query()`** (new method, mirrors `submit_document`'s
+pattern):
+
+```python
+async def query(
+    self, workspace_id: str, query: str, mode: str = "hybrid",
+    max_results: Optional[int] = None,
+    llm_provider: Optional[str] = None, llm_model: Optional[str] = None,
+) -> dict[str, Any]:
+    """POST /api/v1/query (X-Workspace-ID header). Mirrors the_cow.pl's
+    ruminate_opts/3 result shape, reached directly over HTTP instead of
+    via the Rust `edgequake` Prolog tool."""
+    body: dict[str, Any] = {"query": query, "mode": mode}
+    if max_results is not None: body["max_results"] = max_results
+    if llm_provider is not None: body["llm_provider"] = llm_provider
+    if llm_model is not None: body["llm_model"] = llm_model
+    async with self._client({"X-Workspace-ID": workspace_id}) as client:
+        response = await client.post("/api/v1/query", json=body)
+    response.raise_for_status()
+    return response.json()
+```
+
+**2. `CowEvaluator`** (new file, `goat/evaluators/custom/cow_evaluator.py`,
+following `EdgequakeIngestEvaluator`'s pattern — plain `Evaluator`, no LLM
+needed):
+
+```python
+class CowEvaluator(Evaluator):
+    def __init__(self, edgequake_base_url, edgequake_api_key, tenant,
+                 default_workspace_slug=None, evaluator_id=None, metadata=None):
+        super().__init__(evaluator_id=evaluator_id, metadata=metadata)
+        self._client = EdgequakeClient(edgequake_base_url, edgequake_api_key, tenant)
+        self._default_workspace_slug = default_workspace_slug
+
+    async def evaluate_async(self, offering: Offering) -> Tephra:
+        data = offering.data
+        query = data.get("query")
+        if not query:
+            return Tephra(tabu=Tabu(message="'query' is required", code=422))
+        workspace_slug = data.get("workspace") or self._default_workspace_slug
+        if not workspace_slug:
+            return Tephra(tabu=Tabu(message="no workspace given and no default configured", code=422))
+        try:
+            workspace_id = await self._client.get_or_create_workspace(workspace_slug)
+            result = await self._client.query(
+                workspace_id, query, mode=data.get("mode", "hybrid"),
+                max_results=data.get("max_results"),
+                llm_provider=data.get("llm_provider"), llm_model=data.get("llm_model"),
+            )
+        except Exception as exc:
+            return Tephra(tabu=Tabu(message=str(exc), code=502))
+        sources = result.get("sources", [])
+        # Citations travel as DATA here, not thread_local Prolog facts —
+        # they survive a caws_offer/caws_await hop across engine boundaries.
+        return Tephra(hohi=Hohi(response={
+            "content": result.get("answer", ""),
+            "citations": sources,
+            "citation_count": len(sources),
+        }))
+
+    def evaluate(self, offering: Offering) -> Tephra:
+        return asyncio.run(self.evaluate_async(offering))
+```
+
+**3. Register in `config/evaluators.yaml`**:
+
+```yaml
+- name: cow
+  module: goat.evaluators.custom.cow_evaluator
+  class: CowEvaluator
+  parameters:
+    edgequake_base_url: ${EDGEQUAKE_BASE_URL:-http://localhost:8000}
+    edgequake_api_key: ${EDGEQUAKE_API_KEY:-}
+    tenant: ${EDGEQUAKE_DEFAULT_TENANT}
+```
+
+Note the dual configuration this implies: `cow`'s own Edgequake
+credentials/tenant come from these env vars (evaluator-registration time),
+while our example script's own workspace resolution
+(`resolve_workspace_id()`) uses its `--edgequake-base-url`/
+`--edgequake-api-key`/`--tenant` CLI flags. These need to point at the
+*same* Edgequake instance/tenant for `cow` to query the workspace our
+script actually resolved and (on tier 4) ingested into — worth a comment
+in the script, not just this doc.
+
+**Effect on both options**:
+
+- **Option 1**: tier 2 becomes `caws_offer(cow, "consult/edgequake", _{query:Query, context:Ctx, workspace:WorkspaceId, mode:hybrid, llm_provider:LlmProvider, llm_model:LlmModel}, Cid), caws_await(Cid, Raw)` — uniform with tiers 1/3/4, replacing the direct `ruminate_and_assert_citations/3` call. `consult_peer/5` (below) gets a citations-aware sibling to extract `content`/`citations`/`citation_count` from `cow`'s Hohi payload instead of `ruminate_answer/2`/`ruminate_citations/2`.
+- **Option 2**: `local-splinter`'s inner `reasoned_response/3` replaces its direct `ruminate_and_assert_citations/3` call with the same `caws_offer(cow, ...)` — and can now forward `cow`'s *actual* citations list (not just a count) inside its own JSON-smuggled reply to the orchestrator, e.g. `dict_to_json(_{text: EdgeCombined, citations: EdgeCites, citation_count: EdgeCiteCount}, ResponseJson)`. This closes the citation-fidelity gap flagged in the Option 2 sketch above — the only remaining loss is Option 2 never asserting `citation/8` facts locally (Option 1 still does, via `cow`'s reply being fed straight through rather than via `ruminate_and_assert_citations/3`'s side effect — actually **neither** option asserts `citation/8` anymore once `cow` is in the picture, since `cow` returns data, not facts; if any downstream code relies on those thread-local facts existing, note that as a behavior change from `progressive_research.pl`'s original tier (b)).
+
 ## Ritual participants (Option 1, as proposed below)
 
 Joined via `POST {fierypit_base_url}/ritual/join`, each bound to its own
@@ -361,6 +477,7 @@ instead of each getting their own):
 | node_id           | evaluator                  | purpose                          |
 |-------------------|-----------------------------|-----------------------------------|
 | `local-splinter`  | `clara_mind_splinter`      | tier 1 ask + reconciliation/combine asks at every later tier |
+| `cow`             | `cow` (new — see "Team input" above) | tier 2 ask (Edgequake RAG query + citations, returned as data) |
 | `groq-splinter`   | `clara_mind_splinter_groq` | tier 3 ask |
 | `snek`            | `snek`                      | tier 4 web crawl (existing) |
 | `edgequakeingest` | `edgequakeingest`          | tier 4 document-pipeline insert (existing) |
@@ -395,18 +512,24 @@ New predicates:
 
 - `consult_peer(NodeId, TopicPath, Prompt, Ctx, Answer)` — a small shared
   helper: `caws_offer(NodeId, TopicPath, _{prompt: Prompt, context: Ctx}, Cid), caws_await(Cid, Raw), extract_hohi_response(Raw, Answer)`.
-  Used for both `consult_peer(local_splinter, "consult/local", ...)` and
+  Used for `consult_peer(local_splinter, "consult/local", ...)` and
   `consult_peer(groq_splinter, "consult/groq", ...)` calls — tier 1's
   initial ask, tier 3's ask, and every combine/reconciliation step in
   between (all reconciliation goes through `local-splinter`, matching
   `progressive_research.pl`'s existing pattern of always re-pondering
   locally to synthesize a combined answer).
+- `consult_cow(Query, Ctx, WorkspaceId, LlmProvider, LlmModel, Answer, Citations, CitationCount)`
+  — tier 2's citations-aware sibling of `consult_peer/5`:
+  `caws_offer(cow, "consult/edgequake", _{query:Query, context:Ctx, workspace:WorkspaceId, mode:hybrid, llm_provider:LlmProvider, llm_model:LlmModel}, Cid), caws_await(Cid, Raw)`,
+  then extracts `content`/`citations`/`citation_count` from `cow`'s Hohi
+  payload directly (no `ruminate_answer/2`/`ruminate_citations/2` needed —
+  those are `the_cow.pl`-specific; `cow`'s reply is already flat JSON).
 - `consult_step(Query, Ctx, WorkspaceId, LlmProvider, LlmModel, MaxCrawls, IdleSeconds, MaxWaitS, TopicPath, IngestTopicPath, TopicSubject, Answer, Citations, CitationCount, Action)`
   — the main sequential goal:
   1. `consult_peer(local_splinter, "consult/local", Query, Ctx, LocalAnswer)` → sufficiency check → `Action=chat` if sufficient.
-  2. else `catch(ruminate_and_assert_citations(Query, _{context:Ctx, mode:hybrid, workspace:WorkspaceId}, EdgeResult), _, fail)` → combine via `consult_peer(local_splinter, ...)` reconciliation ask → sufficiency check.
+  2. else `consult_cow(Query, Ctx, WorkspaceId, LlmProvider, LlmModel, EdgeAnswer, Cites, CiteCount)` (catch failure the same way the original direct call did) → combine via `consult_peer(local_splinter, ...)` reconciliation ask → sufficiency check.
   3. else `consult_peer(groq_splinter, "consult/groq", Query, Ctx, GroqAnswer)` → combine via `local-splinter` reconciliation ask → sufficiency check.
-  4. else `research_step/8` (existing, unchanged) → re-query Edgequake once more → combine via `local-splinter` → final sufficiency check → `Action = chat` if sufficient, else `Action = exhausted` (not `deferred_query` — nothing is actually deferred/async-delivered here, the whole chain already ran synchronously inside one `/deduce` call).
+  4. else `research_step/8` (existing, unchanged) → `consult_cow(...)` once more → combine via `local-splinter` → final sufficiency check → `Action = chat` if sufficient, else `Action = exhausted` (not `deferred_query` — nothing is actually deferred/async-delivered here, the whole chain already ran synchronously inside one `/deduce` call).
 
 ## Python driver (`lildaemon/examples_ritual_progressive_consult.py`)
 
@@ -415,8 +538,8 @@ fallback via `.env` for every flag, same cleanup discipline):
 
 1. `_fierypit_bearer_token(...)` (reused pattern).
 2. `POST {dis_base_url}/ritual` → `ritual_id`.
-3. For each of the four participants above: `GET /ritual/{id}/join?participant=X` then `POST {fierypit}/ritual/join {evaluator, node_id, self_node_id, eval_timeout_s}`.
-4. Resolve the Edgequake workspace (`resolve_workspace_id()`, reused from `examples_ritual_rumination_answer.py`).
+3. For each of the five participants above (including `cow`): `GET /ritual/{id}/join?participant=X` then `POST {fierypit}/ritual/join {evaluator, node_id, self_node_id, eval_timeout_s}`.
+4. Resolve the Edgequake workspace (`resolve_workspace_id()`, reused from `examples_ritual_rumination_answer.py`) — must resolve to the same tenant/workspace `cow`'s own `EDGEQUAKE_*` env vars point at (see "Team input" above).
 5. `POST {fierypit}/evaluators/set {evaluator: clara_mind_splinter}`.
 6. `POST {fierypit}/evaluate {data: {deduce: {ritual_id, self_node_id: "orchestrator", prolog_clauses: build_prolog_clauses(), initial_goal: consult_step(...), max_cycles, evaluator_patience_cycles, poll_max_wait_s}}}`.
 7. Print a report: which tier produced the final answer, the final `Action`, the combined answer text, citation count.
@@ -454,9 +577,15 @@ cross-reference each other as required reading before writing the next).
 
 - `lildaemon/examples_ritual_progressive_consult.py` — new.
 - `lildaemon/docs/ritual_progressive_consult_example.md` — new.
-- No changes to `progressive_research.pl`, `runtime.py`,
-  `evaluators.yaml`, or `clara-frontdesk-poc` — purely additive and
-  standalone, same as the three examples it's modeled on.
+- `lildaemon/goat/models/EdgequakeClient.py` — new `query()` method (see
+  "Team input" above).
+- `lildaemon/goat/evaluators/custom/cow_evaluator.py` — new (`CowEvaluator`).
+- `lildaemon/config/evaluators.yaml` — new `cow` entry. This is the one
+  change to a shared config file — the plan's original "purely additive,
+  standalone" framing no longer fully holds now that `cow` needs
+  registering the same way `snek`/`edgequakeingest` already are.
+- No changes to `progressive_research.pl`, `runtime.py`, or
+  `clara-frontdesk-poc`.
 
 ## Verification
 
@@ -473,7 +602,13 @@ cross-reference each other as required reading before writing the next).
   names the correct terminal tier/`Action`.
 - After any run (success or failure), `GET {dis_base_url}/ritual` should
   come back empty — confirms the `finally` cleanup actually left/deleted
-  all four participants and didn't leak a standing Ritual.
+  all five participants and didn't leak a standing Ritual.
 - Check `docker logs` for the lildaemon/lildaemon-fierypit container during
   a run to confirm no `self_node_id` collision warnings (the documented
   bug from the 3-party example) and no evaluator-slot spawn errors.
+- Confirm `cow` actually returns citations as data: force tier 2 (ask
+  something the local model can't answer alone but that's in the
+  Edgequake corpus) and check the printed `CitationCount` is nonzero and
+  matches `cow`'s own Hohi payload — this is the whole point of the "Team
+  input" change, so it's worth verifying explicitly rather than assuming
+  it works because the code looks right.
