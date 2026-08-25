@@ -4,7 +4,10 @@ Executive summary. For full technical detail see
 [`ritual_progressive_consult_verification_status.md`](ritual_progressive_consult_verification_status.md)
 (implementation + verification history) and
 [`dis_sequential_caws_await_bug.md`](dis_sequential_caws_await_bug.md)
-(the blocking bug, repro steps, root-cause hypotheses).
+(the blocking bug, repro steps, root-cause hypotheses) and
+[`coire_sync_vs_speculative_design_note.md`](coire_sync_vs_speculative_design_note.md)
+(why the gap exists architecturally, and what that implies for scoping a
+fix).
 
 ## Where things stand
 

@@ -6,6 +6,14 @@ example ([`ritual_progressive_consult_plan.md`](ritual_progressive_consult_plan.
 [`ritual_progressive_consult_verification_status.md`](ritual_progressive_consult_verification_status.md)).
 Not yet fixed — this doc is a handoff for team review, not a patch.
 
+**Read [`coire_sync_vs_speculative_design_note.md`](coire_sync_vs_speculative_design_note.md)
+before scoping a fix.** It frames why this gap exists (the correlated
+`caws_offer`/`caws_await` pattern was only ever designed/exercised for one
+round trip per goal, unlike Coire's other, already-proven-safe-under-
+re-evaluation topic-poll pattern) and lays out two different kinds of fix
+worth choosing between deliberately, not just patching the one failing
+test case.
+
 ## TL;DR
 
 Within **one** Dis deduction goal, a **second** `caws_offer`/`caws_await`
