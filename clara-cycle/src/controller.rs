@@ -1122,6 +1122,10 @@ impl CycleController {
     /// 2. The CLIPS agenda is empty.
     /// 3. The tableau has not changed since the previous cycle (fixed point), OR
     ///    the root goal has reached a resolved truth value.
+    /// 4. No Offerings await peer replies, and the root-goal re-query below
+    ///    did not stage new outbound evaluator/ events this cycle (those are
+    ///    published by the NEXT cycle's evaluator pass — converging now
+    ///    would orphan them; see docs/dis_sequential_caws_await_bug.md).
     fn has_converged(
         &mut self,
         prev: &CoireSnapshot,
@@ -1144,6 +1148,25 @@ impl CycleController {
         if mailboxes_empty && clips_agenda_empty {
             self.re_evaluate_root_goal();
         }
+
+        // Re-driving the root goal above can stage NEW outbound evaluator/
+        // events — e.g. the second leg of a sequential caws_offer/caws_await
+        // chain becomes reachable only once the first leg's reply is cached.
+        // This point is downstream of the cycle's evaluator_pass, so nothing
+        // has published or tracked those events yet: converging now would
+        // discard them unsent (docs/dis_sequential_caws_await_bug.md).
+        // Undrained evaluator/ events therefore hold convergence for a cycle
+        // so the next evaluator_pass can drain and publish them. Gated on a
+        // live ritual handle — without one nothing ever drains this prefix,
+        // and holding would burn the cycle budget on dead letters.
+        #[cfg(feature = "ritual")]
+        let evaluator_events_staged = self.ritual_handle.is_some()
+            && clara_coire::global()
+                .count_pending_with_origin_prefix(self.session.prolog_id, "evaluator/")
+                .map(|n| n > 0)
+                .unwrap_or(true);
+        #[cfg(not(feature = "ritual"))]
+        let evaluator_events_staged = false;
 
         let snapshot_stable = prev == curr;
         let tableau_stable  = !agenda.tableau_progressed(&self.session);
@@ -1200,6 +1223,7 @@ impl CycleController {
             && clips_agenda_empty
             && pending_responses_zero
             && !any_timed_out
+            && !evaluator_events_staged
             && (tableau_stable || root_resolved);
 
         #[cfg(feature = "ritual")]
@@ -1210,7 +1234,7 @@ impl CycleController {
         log::debug!(
             "CycleController: convergence — prolog_pending={}, clips_pending={}, \
              agenda_empty={}, snapshot_stable={}, tableau_stable={}, root_resolved={}, \
-             pending_offers={} → {}",
+             pending_offers={}, evaluator_staged={} → {}",
             curr.prolog_pending,
             curr.clips_pending,
             clips_agenda_empty,
@@ -1218,6 +1242,7 @@ impl CycleController {
             tableau_stable,
             root_resolved,
             pending_count,
+            evaluator_events_staged,
             converged
         );
 
@@ -2481,6 +2506,256 @@ mod ritual_tests {
             !solutions.contains("forty_two"),
             "silent peer must not produce an answer; solutions={solutions}"
         );
+    }
+
+    // ── sequential dependent caws chains (docs/dis_sequential_caws_await_bug.md)
+
+    /// Mock peer that answers every Offering it sees (up to `max_replies`)
+    /// with a Hohi of `{"response": "ans_<prompt>"}`, echoing the Offering's
+    /// correlation id — the multi-shot analogue of the single-reply mock in
+    /// run_loop_caws_consult_round_trip.
+    fn spawn_echo_peer(
+        broker: Arc<InMemoryBroker>,
+        topic: String,
+        ritual_id: Uuid,
+        max_replies: usize,
+    ) -> (std::thread::JoinHandle<()>, Arc<std::sync::atomic::AtomicUsize>) {
+        use clara_ritual::{Routing, TephraEnvelope, TephraPayload};
+        let replied = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = replied.clone();
+        let handle = std::thread::spawn(move || {
+            let mut offset = 0i64;
+            // Bounded backstop (~20s) so a broken controller can't hang the
+            // suite — mirrors the budget note in the sibling mocks above.
+            for _ in 0..4000 {
+                let (envelopes, next_offset) =
+                    broker.poll(&topic, offset).expect("mock poll failed");
+                offset = next_offset;
+                for env in &envelopes {
+                    if env.label != clara_ritual::label::OFFERING {
+                        continue;
+                    }
+                    let body = match &env.payload {
+                        TephraPayload::Plaintext { body } => body.clone(),
+                        _ => panic!("unexpected payload"),
+                    };
+                    let prompt = body.get("prompt").and_then(|v| v.as_str()).unwrap_or("?");
+                    let cid = env.correlation_id.expect("Offering must carry correlation id");
+                    let hohi = TephraEnvelope::new(
+                        ritual_id,
+                        env.performance_id,
+                        clara_ritual::label::HOHI,
+                        60_000,
+                        "mock-peer.test",
+                        TephraPayload::Plaintext {
+                            body: serde_json::json!({"response": format!("ans_{prompt}")}),
+                        },
+                    )
+                    .with_routing(Routing {
+                        correlation_id: Some(cid),
+                        source_node_id: Some("n2".into()),
+                        ..Default::default()
+                    });
+                    broker.publish(&topic, &hohi).expect("mock publish failed");
+                    if count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+                        >= max_replies
+                    {
+                        return;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+        (handle, replied)
+    }
+
+    /// An undrained evaluator/ event must hold convergence for a cycle.
+    ///
+    /// After cycle 0, the only code path that re-drives the root goal is
+    /// has_converged's re_evaluate_root_goal — which runs AFTER the cycle's
+    /// evaluator_pass. An event it stages (the second leg of a sequential
+    /// caws chain) has been published/tracked by nothing, so converging in
+    /// the same cycle would silently discard it.
+    #[test]
+    fn undrained_evaluator_event_blocks_convergence() {
+        setup_coire();
+        let (registry, _broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "staged-hold".into(), participants: vec![] })
+            .unwrap();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let handle    = registry.join(ritual_id, None).unwrap();
+        let mut ctrl  = make_ctrl(session, handle.clone());
+
+        let mut agenda = GoalAgenda::new(&None);
+        agenda.begin_cycle();
+
+        // Baseline: idle controller, nothing staged — converges.
+        let (s1, s2) = (ctrl.snapshot(), ctrl.snapshot());
+        assert!(ctrl.has_converged(&s1, &s2, &agenda), "idle controller must converge");
+
+        // An undrained evaluator/ event (as staged by re_evaluate_root_goal
+        // after this cycle's evaluator_pass already ran) holds convergence.
+        clara_coire::global().write_event(&clara_coire::ClaraEvent::new(
+            prolog_id,
+            "evaluator/offering",
+            serde_json::json!({"goal": "second_leg"}),
+        )).unwrap();
+        let (s1, s2) = (ctrl.snapshot(), ctrl.snapshot());
+        assert!(
+            !ctrl.has_converged(&s1, &s2, &agenda),
+            "undrained evaluator/ event must block convergence"
+        );
+
+        // The next evaluator pass publishes it; blocking duty hands over to
+        // the pending offer until the peer replies.
+        ctrl.publish_evaluator_events(&handle);
+        assert_eq!(ctrl.pending_offers.len(), 1, "published offer must be tracked");
+        let (s1, s2) = (ctrl.snapshot(), ctrl.snapshot());
+        assert!(
+            !ctrl.has_converged(&s1, &s2, &agenda),
+            "pending offer must keep blocking convergence"
+        );
+    }
+
+    /// Regression test for docs/dis_sequential_caws_await_bug.md: a SECOND
+    /// caws_offer/caws_await round trip, issued after an earlier one in the
+    /// same goal has resolved, must also complete. The second leg is only
+    /// reachable during has_converged's root-goal re-evaluation (prolog_pass
+    /// re-runs the goal on cycle 0 only), which runs downstream of the
+    /// cycle's evaluator_pass — before the fix, the leg-2 Offering staged
+    /// there was orphaned and the run converged with zero solutions.
+    #[test]
+    fn run_loop_sequential_dependent_caws_consults_converge() {
+        use clara_ritual::topic_name;
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "caws-seq-2".into(), participants: vec![] })
+            .unwrap();
+        let topic     = topic_name("dis.test", ritual_id).unwrap();
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            // Leg 2's payload depends on leg 1's answer — the sequential-
+            // dependent shape (offer, await, offer, await), NOT the fan-out
+            // shape (offer, offer, await, await) that always worked.
+            "two_step(Q1, A1, A2) :- \
+                caws_consult(n2, 'dis.test/consults/e1', _{prompt: Q1}, R1), \
+                get_dict(response, R1, A1), \
+                atom_concat(A1, '_next', Q2), \
+                caws_consult(n2, 'dis.test/consults/e1', _{prompt: Q2}, R2), \
+                get_dict(response, R2, A2).".into(),
+        ]).expect("seed_prolog failed");
+
+        let (mock_thread, replied) =
+            spawn_echo_peer(broker.clone(), topic.clone(), ritual_id, 2);
+
+        let mut ctrl = CycleController::new(
+            session,
+            60,
+            Some("two_step(hello, A1, A2)".into()),
+            Arc::new(AtomicBool::new(false)),
+        ).with_ritual(cc_handle);
+
+        let result = ctrl.run().expect("run() should converge");
+        mock_thread.join().expect("mock peer thread panicked");
+
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+        assert_eq!(
+            replied.load(std::sync::atomic::Ordering::Relaxed), 2,
+            "peer must have answered both sequential Offerings"
+        );
+        assert!(ctrl.pending_offers.is_empty(), "both resolved offers must be cleared");
+
+        // Both legs' answers must reach the final solutions:
+        // A1 = ans_hello, A2 = ans_(ans_hello_next).
+        let solutions = serde_json::to_string(&result.prolog_solutions).unwrap_or_default();
+        assert!(solutions.contains("ans_hello"), "leg-1 answer missing: {solutions}");
+        assert!(solutions.contains("ans_ans_hello_next"), "leg-2 answer missing: {solutions}");
+
+        // Exactly two Offerings — one per leg, each published exactly once
+        // (caws_offer's idempotency must hold across goal re-evaluations).
+        let (all_msgs, _) = broker.poll(&topic, 0).expect("final poll failed");
+        let offerings = all_msgs.iter()
+            .filter(|e| e.label == clara_ritual::label::OFFERING)
+            .count();
+        assert_eq!(offerings, 2, "each sequential leg must publish exactly one Offering");
+    }
+
+    /// Same regression, deeper: THREE dependent round trips driven by a
+    /// recursive chain predicate (each leg's prompt is built from the
+    /// previous leg's answer). Guards against a fix that only handles
+    /// "exactly two" — see docs/coire_sync_vs_speculative_design_note.md's
+    /// warning about N-deep chains and calls inside loops.
+    #[test]
+    fn run_loop_chained_caws_consults_in_recursion_converge() {
+        use clara_ritual::topic_name;
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "caws-seq-3".into(), participants: vec![] })
+            .unwrap();
+        let topic     = topic_name("dis.test", ritual_id).unwrap();
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            "consult_chain([], Acc, Acc).".into(),
+            "consult_chain([Q|Qs], Acc, Out) :- \
+                format(atom(Prompt), '~w:~w', [Acc, Q]), \
+                caws_consult(n2, 'dis.test/consults/e1', _{prompt: Prompt}, R), \
+                get_dict(response, R, A), \
+                consult_chain(Qs, A, Out).".into(),
+            // Keep the ROOT goal a plain compound of atoms/vars —
+            // re_evaluate_root_goal re-parses the goal string every quiescent
+            // cycle and a list literal there would be needless parser risk.
+            "chain3(Answer) :- consult_chain([q1, q2, q3], seed, Answer).".into(),
+        ]).expect("seed_prolog failed");
+
+        let (mock_thread, replied) =
+            spawn_echo_peer(broker.clone(), topic.clone(), ritual_id, 3);
+
+        let mut ctrl = CycleController::new(
+            session,
+            90,
+            Some("chain3(Answer)".into()),
+            Arc::new(AtomicBool::new(false)),
+        ).with_ritual(cc_handle);
+
+        let result = ctrl.run().expect("run() should converge");
+        mock_thread.join().expect("mock peer thread panicked");
+
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+        assert_eq!(
+            replied.load(std::sync::atomic::Ordering::Relaxed), 3,
+            "peer must have answered all three chained Offerings"
+        );
+        assert!(ctrl.pending_offers.is_empty(), "all resolved offers must be cleared");
+
+        // Leg 1: "seed:q1" → ans_seed:q1; leg 2: "ans_seed:q1:q2" →
+        // ans_ans_seed:q1:q2; leg 3: "ans_ans_seed:q1:q2:q3" → final answer.
+        let solutions = serde_json::to_string(&result.prolog_solutions).unwrap_or_default();
+        assert!(
+            solutions.contains("ans_ans_ans_seed:q1:q2:q3"),
+            "final chained answer missing: {solutions}"
+        );
+
+        let (all_msgs, _) = broker.poll(&topic, 0).expect("final poll failed");
+        let offerings = all_msgs.iter()
+            .filter(|e| e.label == clara_ritual::label::OFFERING)
+            .count();
+        assert_eq!(offerings, 3, "each chained leg must publish exactly one Offering");
     }
 
     // ── initial offering & mailbox hygiene (typed-edge auto-pipe) ─────────────

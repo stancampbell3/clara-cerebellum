@@ -1,11 +1,15 @@
 # Dis engine bug: sequential dependent `caws_offer`/`caws_await` calls don't converge
 
-**Status:** open, needs a fix — but root cause is now **confirmed**, not
-just hypothesized (2026-08-26, see below). Found 2026-08-25 while building
-mocked full-orchestrator escalation tests for the progressive-consult
-Ritual example ([`ritual_progressive_consult_plan.md`](ritual_progressive_consult_plan.md),
+**Status: FIXED in `clara-cycle` (2026-08-26), pending image rebuild +
+live verification.** Root cause confirmed live the same day (see "Root
+cause" below); the fix is the narrow convergence-invariant option — see
+"The fix" at the end of this doc. The lildaemon xfail tests
+(`test_ritual_progressive_consult_example.py`) are the live verification
+gate: they should flip to passing once `clara-api:latest` is rebuilt.
+Found 2026-08-25 while building mocked full-orchestrator escalation tests
+for the progressive-consult Ritual example
+([`ritual_progressive_consult_plan.md`](ritual_progressive_consult_plan.md),
 [`ritual_progressive_consult_verification_status.md`](ritual_progressive_consult_verification_status.md)).
-Not yet fixed — this doc is a handoff for team review, not a patch.
 
 **Read [`coire_sync_vs_speculative_design_note.md`](coire_sync_vs_speculative_design_note.md)
 before scoping a fix.** It frames why this gap exists (the correlated
@@ -344,7 +348,47 @@ the correlation cache" is exactly the choice that doc is about.
    known-broken, ship only a tier-1-only or fan-out-only version of
    anything relying on this pattern until the engine is fixed.
 
-No option has been chosen yet — this doc is the handoff for that decision.
+**Decision made 2026-08-26: option 1, the narrow engine fix — implemented.**
+
+## The fix (implemented 2026-08-26)
+
+`clara-cycle/src/controller.rs`, `has_converged`: after
+`re_evaluate_root_goal()` runs, count undrained `evaluator/`-prefixed
+events in the Prolog session's Coire queue
+(`count_pending_with_origin_prefix`, the same prefix
+`publish_evaluator_events` drains) and add `!evaluator_events_staged` to
+the convergence conjunction. Invariant: *convergence is never declared in
+a cycle whose root-goal re-evaluation staged new outbound events* — the
+next cycle's `evaluator_pass` publishes them and the resulting
+`pending_offers` entry takes over blocking convergence until the reply.
+Gated on `ritual_handle.is_some()` (without a handle nothing ever drains
+that prefix, and holding would burn the cycle budget on dead letters).
+An N-leg chain now resolves in O(N) quiescence rounds; `caws_offer/4`'s
+existing idempotency keeps each leg to exactly one published Offering
+across all the re-evaluations in between.
+
+Covered by three new regression tests in `controller.rs`'s
+`ritual_tests` (all verified to fail with the guard removed):
+
+- `undrained_evaluator_event_blocks_convergence` — the invariant directly.
+- `run_loop_sequential_dependent_caws_consults_converge` — full `run()`
+  with a 2-leg dependent chain (`offer, await, offer, await`, leg 2's
+  payload built from leg 1's answer) against an InMemoryBroker echo peer;
+  asserts both answers in the solutions and exactly 2 Offerings published.
+- `run_loop_chained_caws_consults_in_recursion_converge` — 3 dependent
+  legs driven by a recursive chain predicate (the N-deep/loop shape the
+  design note warned a "works for exactly two" fix would miss); asserts
+  the fully-chained answer and exactly 3 Offerings.
+
+Full `clara-cycle` suite passes with and without the `ritual` feature.
+Remaining to close this out: rebuild `clara-api:latest`, rerun the
+lildaemon suite (the four xfail tests should flip), then remove the xfail
+markers. Note a separate follow-up surfaced by scoping this fix:
+`consult_step`'s `->/;` fallbacks can't distinguish "no reply yet" from
+"replied with Tabu" (both are plain Prolog failure), so with the engine
+fixed its tiers will fan out rather than stop early — it needs the
+tri-state idiom (`caws_result`/`caws_failed`/neither-then-fail) before
+its stop-early economics are real.
 
 ## Appendix: what's confirmed clean / not implicated
 
