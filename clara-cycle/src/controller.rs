@@ -1315,26 +1315,16 @@ impl CycleController {
 
         let Some(goal_str) = self.initial_goal.clone() else { return };
 
-        let term = match parse_prolog_term(&goal_str) {
-            Ok(t)  => t,
-            Err(e) => {
-                log::warn!("re_evaluate_root_goal: parse failed for '{}': {}", goal_str, e);
-                return;
-            }
-        };
-
-        // Extract functor + per-argument template strings (atoms kept as-is,
-        // variables kept by name so we can substitute from solution bindings).
-        let (functor, arg_templates) = match term {
-            Term::Atom(f) => (f, vec![]),
-            Term::Compound { functor, args } => {
-                let templates: Vec<String> = args.iter().map(term_to_template_str).collect();
-                (functor, templates)
-            }
-            _ => return,
-        };
-
-        // Re-query Prolog for the current truth of the root goal.
+        // Re-query Prolog for the current truth of the root goal. This runs
+        // BEFORE any parsing: re-driving the goal and capturing its solutions
+        // must not depend on the goal string fitting the template
+        // mini-parser's fragment. A root goal written in operator syntax —
+        // catch/3 with a parenthesized recovery, an if-then-else, `A = B` —
+        // is perfectly runnable Prolog the parser below cannot represent,
+        // and parsing first meant such goals were never re-run after cycle 0
+        // at all, so an async leg resolving later was reported as Converged
+        // with zero solutions (the catch/3 side-finding in
+        // docs/dis_sequential_caws_await_bug.md).
         let json_str = match self.session.prolog.query_with_bindings(&goal_str) {
             Ok(s)  => s,
             Err(e) => {
@@ -1351,6 +1341,38 @@ impl CycleController {
         let arr = match solutions.as_array() {
             Some(a) if !a.is_empty() => a,
             _ => return, // No solutions — do not downgrade to KnownFalse here.
+        };
+
+        // Save re-evaluated solutions so the final DeductionResult reflects
+        // the goal state AFTER forward-chaining, not just cycle-0. Captured
+        // unconditionally on success — the tableau bookkeeping below is
+        // best-effort and must never gate what the caller gets back.
+        self.final_solutions = Some(solutions.clone());
+
+        // Best-effort tableau bookkeeping from here down. Root goals outside
+        // the mini-parser's fragment skip it — their convergence still
+        // arrives via tableau stability rather than root_resolved.
+        let term = match parse_prolog_term(&goal_str) {
+            Ok(t)  => t,
+            Err(e) => {
+                log::debug!(
+                    "re_evaluate_root_goal: '{}' not parseable for tableau \
+                     bookkeeping ({}) — solutions captured, tableau skipped",
+                    goal_str, e
+                );
+                return;
+            }
+        };
+
+        // Extract functor + per-argument template strings (atoms kept as-is,
+        // variables kept by name so we can substitute from solution bindings).
+        let (functor, arg_templates) = match term {
+            Term::Atom(f) => (f, vec![]),
+            Term::Compound { functor, args } => {
+                let templates: Vec<String> = args.iter().map(term_to_template_str).collect();
+                (functor, templates)
+            }
+            _ => return,
         };
 
         // Build ground args for the first solution by substituting variable
@@ -1389,14 +1411,11 @@ impl CycleController {
             );
         } else {
             log::debug!(
-                "re_evaluate_root_goal: marked {}({}) KnownTrue — capturing {} solution(s)",
+                "re_evaluate_root_goal: marked {}({}) KnownTrue — {} solution(s) captured",
                 functor,
                 ground_args.join(", "),
                 arr.len(),
             );
-            // Save re-evaluated solutions so the final DeductionResult reflects
-            // the goal state AFTER forward-chaining, not just cycle-0.
-            self.final_solutions = Some(solutions.clone());
         }
     }
 
@@ -2756,6 +2775,72 @@ mod ritual_tests {
             .filter(|e| e.label == clara_ritual::label::OFFERING)
             .count();
         assert_eq!(offerings, 3, "each chained leg must publish exactly one Offering");
+    }
+
+    /// Regression test for the catch/3 side-finding in
+    /// docs/dis_sequential_caws_await_bug.md: a root goal written in operator
+    /// syntax the template mini-parser can't represent (here catch/3 with a
+    /// parenthesized `=` recovery arg — the shape every realistic catch
+    /// recovery takes) must still be re-driven after cycle 0 and have its
+    /// solutions captured. Before the fix, re_evaluate_root_goal returned at
+    /// the parse failure without ever re-querying Prolog, so a goal whose
+    /// async leg resolved after cycle 0 was reported as Converged with zero
+    /// solutions — even though the underlying round trip succeeded.
+    #[test]
+    fn run_loop_operator_syntax_root_goal_captures_solutions() {
+        use clara_ritual::topic_name;
+
+        setup_coire();
+
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "caws-catch-root".into(), participants: vec![] })
+            .unwrap();
+        let topic     = topic_name("dis.test", ritual_id).unwrap();
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            "peer_answer(Q, A) :- \
+                caws_consult(n2, 'dis.test/consults/e1', _{prompt: Q}, R), \
+                get_dict(response, R, A).".into(),
+        ]).expect("seed_prolog failed");
+
+        let (mock_thread, replied) =
+            spawn_echo_peer(broker.clone(), topic.clone(), ritual_id, 1);
+
+        let mut ctrl = CycleController::new(
+            session,
+            60,
+            // catch/3 never triggers its recovery here (a pending caws_await
+            // FAILS, it doesn't throw) — the answer must come from the goal
+            // succeeding normally on a post-cycle-0 re-evaluation.
+            Some("catch(peer_answer(hello, Answer), _, (Answer = recovered))".into()),
+            Arc::new(AtomicBool::new(false)),
+        ).with_ritual(cc_handle);
+
+        let result = ctrl.run().expect("run() should converge");
+        mock_thread.join().expect("mock peer thread panicked");
+
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+        assert_eq!(
+            replied.load(std::sync::atomic::Ordering::Relaxed), 1,
+            "peer must have answered the Offering"
+        );
+
+        let solutions = serde_json::to_string(&result.prolog_solutions).unwrap_or_default();
+        assert!(
+            solutions.contains("ans_hello"),
+            "peer answer must reach the solutions despite the operator-syntax \
+             root goal; solutions={solutions}"
+        );
+        assert!(
+            !solutions.contains("recovered"),
+            "recovery branch must not have fired (failure is not an exception); \
+             solutions={solutions}"
+        );
     }
 
     // ── initial offering & mailbox hygiene (typed-edge auto-pipe) ─────────────

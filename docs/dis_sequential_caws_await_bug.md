@@ -92,6 +92,24 @@ succeeds fine with 3 solutions in 1 cycle — so `catch/3` is not broken in
 general, only specifically when it wraps a goal containing a
 `caws_offer`/`caws_await` pair.
 
+**Root-caused and fixed 2026-08-26** — and it turned out not to be about
+`catch/3` at all. `re_evaluate_root_goal` parsed the root-goal string with
+`transpile.rs`'s template mini-parser *before* re-querying, and returned
+on parse failure — but that parser has no support for infix operators or
+`(...)` grouping, so any root goal written in operator syntax (this
+repro's `(Answer = caught(Err), ...)` recovery arg; equally an
+if-then-else or a bare `A = B`) failed to parse and was therefore **never
+re-run after cycle 0 at all**. The async leg's reply would land, the run
+would quiesce, and it converged with cycle-0's empty solutions. The
+control worked because it succeeded *on* cycle 0, where `prolog_pass`
+runs the raw goal string with no parsing involved; a fully-parseable
+`catch(g(X), _, fail)` would also have worked. Fix: `re_evaluate_root_goal`
+now re-queries first and captures `final_solutions` unconditionally on
+success; the parse/template/tableau step is best-effort bookkeeping after
+the fact. Regression test:
+`run_loop_operator_syntax_root_goal_captures_solutions` (verified failing
+before the fix with exactly this symptom, `solutions=[]`).
+
 ### Repro 3 — the actual root cause: two sequential dependent calls, no catch at all
 
 ```prolog
@@ -253,6 +271,11 @@ tiers 2-4**: Repro 3-6 above all reproduce the zero-solutions failure with
 no `catch/3` anywhere in the picture. The two bugs happen to produce an
 identical symptom (`status: Converged`, `prolog_solutions: []`), which is
 what made the `catch/3` bug look sufficient before Repro 3 ruled it out.
+
+(The engine side of the `catch/3` bug has since been root-caused and fixed
+too — see the note under Repro 2. The lildaemon Prolog workaround remains
+good style regardless: narrow `catch/3` scopes around decode steps are
+cheaper and clearer than goal-wide ones.)
 
 ## Root cause (confirmed 2026-08-26)
 
