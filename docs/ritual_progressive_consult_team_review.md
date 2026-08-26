@@ -35,19 +35,27 @@ tests that force the full orchestrator past tier 1 — the previous "5/5
 verified" test suite always self-satisfied at tier 1 and so never actually
 exercised the code path that's broken.
 
-**Root cause is not yet pinned down.** Two candidate hypotheses are
-written up in the bug doc, both pointing into `clara-cycle`'s cycle
-controller (`has_converged`/`re_evaluate_root_goal`) or `the_coire.pl`'s
-`caws_offer`/`caws_await` idempotency handling — neither confirmed against
-a live trace yet.
+**Root cause is now confirmed** (2026-08-26, see the bug doc's "Root cause"
+section): `has_converged`'s own convergence-refresh step
+(`re_evaluate_root_goal`) is the only thing that can drive the goal past a
+resolved first leg after cycle 0, but it runs *after* the cycle's one
+publish/track step (`evaluator_pass`) — so a second, newly-triggered
+`caws_offer` is really staged, but the cycle declares convergence before
+anything drains and publishes it, and it's discarded when the run ends.
+Caught live with `RUST_LOG=debug` on a single clean repro run, no engine
+code changes or rebuild needed — existing debug logging already showed the
+exact cycle.
 
 ## What we're asking the team for
 
-1. **Someone with deeper context on `clara-cycle`'s convergence/tableau
-   design** to take the two hypotheses in `dis_sequential_caws_await_bug.md`
-   and either confirm one or find the actual mechanism. Suggested first
-   step is already written up there (rerun the simplest repro with
-   `RUST_LOG=debug` and read cycle-by-cycle convergence/mailbox state).
+1. **A decision between the two fix directions already scoped in the bug
+   doc**: a narrow ordering fix inside `has_converged` (drain/publish
+   anything `re_evaluate_root_goal` just staged before finalizing
+   convergence for that cycle), or the larger redesign
+   `coire_sync_vs_speculative_design_note.md` lays out (model chained
+   `caws_offer`/`caws_await` on the same durable/offset substrate the
+   topic-poll pattern already proved safe). This is no longer an
+   open-ended investigation — it's a scoping decision plus implementation.
 2. **A decision on how to proceed with this example in the meantime** —
    the bug doc lays out three options: fix the engine (correct, bigger,
    cross-repo), restructure this example's orchestration into one

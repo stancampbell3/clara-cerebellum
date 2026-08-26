@@ -1,8 +1,9 @@
 # Dis engine bug: sequential dependent `caws_offer`/`caws_await` calls don't converge
 
-**Status:** open, needs team triage. Found 2026-08-25 while building mocked
-full-orchestrator escalation tests for the progressive-consult Ritual
-example ([`ritual_progressive_consult_plan.md`](ritual_progressive_consult_plan.md),
+**Status:** open, needs a fix — but root cause is now **confirmed**, not
+just hypothesized (2026-08-26, see below). Found 2026-08-25 while building
+mocked full-orchestrator escalation tests for the progressive-consult
+Ritual example ([`ritual_progressive_consult_plan.md`](ritual_progressive_consult_plan.md),
 [`ritual_progressive_consult_verification_status.md`](ritual_progressive_consult_verification_status.md)).
 Not yet fixed — this doc is a handoff for team review, not a patch.
 
@@ -145,6 +146,61 @@ logs show only `local-splinter` ever receives an offering — `cow`,
 `groq-splinter`, `snek`, `edgequakeingest` never do, regardless of whether
 `catch/3` wraps the tier-2/3 legs or not (tested both ways).
 
+### Repro 7 — root cause caught live with `RUST_LOG=debug` (2026-08-26)
+
+Simplest possible repro (Repro 4's shape): `local-splinter` joined once,
+goal `consult_local('what is 2 + 2?', [], R1), consult_local('what is 3 + 3?',
+[], R2)`, no `catch/3`, no mock, no other participants. `docker-clara-api-1`
+recreated with `RUST_LOG=info,clara_cycle=debug,clara_coire=debug` for this
+one run only (reverted immediately after, no code changes, no rebuild).
+
+Converged after **21 cycles**, zero solutions — same symptom as every other
+repro. The full debug trace shows exactly what happens, cycle by cycle:
+
+- **Cycle 0:** `prolog_pass` runs the full goal once, reaches
+  `consult_local(R1)`, stages+publishes its `caws_offer` (`Coire: writing
+  event ... origin evaluator/offering ... prompt: "what is 2 + 2?"`,
+  followed by `publish_evaluator_events published 1 Offering(s)`), then
+  fails on `caws_await(R1)` (no reply yet) — the conjunction fails *before
+  ever reaching* `consult_local(R2)`. `pending_offers=1` correctly blocks
+  convergence.
+- **Cycles 1-18:** `prolog_pass` is a no-op after cycle 0 (`query_once("true")`
+  — it never re-runs the goal). `has_converged` calls `re_evaluate_root_goal`
+  every cycle (mailboxes/agenda are otherwise empty), but leg 1's reply
+  hasn't arrived yet, so the re-query still fails at `caws_await(R1)` before
+  reaching `consult_local(R2)` — no new offer, nothing logged (this specific
+  failure path in `re_evaluate_root_goal` is a silent `return`, see below).
+  `pending_offers=1` keeps blocking convergence throughout.
+- **Cycle 19 (03:45:24.640):** leg 1's Hohi finally arrives, ingested into
+  both mailboxes. `pending_offers` drops to 0, but `clips_pending=1` this
+  cycle — still not converged.
+- **Cycle 20 (03:45:24.642-.750), the pivotal cycle:** `prolog_pass` is
+  still a no-op. `evaluator_pass` runs and finds nothing new to publish
+  (correct — nothing has called `caws_offer` again yet). Then, inside
+  `has_converged`'s convergence check, `re_evaluate_root_goal` fires — and
+  this time leg 1's answer is cached, so the re-run genuinely reaches
+  `consult_local(R2)` for the first time. The log catches it in the act:
+
+  ```
+  [03:45:24.749] Coire: writing event 2935da9f-... (session 5f8d9969-...,
+  origin evaluator/offering, status pending, payload {"_caws":
+  {"correlation_id":"656285e8-...","target_node_id":"local-splinter",
+  "topic_path":"consult/local"},"context":[],"prompt":"what is 3 + 3?"})
+  [03:45:24.750] CycleController: convergence — prolog_pending=0,
+  clips_pending=0, agenda_empty=true, snapshot_stable=false,
+  tableau_stable=true, root_resolved=true, pending_offers=0 → true
+  [03:45:24.750] CycleController: converged after 21 cycle(s)
+  ```
+
+  The second `caws_offer` for R2 ("what is 3 + 3?") really does get staged
+  — one line later, the same cycle declares `Converged`, with
+  `pending_offers=0` (Rust's bookkeeping never learns about the event that
+  was *just* staged) and no further `evaluator_pass` ever runs to drain and
+  publish it. `run()` returns immediately; `evict_coire_sessions` clears the
+  session moments later. The staged offer for R2 is discarded, unsent —
+  this is the literal mechanism behind "the second leg's offering never
+  gets delivered to Kafka."
+
 ## Mock design used for these tests (for context, not itself the bug)
 
 To force escalation deterministically without relying on `clara_fy`'s real
@@ -191,75 +247,91 @@ no `catch/3` anywhere in the picture. The two bugs happen to produce an
 identical symptom (`status: Converged`, `prolog_solutions: []`), which is
 what made the `catch/3` bug look sufficient before Repro 3 ruled it out.
 
-## Root-cause investigation notes (hypotheses, not confirmed)
+## Root cause (confirmed 2026-08-26)
 
-Read `clara-cycle/src/controller.rs` (the Dis cycle controller) and
-`clara-prolog/prolog-lib/the_coire.pl` (`caws_offer/4`, `caws_await/2`)
-looking for where a second, later-arriving reply could get lost.
+Confirmed live via Repro 7 above, cross-referenced against
+`clara-cycle/src/controller.rs`. No engine code was changed to find this —
+existing `log::debug!`/`log::info!` instrumentation, read with
+`RUST_LOG=debug` for one run, was already enough.
 
-**`caws_await/2` (the_coire.pl:195-203)** already caches resolved replies
-via a `thread_local` fact (`caws_result/2`, populated by
-`caws_drain_ritual_events` from `coire_poll_ritual/2`, a **draining**
-poll — see `coire_bridge.rs`), so a later fresh re-evaluation of an
-*already-answered* leg should find its cached result immediately rather
-than needing to re-drain. This means the naive "single-consumption queue +
-full-goal-re-evaluation-per-cycle" race that would otherwise be the
-obvious suspect appears to already be guarded against, at least for a
-leg that has *already* succeeded once. That doesn't yet explain why the
-**second** leg's own `caws_offer` never seems to result in a delivered
-Kafka offering at all (confirmed via `docker logs` on every repro above:
-the second target node's `RitualParticipant` never logs receiving
-anything addressed to it).
+**The mechanism, precisely:**
 
-**`CycleController::run` (controller.rs:349-443)** re-evaluates the whole
-goal fresh every cycle via `prolog_pass`, and `has_converged`
-(controller.rs:1125-1225) only refreshes the *tableau's root-goal truth
-value* (via `re_evaluate_root_goal`, controller.rs:1288-1376) once
-`mailboxes_empty && clips_agenda_empty` — i.e. once nothing is currently
-outstanding. `re_evaluate_root_goal` re-queries the literal root goal
-string and, on success, sets `self.final_solutions` (the value the final
-`DeductionResult` actually reports — see `run`'s `self.final_solutions
-.take().or(initial_solutions)` at controller.rs:399/425). **Candidate
-hypothesis:** if the first leg's completion causes `mailboxes_empty &&
-clips_agenda_empty` to read `true` for one cycle *before* the
-Prolog-side re-run has actually reached (and thus emitted) the second
-leg's `caws_offer`, `has_converged` could declare convergence off a
-tableau that never saw the second offer get made at all — i.e. an
-ordering/timing gap between "does the engine consider itself idle" and
-"has the Prolog goal actually been re-driven far enough to discover it
-needs to make another request." This is a plausible mechanism for
-exactly the observed symptom (clean `Converged` status, no Tabu, no
-timeout, just an empty solution set) but **has not been confirmed against
-a live trace with cycle-by-cycle Coire mailbox contents** — that's the
-first thing the team should check.
+1. `CycleController::run`'s per-cycle loop (controller.rs:349-443) is:
+   `prolog_pass` → relay → `clips_pass` → relay → `evaluator_pass` (drains
+   staged Coire events and *actually publishes them to Kafka*, populating
+   `self.pending_offers`) → `has_converged`.
+2. **`prolog_pass` (controller.rs:551-581) only re-runs the actual goal on
+   cycle 0.** Every cycle after that, it's a no-op tick
+   (`query_once("true")`). So after cycle 0, the *only* code path that ever
+   re-attempts the whole goal is `has_converged` → `re_evaluate_root_goal`
+   (controller.rs:1288-1376), called once mailboxes/agenda are empty
+   (controller.rs:1144-1146) — which happens **after** `evaluator_pass`
+   already ran for that cycle.
+3. `caws_offer/4` (the_coire.pl:161-174) is a plain `assertz` + stage-into-
+   Coire's global per-session event queue — an ordinary, irreversible
+   Prolog side effect. It does not care whether it's called from
+   `prolog_pass`'s cycle-0 attempt or from `re_evaluate_root_goal`'s
+   later, otherwise-throwaway re-query.
+4. So: once leg 1's answer is cached, the *next* `re_evaluate_root_goal`
+   call re-runs the whole goal, resolves leg 1 from cache, and reaches
+   `consult_local`/`consult_cow`/etc for **leg 2** — staging a real,
+   brand-new `caws_offer` event — before failing overall on leg 2's fresh
+   `caws_await` (nothing has replied yet, it was *just* staged). This
+   overall failure is a normal "goal produced zero solutions" outcome, not
+   a Prolog exception, so `re_evaluate_root_goal`'s own `query_with_bindings`
+   call returns `Ok("[]")` rather than `Err` — which lands on the **silent**
+   `_ => return` branch at controller.rs:1328 (empty solutions array), not
+   the logged "still fails" `Err` branch at controller.rs:1315-1318. This is
+   why nothing about this ever appears in the logs by itself — the function
+   runs, correctly does nothing to the tableau, and returns quietly.
+5. Back in `has_converged`, `pending_responses_zero` (`self.pending_offers
+   .is_empty()`, controller.rs:1192) and `tableau_stable` are both computed
+   from state that **predates** step 4's side effect — `pending_offers` is
+   Rust-side bookkeeping that only `evaluator_pass`/`publish_evaluator_events`
+   populate, and that already ran earlier this same cycle. Nothing in this
+   cycle's remaining code re-checks whether `re_evaluate_root_goal` just
+   staged something new. Convergence is declared `true` on the very cycle
+   the second offer was minted.
+6. `run()` returns `Converged` immediately (controller.rs:393-413).
+   `evaluator_pass` never runs again. The staged "evaluator/offering" event
+   for leg 2 is never drained, never becomes a Kafka-published Tephra, and
+   is discarded moments later by `evict_coire_sessions`
+   (`Coire: clearing session ...`, visible in Repro 7's trace right after
+   `converged after 21 cycle(s)`).
 
-**Alternative/complementary hypothesis:** something about `caws_offer_sent/2`'s
-idempotency key (`Key = offer(Target, Topic, Dict0)`, the_coire.pl:163) or
-the JSON round-trip of `Dict0` causes the *second* `caws_offer` call within
-a re-evaluated goal to either not re-emit at all, or to emit against a
-`Cid`/session state that the cycle controller's `pending_offers` map
-(controller.rs:119, referenced throughout `has_converged`) doesn't
-actually track as outstanding — worth checking whether `pending_offers`
-ever gains an entry for the second leg's `Cid` at all during these repros
-(the controller has `log::debug!` convergence lines, `pending_offers={}`,
-that would show this directly with `RUST_LOG=debug` on `docker-clara-api-1`).
+**In short:** `has_converged`'s own convergence-refresh step
+(`re_evaluate_root_goal`) is the *only* thing capable of driving the goal
+past a resolved first leg, but it runs downstream of the cycle's one
+publish/track step (`evaluator_pass`) — so any new `caws_offer` it triggers
+is real (a real Kafka message would eventually go out for it) but is
+guaranteed to be orphaned in the exact cycle it's created, because nothing
+in that cycle or any later one re-invokes `evaluator_pass` for it before
+`has_converged`'s stale-relative-to-that-side-effect check declares the
+run finished.
 
-Neither hypothesis is confirmed. Recommend the team reproduce Repro 4
-(simplest: same node, twice) with `RUST_LOG=debug` on `docker-clara-api-1`
-and read the per-cycle `CycleController: convergence — ...` log lines
-plus whatever Coire mailbox/pending-offer state is visible at that level,
-cycle by cycle, to see exactly which cycle the second `caws_offer`'s
-`coire_emit` happens on (if ever) and what `has_converged` sees at that
-moment.
+**What a fix needs to do:** make sure that whenever `re_evaluate_root_goal`
+causes new Coire events to be staged, `has_converged` either (a) drains and
+publishes them (an `evaluator_pass`-equivalent call) *before* computing
+`pending_responses_zero`/`converged` for that cycle, so a genuinely new
+offer is seen as pending and blocks convergence like any other, or
+(b) explicitly treats "a re-evaluation just staged new events" as a
+not-converged signal for that cycle, guaranteeing at least one more cycle
+in which the normal `evaluator_pass` step picks it up. Read
+[`coire_sync_vs_speculative_design_note.md`](coire_sync_vs_speculative_design_note.md)
+before picking between this narrow fix and the larger architectural
+options it lays out — this mechanism is a plain ordering bug, but whether
+the *right* fix is "reorder/re-check in `has_converged`" versus "redesign
+the correlation cache" is exactly the choice that doc is about.
 
 ## Suggested triage options
 
-1. **Root-cause and fix the Dis/clara-cycle engine bug directly.** Correct
-   long-term fix — every future multi-step Ritual design needs this
-   pattern to work. Cross-repo (`clara-cycle`, possibly `clara-prolog`),
-   likely more than one session's work, and needs someone with deeper
-   context on the cycle controller's convergence/tableau design than this
-   investigation had time to build.
+1. **Fix the Dis/clara-cycle engine bug directly.** Correct long-term fix —
+   every future multi-step Ritual design needs this pattern to work. Root
+   cause is now precisely located (`has_converged`/`re_evaluate_root_goal`
+   ordering relative to `evaluator_pass`, see "Root cause" above) — this is
+   no longer an open-ended investigation, just a decision between the
+   narrow ordering fix and the larger design-note options, then
+   implementation + a 3+-leg/loop stress test (not just 2) in `clara-cycle`.
 2. **Route around it at the orchestration layer.** Split `consult_step`
    into one `/deduce` call per tier from Python instead of one Prolog goal
    spanning all four tiers — `run_demo()` already does the join/cleanup
