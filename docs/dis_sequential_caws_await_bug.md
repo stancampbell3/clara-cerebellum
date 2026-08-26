@@ -426,6 +426,40 @@ fixed its tiers will fan out rather than stop early — it needs the
 tri-state idiom (`caws_result`/`caws_failed`/neither-then-fail) before
 its stop-early economics are real.
 
+**Tri-state rework: DONE and VERIFIED LIVE 2026-08-26**
+(`lildaemon@fc0bc45`, entirely a lildaemon-side change — no further
+`clara-cycle` changes needed). Tiers 2-4 (`tier2_cow/9`, `tier3_groq/4`,
+`tier4_cow/9`) now offer, then resolve via a `caws_tristate/3` helper
+that checks `caws_result/2`/`caws_failed/2` directly instead of going
+through `caws_await/2`'s collapsing wrapper; a merely-pending reply fails
+the whole `consult_step/15` clause (retried next cycle) instead of
+falling through to the next tier. Building this surfaced one more real
+bug, this time in `the_coire.pl` itself: it wraps its whole file in
+`:- module(the_coire, [...]).` and the export list covers `caws_offer/4`,
+`caws_await/2`, `caws_consult/4`, etc. but **not** `caws_result/2`,
+`caws_failed/2`, or `caws_drain_ritual_events/0` — `caws_await/2` never
+notices because it calls them unqualified from *inside* the same module,
+but a bare call from lildaemon-authored Prolog (asserted into a different
+module) throws `existence_error(procedure, caws_result/2)`, not a plain
+failure. Confirmed live via `RUST_LOG=debug`: every mocked full-chain
+escalation test converged with **zero solutions after only 20-106
+cycles** (`re_evaluate_root_goal: ... still fails: Prolog exception:
+error(existence_error(procedure,caws_result/2),context(caws_tristate/3,_))`)
+— i.e. the goal blew up on the very first tri-state check, before any
+tier-2+ reply had a chance to resolve it. Worked around in lildaemon by
+qualifying the three calls as `the_coire:caws_result(...)` etc.; the
+cleaner long-term fix is adding those three predicates to
+`the_coire.pl`'s own export list so Ritual-authored Prolog can reach them
+without hardcoding the module name — not done here since it needs another
+`clara-cerebellum` rebuild and the qualified-call workaround is
+sufficient. Verified live: lildaemon's full
+`test_ritual_progressive_consult_example.py` suite, **9/9 passed**
+against a freshly restarted `clara-api` and a cleaned-up Edgequake tenant
+(see the `edgequake_workspace_management_todo` memory note for an
+unrelated pre-existing issue this run also surfaced: the tenant had
+silently hit Edgequake's 100-workspace cap from accumulated per-test-run
+workspaces, briefly masking the fix's own verification).
+
 ## Appendix: what's confirmed clean / not implicated
 
 - `research_step/8`'s fan-out-then-join pattern (`offer, offer, await,
