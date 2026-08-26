@@ -69,6 +69,69 @@ pub struct AppState {
     pub fiery_pit_token_cache: Arc<Mutex<Option<CachedToken>>>,
 }
 
+/// Periodically evicts terminal-status entries from `AppState.deductions`
+/// older than `ttl`. Added 2026-08-26: this map grows unconditionally for
+/// every `/deduce` call, forever — unlike the CoireStore-backed layer
+/// `CarrionPicker` (clara-coire) already sweeps, which only receives data
+/// when a request sets `persist: true`. Deliberately NOT part of
+/// `CarrionPicker` itself: that type is scoped to `CoireStore`/DuckDB and
+/// lives in the lower-level `clara-coire` crate, which shouldn't depend on
+/// `clara-api`'s own `AppState`/`DeductionEntry` types.
+///
+/// Only entries whose `status` is NOT `CycleStatus::Running` are eligible —
+/// a deduction that's still running is never evicted regardless of age
+/// (mirrors `CarrionPicker`'s own "never touch anything in the active set"
+/// discipline, just checked directly via `status` here instead of a
+/// separate active-set, since `DeductionEntry` already carries it).
+/// `created_at` is "when this entry was first inserted" (deduction start),
+/// not "when it reached its terminal status" — a fine approximation given
+/// typical deduction runtimes are seconds-to-minutes and TTLs here are
+/// sized in hours; not worth a new field to make exact.
+///
+/// This is a memory-leak fix, not a durable archive — a future "pull
+/// completed work" worker should read from `persist: true` deductions'
+/// `DeductionSnapshot` rows (already TTL'd by `CarrionPicker` on a much
+/// longer, configurable horizon) instead of this in-memory map.
+pub fn spawn_deduction_reaper(
+    deductions: Arc<RwLock<HashMap<Uuid, DeductionEntry>>>,
+    ttl: std::time::Duration,
+    interval: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        log::info!(
+            "Deduction reaper: started (ttl={}s, interval={}s)",
+            ttl.as_secs(),
+            interval.as_secs(),
+        );
+        loop {
+            tokio::time::sleep(interval).await;
+            let evicted = reap_deductions(&deductions, ttl);
+            if evicted > 0 {
+                log::info!("Deduction reaper: evicted {} completed deduction(s)", evicted);
+            } else {
+                log::debug!("Deduction reaper: sweep complete, nothing to evict");
+            }
+        }
+    })
+}
+
+/// One sweep pass, factored out of `spawn_deduction_reaper`'s loop so it's
+/// synchronously unit-testable (mirrors `CarrionPicker::sweep`'s own
+/// separation from `CarrionPicker::spawn`'s tokio loop). Returns the number
+/// of entries evicted.
+fn reap_deductions(
+    deductions: &Arc<RwLock<HashMap<Uuid, DeductionEntry>>>,
+    ttl: std::time::Duration,
+) -> usize {
+    let mut map = deductions.write().unwrap();
+    let before = map.len();
+    map.retain(|_id, entry| {
+        let terminal = !matches!(entry.status, CycleStatus::Running);
+        !(terminal && entry.created_at.elapsed() >= ttl)
+    });
+    before - map.len()
+}
+
 /// Convert a clara-session::Session to API SessionResponse
 fn session_to_response(session: &clara_session::Session) -> SessionResponse {
     SessionResponse {
@@ -410,11 +473,88 @@ pub async fn list_all_sessions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
 
     #[test]
     fn test_format_timestamp() {
         let ts = 1729700580; // 2024-10-23 17:03:00 UTC
         let formatted = format_timestamp(ts);
         assert!(formatted.contains("2024-10-23"));
+    }
+
+    fn make_entry(status: CycleStatus, age: Duration) -> DeductionEntry {
+        DeductionEntry {
+            status,
+            result: None,
+            cycles: 0,
+            interrupt: Arc::new(AtomicBool::new(false)),
+            created_at: Instant::now() - age,
+            prolog_session_id: None,
+            clips_session_id: None,
+        }
+    }
+
+    #[test]
+    fn test_reap_deductions_evicts_terminal_entries_past_ttl() {
+        let deductions = Arc::new(RwLock::new(HashMap::new()));
+        deductions
+            .write()
+            .unwrap()
+            .insert(Uuid::new_v4(), make_entry(CycleStatus::Converged, Duration::from_secs(3600)));
+
+        let evicted = reap_deductions(&deductions, Duration::from_secs(60));
+
+        assert_eq!(evicted, 1);
+        assert!(deductions.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_reap_deductions_keeps_running_entries_regardless_of_age() {
+        let deductions = Arc::new(RwLock::new(HashMap::new()));
+        deductions
+            .write()
+            .unwrap()
+            .insert(Uuid::new_v4(), make_entry(CycleStatus::Running, Duration::from_secs(3600)));
+
+        let evicted = reap_deductions(&deductions, Duration::from_secs(60));
+
+        assert_eq!(evicted, 0);
+        assert_eq!(deductions.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_reap_deductions_keeps_terminal_entries_within_ttl() {
+        let deductions = Arc::new(RwLock::new(HashMap::new()));
+        deductions
+            .write()
+            .unwrap()
+            .insert(Uuid::new_v4(), make_entry(CycleStatus::Converged, Duration::from_secs(1)));
+
+        let evicted = reap_deductions(&deductions, Duration::from_secs(3600));
+
+        assert_eq!(evicted, 0);
+        assert_eq!(deductions.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_reap_deductions_evicts_error_and_interrupted_too() {
+        let deductions = Arc::new(RwLock::new(HashMap::new()));
+        {
+            let mut map = deductions.write().unwrap();
+            map.insert(
+                Uuid::new_v4(),
+                make_entry(CycleStatus::Error("boom".to_string()), Duration::from_secs(3600)),
+            );
+            map.insert(
+                Uuid::new_v4(),
+                make_entry(CycleStatus::Interrupted, Duration::from_secs(3600)),
+            );
+        }
+
+        let evicted = reap_deductions(&deductions, Duration::from_secs(60));
+
+        assert_eq!(evicted, 2);
+        assert!(deductions.read().unwrap().is_empty());
     }
 }

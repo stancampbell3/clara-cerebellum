@@ -64,6 +64,8 @@ pub fn default_persistence_config() -> PersistenceConfig {
         coire_store_sweep_interval_seconds: 3600,
         deduction_snapshot_ttl_seconds: 604800,
         evaluate_cache_ttl_seconds: 14400,
+        deduction_entry_ttl_seconds: 3600,
+        deduction_entry_sweep_interval_seconds: 300,
     }
 }
 

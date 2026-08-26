@@ -40,6 +40,12 @@ coire_store_ttl_seconds = 86400          # 24 hours; set to 0 to disable orphan 
 coire_store_sweep_interval_seconds = 3600 # sweep every hour
 deduction_snapshot_ttl_seconds = 604800  # 7 days; set to 0 to keep snapshots indefinitely
 evaluate_cache_ttl_seconds = 30       # 30 seconds; set to 0 to disable TTL eviction of evaluate cache
+# AppState.deductions (in-memory, every /deduce call, unconditionally — unlike
+# the CoireStore-backed settings above) has no eviction at all without this;
+# see PersistenceConfig's own doc comment for why this is a separate, smaller
+# TTL than deduction_snapshot_ttl_seconds, not the durable archive.
+deduction_entry_ttl_seconds = 3600            # 1 hour; set to 0 to disable this sweep
+deduction_entry_sweep_interval_seconds = 300  # sweep every 5 minutes
 
 [observability]
 log_level = "info"

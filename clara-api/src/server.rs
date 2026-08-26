@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use crate::handlers::AppState;
+use crate::handlers::{AppState, DeductionEntry};
 use crate::routes;
 use crate::subprocess::SubprocessPool;
 
@@ -146,11 +146,28 @@ pub async fn start_server(
         info!("RitualRegistry: no Coire store configured — rituals will not survive restarts");
     }
 
+    // Deduction-entry reaper: evicts terminal-status AppState.deductions
+    // entries older than deduction_entry_ttl_seconds — see
+    // spawn_deduction_reaper's own doc comment for why this is separate
+    // from CarrionPicker above. Runs unconditionally (independent of
+    // whether a CoireStore is configured), since state.deductions grows on
+    // every /deduce call regardless.
+    let deductions: Arc<RwLock<HashMap<uuid::Uuid, DeductionEntry>>> = Arc::new(RwLock::new(HashMap::new()));
+    if config.persistence.deduction_entry_ttl_seconds > 0 {
+        crate::handlers::spawn_deduction_reaper(
+            deductions.clone(),
+            Duration::from_secs(config.persistence.deduction_entry_ttl_seconds),
+            Duration::from_secs(config.persistence.deduction_entry_sweep_interval_seconds.max(1)),
+        );
+    } else {
+        info!("Deduction reaper: disabled (deduction_entry_ttl_seconds=0)");
+    }
+
     // Create app state
     let app_state = web::Data::new(AppState {
         session_manager,
         subprocess_pool,
-        deductions: Arc::new(RwLock::new(HashMap::new())),
+        deductions,
         coire_store,
         active_coire_sessions,
         snapshot_ttl_ms,

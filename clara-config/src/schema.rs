@@ -103,9 +103,33 @@ pub struct PersistenceConfig {
     /// evaluate cache (per-deduction eviction on snapshot expiry still runs).
     #[serde(default = "default_evaluate_cache_ttl_seconds")]
     pub evaluate_cache_ttl_seconds: u64,
+    /// Time-to-live for `AppState.deductions` entries in seconds — the
+    /// in-memory HashMap<Uuid, DeductionEntry> every `/deduce` call inserts
+    /// into, read back by `GET /deduce/{id}`. Added 2026-08-26: unlike the
+    /// CoireStore-backed entries above (only written when a request sets
+    /// `persist: true`), this map grows unconditionally for every deduction,
+    /// forever, with no prior eviction at all. Only terminal-status entries
+    /// (Converged/Interrupted/Error, never Running) older than this TTL are
+    /// evicted, by a small dedicated sweep task in clara-api (not the
+    /// CarrionPicker above, which is scoped to CoireStore/DuckDB and
+    /// shouldn't depend on clara-api's own AppState type). Default: 3600
+    /// (1 hour) — this is a memory-leak fix, not the durable archive a
+    /// future "pull completed work" worker should read from (that's what
+    /// `persist: true` + the snapshot TTL above is for). Set to 0 to
+    /// disable this sweep.
+    #[serde(default = "default_deduction_entry_ttl_seconds")]
+    pub deduction_entry_ttl_seconds: u64,
+    /// How often the deduction-entry sweep runs, in seconds. Default: 300
+    /// (5 minutes) — cheap (in-memory only), so swept more often than the
+    /// DuckDB-backed CarrionPicker above. Ignored when
+    /// `deduction_entry_ttl_seconds` is 0.
+    #[serde(default = "default_deduction_entry_sweep_interval_seconds")]
+    pub deduction_entry_sweep_interval_seconds: u64,
 }
 
 fn default_evaluate_cache_ttl_seconds() -> u64 { 14400 }
+fn default_deduction_entry_ttl_seconds() -> u64 { 3600 }
+fn default_deduction_entry_sweep_interval_seconds() -> u64 { 300 }
 
 /// Observability configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

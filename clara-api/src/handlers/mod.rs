@@ -11,7 +11,8 @@ pub mod coire_topics_handler;
 pub mod transduce_handler;
 
 pub use session_handler::{create_session, get_session, list_user_sessions,
-                          terminate_session, save_session, AppState};
+                          terminate_session, save_session, spawn_deduction_reaper,
+                          AppState, DeductionEntry};
 pub use eval_handler::eval_session;
 pub use error_handler::handle_error;
 pub use devils_handler::{
