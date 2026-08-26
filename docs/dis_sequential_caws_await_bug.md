@@ -92,8 +92,10 @@ succeeds fine with 3 solutions in 1 cycle — so `catch/3` is not broken in
 general, only specifically when it wraps a goal containing a
 `caws_offer`/`caws_await` pair.
 
-**Root-caused and fixed 2026-08-26** — and it turned out not to be about
-`catch/3` at all. `re_evaluate_root_goal` parsed the root-goal string with
+**Root-caused, fixed, and verified live 2026-08-26** (this exact shape —
+a catch-wrapped single leg with an operator-syntax recovery — converges
+with the real answer bound against the rebuilt image) — and it turned out
+not to be about `catch/3` at all. `re_evaluate_root_goal` parsed the root-goal string with
 `transpile.rs`'s template mini-parser *before* re-querying, and returned
 on parse failure — but that parser has no support for infix operators or
 `(...)` grouping, so any root goal written in operator syntax (this
