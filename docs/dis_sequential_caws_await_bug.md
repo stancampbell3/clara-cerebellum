@@ -1,12 +1,15 @@
 # Dis engine bug: sequential dependent `caws_offer`/`caws_await` calls don't converge
 
-**Status: FIXED in `clara-cycle` (2026-08-26), pending image rebuild +
-live verification.** Root cause confirmed live the same day (see "Root
-cause" below); the fix is the narrow convergence-invariant option — see
-"The fix" at the end of this doc. The lildaemon xfail tests
-(`test_ritual_progressive_consult_example.py`) are the live verification
-gate: they should flip to passing once `clara-api:latest` is rebuilt.
-Found 2026-08-25 while building mocked full-orchestrator escalation tests
+**Status: FIXED and VERIFIED LIVE (2026-08-26).** Root cause confirmed
+live via `RUST_LOG=debug` trace, fixed the same day with the narrow
+convergence-invariant option (see "The fix" at the end of this doc),
+`clara-api:latest` rebuilt, and verified end-to-end against the live
+stack: the minimal two-leg repro now converges with both answers bound,
+and lildaemon's full progressive-consult suite ran 5 passed + 4 XPASS
+(the four formerly-xfail escalation tests, including the tier-4 real-crawl
+chain, 0 failures, 5m55s). The xfail markers have been removed — they are
+plain tests now. Found 2026-08-25 while building mocked
+full-orchestrator escalation tests
 for the progressive-consult Ritual example
 ([`ritual_progressive_consult_plan.md`](ritual_progressive_consult_plan.md),
 [`ritual_progressive_consult_verification_status.md`](ritual_progressive_consult_verification_status.md)).
@@ -381,9 +384,17 @@ Covered by three new regression tests in `controller.rs`'s
   the fully-chained answer and exactly 3 Offerings.
 
 Full `clara-cycle` suite passes with and without the `ritual` feature.
-Remaining to close this out: rebuild `clara-api:latest`, rerun the
-lildaemon suite (the four xfail tests should flip), then remove the xfail
-markers. Note a separate follow-up surfaced by scoping this fix:
+
+**Live verification (2026-08-26, complete):** `clara-api:latest` rebuilt
+with the fix and redeployed; the minimal two-leg repro (Repro 7's goal)
+converged with both `R1` and `R2` bound (115 cycles — each leg pacing on
+a real local-LLM reply); lildaemon's full
+`test_ritual_progressive_consult_example.py` suite then ran **5 passed +
+4 XPASS, 0 failed** — all four formerly-xfail escalation tests (tier 2,
+tier 3, tier 4 with a real crawl, and exhausted) passed on the first run
+against the fixed engine, and their xfail markers have been removed.
+
+Note a separate follow-up surfaced by scoping this fix:
 `consult_step`'s `->/;` fallbacks can't distinguish "no reply yet" from
 "replied with Tabu" (both are plain Prolog failure), so with the engine
 fixed its tiers will fan out rather than stop early — it needs the

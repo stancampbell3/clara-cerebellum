@@ -1,21 +1,24 @@
 # Progressive-consult Ritual example: live verification status
 
-**Status: verified live end-to-end at tier 1 only, 2026-08-25. Tiers 2-4 are
-currently blocked by an open Dis engine bug — see
-[`dis_sequential_caws_await_bug.md`](dis_sequential_caws_await_bug.md).**
-Implementation (`examples_ritual_progressive_consult.py`, Option 1 from
+**Status: verified live end-to-end at ALL FOUR TIERS, 2026-08-26** —
+9/9 in `tests/test_ritual_progressive_consult_example.py` (5 passed +
+4 XPASS on the first run against the fixed engine; the xfail markers have
+since been removed). Implementation
+(`examples_ritual_progressive_consult.py`, Option 1 from
 `ritual_progressive_consult_plan.md`, plus the `cow` evaluator) is
-committed. All four tiers were verified individually via a new
-`tests/test_ritual_progressive_consult_example.py` integration suite, plus
-one full end-to-end run — 5/5 passing against the real dev stack. Six real
-issues were found and fixed along the way (four code bugs, one deployment
-gap, one test-authoring gotcha); see below for each. **A later pass
-(same day) building deterministic mocked tests to force the full
-orchestrator through tiers 2-4 found that `consult_step/15`'s tiers 2-4
-never actually complete in production**: any second `caws_offer`/
-`caws_await` round trip issued after an earlier one has resolved, within
-the same deduction goal, never converges to a solution. Full writeup,
-repro steps, and root-cause hypotheses: `dis_sequential_caws_await_bug.md`.
+committed. Six real issues were found and fixed during the original
+2026-08-25 verification pass (four code bugs, one deployment gap, one
+test-authoring gotcha); see below for each. **A later pass (2026-08-25)
+building deterministic mocked tests to force the full orchestrator
+through tiers 2-4 found that `consult_step/15`'s tiers 2-4 never actually
+completed in production** — any second `caws_offer`/`caws_await` round
+trip issued after an earlier one had resolved, within the same deduction
+goal, never converged. That engine bug was root-caused and fixed in
+`clara-cycle` on 2026-08-26, and the escalation tests all pass live —
+full history: [`dis_sequential_caws_await_bug.md`](dis_sequential_caws_await_bug.md).
+One known follow-up remains (stop-early economics under the engine's
+re-evaluation model — the tri-state consult idiom); it affects cost, not
+correctness, and is tracked in the bug doc's closing note.
 
 ## Summary
 
