@@ -915,6 +915,28 @@ impl CoireStore {
         Ok(())
     }
 
+    /// Delete persisted Rituals whose `state = 'terminated'` and
+    /// `updated_at_ms < cutoff_ms`. Active Rituals are never touched
+    /// regardless of age — a standing Ritual (e.g. the assistant demo's,
+    /// created once and reused for the whole process lifetime) can
+    /// legitimately go a long time between participant-list updates
+    /// without ever being stale in any meaningful sense; only a Ritual
+    /// that has actually been terminated is eligible. Added 2026-08-26:
+    /// `terminate()`'s only effect on `rituals` was a state flip
+    /// (`set_ritual_state`) — the row itself lived forever, restored on
+    /// every server start (`RitualRegistry::restore_from_store`); a live
+    /// count found 250 rituals being restored on one dev deployment,
+    /// almost entirely terminated test/example debris. Returns the number
+    /// of rows deleted.
+    pub fn delete_expired_terminated_rituals(&self, cutoff_ms: i64) -> CoireResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
+            "DELETE FROM rituals WHERE state = 'terminated' AND updated_at_ms < ?",
+            duckdb::params![cutoff_ms],
+        )?;
+        Ok(deleted)
+    }
+
     /// Load all persisted Rituals — active and terminated — oldest first.
     ///
     /// Terminated rows are included so a restarted server keeps answering
@@ -1332,6 +1354,46 @@ mod tests {
 
         let loaded = store.load_rituals().unwrap();
         assert_eq!(loaded[0].participants_json, map);
+    }
+
+    #[test]
+    fn delete_expired_terminated_rituals_deletes_only_old_terminated() {
+        let (store, _f) = tmp_store();
+
+        let mut old_terminated = make_ritual_row("old-terminated");
+        old_terminated.state = "terminated".to_string();
+        old_terminated.updated_at_ms = 1_000;
+        store.upsert_ritual(&old_terminated).unwrap();
+
+        let mut fresh_terminated = make_ritual_row("fresh-terminated");
+        fresh_terminated.state = "terminated".to_string();
+        fresh_terminated.updated_at_ms = 9_000;
+        store.upsert_ritual(&fresh_terminated).unwrap();
+
+        let mut old_active = make_ritual_row("old-active");
+        old_active.state = "active".to_string();
+        old_active.updated_at_ms = 1_000;
+        store.upsert_ritual(&old_active).unwrap();
+
+        let deleted = store.delete_expired_terminated_rituals(5_000).unwrap();
+
+        assert_eq!(deleted, 1);
+        let remaining: std::collections::HashSet<String> = store
+            .load_rituals()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(
+            remaining,
+            std::collections::HashSet::from(["fresh-terminated".to_string(), "old-active".to_string()])
+        );
+    }
+
+    #[test]
+    fn delete_expired_terminated_rituals_empty_store_is_noop() {
+        let (store, _f) = tmp_store();
+        assert_eq!(store.delete_expired_terminated_rituals(9_999_999_999).unwrap(), 0);
     }
 
     #[test]

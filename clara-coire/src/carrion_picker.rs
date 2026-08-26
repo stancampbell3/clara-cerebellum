@@ -9,7 +9,7 @@ use crate::store::CoireStore;
 
 /// Background task that periodically deletes stale data from a [`CoireStore`].
 ///
-/// Each sweep performs three passes in order:
+/// Each sweep performs five passes in order:
 ///
 /// 1. **Snapshot expiry** — deletes [`DeductionSnapshot`] rows (and their
 ///    associated Coire events) whose `expires_at_ms` is in the past.
@@ -20,6 +20,12 @@ use crate::store::CoireStore;
 /// 3. **Evaluate-cache TTL sweep** — evicts in-memory evaluate-cache entries
 ///    older than `cache_ttl`.  Only runs when a cache eviction handler is
 ///    configured via [`CarrionPicker::with_cache_eviction`].
+/// 4. **Source registry + artifact GC** — deletes expired `source_registry`
+///    rows (and their `source_artifacts`) via [`crate::source::SourceRegistry::sweep_expired`].
+/// 5. **Terminated Ritual GC** — deletes `rituals` rows whose `state =
+///    'terminated'` and `updated_at_ms` is older than `snapshot_ttl` (see
+///    [`CoireStore::delete_expired_terminated_rituals`]). Active Rituals are
+///    never touched regardless of age.
 ///
 /// Sessions whose UUIDs appear in `active` are always skipped in passes 1 & 2,
 /// protecting deductions that are currently running.
@@ -227,6 +233,23 @@ impl CarrionPicker {
             Err(e) => log::warn!("CarrionPicker: source sweep failed: {}", e),
         }
 
+        // ── Pass 5: terminated Ritual rows ───────────────────────────────────
+        // Reuses snapshot_ttl (not a dedicated ritual TTL config field) —
+        // a persisted Ritual row is the same kind of "historical record of
+        // completed work" as a DeductionSnapshot, so the same horizon
+        // applies. Only `state = 'terminated'` rows are eligible — see
+        // CoireStore::delete_expired_terminated_rituals's own doc comment
+        // for why active Rituals are never touched regardless of age.
+        let ritual_cutoff = now_ms - self.snapshot_ttl.as_millis() as i64;
+        match self.store.delete_expired_terminated_rituals(ritual_cutoff) {
+            Ok(n) if n > 0 => log::info!(
+                "CarrionPicker: deleted {} expired terminated ritual(s)",
+                n
+            ),
+            Ok(_) => {}
+            Err(e) => log::warn!("CarrionPicker: ritual sweep failed: {}", e),
+        }
+
         (snaps_deleted, events_deleted, cache_evicted)
     }
 }
@@ -344,6 +367,46 @@ mod tests {
         let active = Arc::new(RwLock::new(HashSet::new()));
         let picker = make_picker(store, Duration::from_secs(3600), Duration::from_secs(86400), active);
         assert_eq!(picker.sweep(), (0, 0, 0));
+    }
+
+    #[test]
+    fn sweep_pass5_deletes_expired_terminated_ritual_keeps_active() {
+        use crate::store::RitualRow;
+
+        let (store, _dir) = tmp_store();
+        let active = Arc::new(RwLock::new(HashSet::new()));
+        let snapshot_ttl = Duration::from_secs(86400); // 1 day
+        let picker = make_picker(store.clone(), Duration::from_secs(3600), snapshot_ttl, active);
+
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        let stale_terminated = RitualRow {
+            ritual_id:         Uuid::new_v4(),
+            name:              "stale".to_string(),
+            config_json:       "{}".to_string(),
+            state:             "terminated".to_string(),
+            topic:             "dis.test.ritual.stale".to_string(),
+            participants_json: "{}".to_string(),
+            created_at_ms:     now_ms - snapshot_ttl.as_millis() as i64 * 2,
+            updated_at_ms:     now_ms - snapshot_ttl.as_millis() as i64 * 2,
+        };
+        let still_active = RitualRow {
+            ritual_id:         Uuid::new_v4(),
+            name:              "standing".to_string(),
+            config_json:       "{}".to_string(),
+            state:             "active".to_string(),
+            topic:             "dis.test.ritual.standing".to_string(),
+            participants_json: "{}".to_string(),
+            // Also older than snapshot_ttl — must survive anyway, since it's active.
+            created_at_ms:     now_ms - snapshot_ttl.as_millis() as i64 * 2,
+            updated_at_ms:     now_ms - snapshot_ttl.as_millis() as i64 * 2,
+        };
+        store.upsert_ritual(&stale_terminated).unwrap();
+        store.upsert_ritual(&still_active).unwrap();
+
+        picker.sweep();
+
+        let remaining: Vec<String> = store.load_rituals().unwrap().into_iter().map(|r| r.name).collect();
+        assert_eq!(remaining, vec!["standing".to_string()]);
     }
 
     #[test]
