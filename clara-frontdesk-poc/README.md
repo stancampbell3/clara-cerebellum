@@ -70,17 +70,19 @@ assistant_turn(+Query, -Action, -Reply, -Citations, -CitationCount) is semidet.
 
 research_step/8, answer_step/9, extract_hohi_response/2
 %   Fixed platform predicates every ruleset must copy verbatim (see
-%   general_assistant.pl for the reference implementation) — only
-%   assistant_turn/5 is meant to actually vary between rulesets.
+%   progressive_research.pl for the reference implementation, or
+%   lildaemon's runtime.py module docstring for the full contract) —
+%   only assistant_turn/5 is meant to actually vary between rulesets.
 ```
 
-Three rulesets exist today:
+Two rulesets exist today (trimmed from three 2026-08-26 — the original
+`general_assistant.pl` was removed once `progressive_research.pl` existed
+and covered its use case better):
 
 | Ruleset | Classification policy | Chat tone |
 |---|---|---|
-| `general_assistant.pl` (default) | Research everything except obvious small talk | Whatever Clara's model returns, unmodified |
+| `progressive_research.pl` (default) | Tries pondering, then Edgequake-grounded pondering, then a Groq second opinion (`groq-splinter`), each self-checked with `clara_fy`, before falling back to background research | Whatever the sufficient tier's answer is |
 | `terse_analyst.pl` | Only research when explicitly asked ("research", "look up", "latest", ...) | Forced one-sentence, no-pleasantries |
-| `progressive_research.pl` | Tries pondering, then Edgequake-grounded pondering, both self-checked with `clara_fy`, before falling back to background research | Whatever the sufficient tier's answer is |
 
 `progressive_research.pl`'s background-research path (`deferred_query`)
 delivers its fuller follow-up answer as a queued alert — a bell icon in
