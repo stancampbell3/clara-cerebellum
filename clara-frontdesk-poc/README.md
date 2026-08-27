@@ -60,13 +60,18 @@ contract:
 
 ```prolog
 assistant_turn(+Query, -Action, -Reply, -Citations, -CitationCount) is semidet.
-%   Action ∈ {chat, knowledge_query, deferred_query}.
+%   Action ∈ {chat, knowledge_query, deferred_query, deliberate}.
 %   chat: also bind Reply/Citations/CitationCount — sent straight to the user.
 %   knowledge_query: bind Reply = none — the platform runs its own fixed
 %   research_step/8 + answer_step/9 pipeline and generates the reply.
 %   deferred_query: bind Reply/Citations/CitationCount to a qualified
 %   "best answer so far" — the platform returns it immediately and fires
 %   research_step/8 in the background rather than blocking on it.
+%   deliberate: bind Reply to an immediate acknowledgment — the platform
+%   returns it and fires the ruleset's OWN deliberation_step/7 in the
+%   background (not a fixed platform predicate like research_step/8 —
+%   only a ruleset that binds this Action needs to define it), delivered
+%   through the same background-alert channel as deferred_query.
 
 research_step/8, answer_step/9, extract_hohi_response/2
 %   Fixed platform predicates every ruleset must copy verbatim (see
@@ -75,14 +80,15 @@ research_step/8, answer_step/9, extract_hohi_response/2
 %   only assistant_turn/5 is meant to actually vary between rulesets.
 ```
 
-Two rulesets exist today (trimmed from three 2026-08-26 — the original
+Three rulesets exist today (trimmed to two on 2026-08-26 — the original
 `general_assistant.pl` was removed once `progressive_research.pl` existed
-and covered its use case better):
+and covered its use case better — then a third added 2026-08-27):
 
 | Ruleset | Classification policy | Chat tone |
 |---|---|---|
 | `progressive_research.pl` (default) | Tries pondering, then Edgequake-grounded pondering, then a Groq second opinion (`groq-splinter`), each self-checked with `clara_fy`, before falling back to background research | Whatever the sufficient tier's answer is |
 | `terse_analyst.pl` | Only research when explicitly asked ("research", "look up", "latest", ...) | Forced one-sentence, no-pleasantries |
+| `deliberative_analyst.pl` | Decision-shaped questions ("should", "X or Y", "choose", "decide", ...) convene a chaired, multi-model assembly (Robert's Rules of Order — see `lildaemon/examples_ritual_roberts_rules.py`) that debates a motion and votes; everything else is a quick, even-handed chat reply | An immediate "convening the assembly" acknowledgment, followed later by the outcome + resolution + roll call as a background alert |
 
 `progressive_research.pl`'s background-research path (`deferred_query`)
 delivers its fuller follow-up answer as a queued alert — a bell icon in
@@ -93,6 +99,12 @@ section for the full async delivery design, its test coverage, and two
 real bugs found and fixed the same day (a missing HTTP client timeout in
 `fiery-pit-client`, and `the_rat` Prolog library never being loaded at
 all) — both confirmed fixed by a live end-to-end run of the tier logic.
+`deliberative_analyst.pl`'s `deliberate` action reuses this same alert
+channel (a full deliberation runs several minutes, well past this app's
+own `reqwest` client timeout for the turn itself — see
+`lildaemon/docs/assistant_demo.md`'s "Deliberative Analyst ruleset"
+section for the full design and why deferred delivery, not a longer
+blocking wait, was the right shape here).
 
 **Per-session, not a process-wide setting** (2026-08-21): each assistant
 session picks its own ruleset independently via the header dropdown,
