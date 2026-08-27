@@ -11,6 +11,15 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Dependency layer FIRST, keyed only on pyproject.toml, so source-only
+# changes don't re-download the whole dependency tree (previously every
+# `COPY lildaemon/ .` invalidated the single pip layer and rebuilds took
+# ~30 minutes; a PyPI CDN read timeout killed two such builds in a row on
+# 2026-08-27 — hence also the explicit retries/timeout).
+COPY lildaemon/pyproject.toml ./pyproject.toml
+RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > /tmp/requirements.txt \
+    && pip install --no-cache-dir --retries 10 --timeout 120 -r /tmp/requirements.txt
+
 # Copy the full lildaemon tree to /app.
 # evaluators_custom/ and config/ must be present in the working directory.
 COPY lildaemon/ .
@@ -18,8 +27,9 @@ COPY lildaemon/ .
 # Create logs directory expected by the logging config
 RUN mkdir -p /app/logs
 
-# Install the goat package (packages found via setup.cfg: include = goat*)
-RUN pip install --no-cache-dir -e .
+# Install the goat package itself (deps already satisfied above; packages
+# found via pyproject [tool.setuptools] / setup.cfg: include = goat*).
+RUN pip install --no-cache-dir --no-deps -e .
 
 EXPOSE 6666
 
