@@ -88,6 +88,22 @@ RUN ldconfig
 ENV SWI_HOME_DIR=/opt/swipl/home
 ENV LD_LIBRARY_PATH=/usr/local/lib
 ENV RUST_LOG=info
+# debian:bookworm-slim has no locale set (LC_CTYPE=POSIX) and no `locales`
+# package installed. The embedded SWI-Prolog interpreter derives its
+# default file-reading encoding from the C locale, and under POSIX/C that
+# encoding is single-byte-only — any UTF-8 multibyte sequence in a
+# consulted .pl file's comments (an em dash "—", box-drawing "─", etc.)
+# then logs "Illegal multibyte Sequence" at startup while loading
+# prolog-lib/*.pl. C.UTF-8 is a locale glibc provides out of the box
+# (confirmed live: `locale -a` lists it) with no `locales`/`locale-gen`
+# package needed — setting it here is sufficient, confirmed live 2026-08-28
+# by restarting clara-api with these vars set and observing the warnings
+# disappear entirely. prolog-mcp-adapter also copies /opt/swipl/home into
+# its own image but never actually embeds/invokes SWI-Prolog (it's a thin
+# HTTP proxy to clara-api's own /devils/sessions endpoint), so it never
+# hits this and doesn't need the same fix.
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 EXPOSE 8080 9090
 CMD ["clara-api"]
