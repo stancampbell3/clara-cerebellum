@@ -36,6 +36,9 @@ fn make_test_state() -> web::Data<AppState> {
         dis_domain: "dis.test".to_string(),
         kafka_bootstrap: None,
         fiery_pit_token_cache: Arc::new(Mutex::new(None)),
+        fiery_pit_registry: Arc::new(clara_api::fierypit_registry::FieryPitRegistry::new(
+            std::time::Duration::from_secs(90),
+        )),
     })
 }
 

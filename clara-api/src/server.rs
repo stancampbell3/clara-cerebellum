@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use crate::fierypit_registry::FieryPitRegistry;
 use crate::handlers::{AppState, DeductionEntry};
 use crate::routes;
 use crate::subprocess::SubprocessPool;
@@ -164,6 +165,9 @@ pub async fn start_server(
     }
 
     // Create app state
+    let fiery_pit_registry = Arc::new(FieryPitRegistry::new(Duration::from_secs(
+        config.server.fierypit_registration_ttl_seconds,
+    )));
     let app_state = web::Data::new(AppState {
         session_manager,
         subprocess_pool,
@@ -175,6 +179,7 @@ pub async fn start_server(
         dis_domain,
         kafka_bootstrap,
         fiery_pit_token_cache: Arc::new(Mutex::new(None)),
+        fiery_pit_registry,
     });
 
     // Create and start server
@@ -216,6 +221,7 @@ mod tests {
             dis_domain: "dis.test".to_string(),
             kafka_bootstrap: None,
             fiery_pit_token_cache: Arc::new(Mutex::new(None)),
+            fiery_pit_registry: Arc::new(FieryPitRegistry::new(Duration::from_secs(90))),
         };
         // Just verify it can be created
         let _cloned = state.clone();

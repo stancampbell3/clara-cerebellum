@@ -4,6 +4,7 @@ port = 8080
 request_timeout_ms = 30000
 max_request_body_size = 1048576  # 1MB
 # kafka_bootstrap = "localhost:9092"   # uncomment to enable rskafka-backed Rituals
+fierypit_registration_ttl_seconds = 90  # GET /fierypits excludes registrations not refreshed within this window
 
 [clips]
 binary_path = "./clips/binaries/clips"

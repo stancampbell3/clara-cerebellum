@@ -1,6 +1,7 @@
 use actix_web::{web, HttpResponse};
 use clara_session::SessionManager;
 use clara_ritual::RitualRegistry;
+use crate::fierypit_registry::FieryPitRegistry;
 use crate::subprocess::SubprocessPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -67,6 +68,17 @@ pub struct AppState {
     /// participants during auto-bootstrap.  Populated lazily; invalidated on
     /// `401 Unauthorized` from any participant.
     pub fiery_pit_token_cache: Arc<Mutex<Option<CachedToken>>>,
+    /// Registry of FieryPits that have registered/heartbeated with this Dis
+    /// instance (`PUT /fierypits/{id}` / `GET /fierypits` / `DELETE
+    /// /fierypits/{id}`). In-memory only, no CoireStore persistence —
+    /// registrations are ephemeral and naturally repopulate as FieryPits
+    /// heartbeat again after a restart, unlike `RitualRegistry`, which
+    /// persists because a live Ritual is not something a heartbeat can
+    /// recreate. Scope: registration + discovery only — NOT consulted by
+    /// `activate_ritual_config`'s node-to-FieryPit resolution (lildaemon-
+    /// side `partition_nodes_by_target`) or any auto-placement; that's an
+    /// explicit, separate follow-up. See `docs/fierypit_registration_plan.md`.
+    pub fiery_pit_registry: Arc<FieryPitRegistry>,
 }
 
 /// Periodically evicts terminal-status entries from `AppState.deductions`

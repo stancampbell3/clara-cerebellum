@@ -9,6 +9,7 @@ pub mod source_handler;
 pub mod ritual_handler;
 pub mod coire_topics_handler;
 pub mod transduce_handler;
+pub mod fierypit_registry_handler;
 
 pub use session_handler::{create_session, get_session, list_user_sessions,
                           terminate_session, save_session, spawn_deduction_reaper,

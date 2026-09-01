@@ -8,6 +8,7 @@ pub fn default_server_config() -> ServerConfig {
         max_request_body_size: 1048576, // 1MB
         dis_domain_id: None,
         kafka_bootstrap: None,
+        fierypit_registration_ttl_seconds: 90,
     }
 }
 

@@ -9,5 +9,6 @@ pub mod server;
 pub mod middleware;
 pub mod validation;
 pub mod subprocess;
+pub mod fierypit_registry;
 
 pub use server::start_server;

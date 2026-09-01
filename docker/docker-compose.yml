@@ -11,14 +11,28 @@ services:
   kafka:
     image: apache/kafka:latest
     ports:
-      # 9094 is the external listener — used by cargo run / ./Dis on the host
-      - "127.0.0.1:9094:9094"
+      # 9094 is the external listener — used by cargo run / ./Dis on the
+      # host, AND (as of the FieryPit registration/discovery feature,
+      # docs/fierypit_registration_plan.md) by remote FieryPits on the LAN.
+      # Bound to the LAN interface (0.0.0.0), not just 127.0.0.1 — access
+      # control is host firewall only (e.g. `ufw`), matching the
+      # "firewall only, no proxy" posture already used elsewhere in this
+      # stack; Kafka itself still has zero authentication (unchanged by
+      # this feature). Override KAFKA_EXTERNAL_BIND_HOST in .env to
+      # narrow this back to 127.0.0.1 if LAN exposure isn't wanted.
+      - "${KAFKA_EXTERNAL_BIND_HOST:-0.0.0.0}:9094:9094"
     environment:
       - KAFKA_NODE_ID=1
       - KAFKA_PROCESS_ROLES=broker,controller
-      # INTERNAL: for containers on clara-net; EXTERNAL: for host processes; CONTROLLER: KRaft
+      # INTERNAL: for containers on clara-net; EXTERNAL: for host processes
+      # and, now, LAN-remote FieryPits; CONTROLLER: KRaft
       - KAFKA_LISTENERS=INTERNAL://:9092,EXTERNAL://:9094,CONTROLLER://:9093
-      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      # EXTERNAL's advertised host must be reachable from wherever a client
+      # connects with this address in hand — "localhost" only works for
+      # processes on this same host. Set KAFKA_EXTERNAL_ADVERTISED_HOST to
+      # this host's LAN IP/hostname (e.g. "limbic" or "10.0.0.192") for a
+      # remote FieryPit's KAFKA_BOOTSTRAP to actually resolve.
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://${KAFKA_EXTERNAL_ADVERTISED_HOST:-localhost}:9094
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
       - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
@@ -66,6 +80,12 @@ services:
       # Shared secret used to acquire a lildaemon service JWT at Ritual bootstrap.
       # Must match LILDAEMON_SERVICE_SECRET in the lildaemon service below.
       - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
+      # Shared secret gating PUT/GET/DELETE /fierypits (FieryPit
+      # registration/discovery) and cross-FieryPit POST /ritual/join.
+      # Must match DIS_DOMAIN_PEER_TOKEN in the lildaemon service below,
+      # and on every remote FieryPit registering under this Dis domain.
+      - DIS_DOMAIN_PEER_TOKEN=${DIS_DOMAIN_PEER_TOKEN}
+      - FIERYPIT_REGISTRATION_TTL_SECONDS=${FIERYPIT_REGISTRATION_TTL_SECONDS:-90}
       # Edgequake RAG API, used by the `edgequake` tool (clara-toolbox) that
       # backs the_cow.pl/the_cow.clp for Prolog/CLIPS.
       - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://10.0.0.192:8082}
@@ -175,6 +195,20 @@ services:
       # Shared secret gating POST /auth/service-token.
       # Must match LILDAEMON_SERVICE_SECRET in the clara-api service above.
       - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
+      # Shared secret used both for cross-FieryPit POST /ritual/join
+      # (goat/app/fiery_pit_peer_client.py) and for this FieryPit's own
+      # registration/heartbeat with Dis (goat/app/dis_client.py's
+      # register_fiery_pit/deregister_fiery_pit). Must match
+      # DIS_DOMAIN_PEER_TOKEN in the clara-api service above, and on every
+      # other FieryPit under this Dis domain (see
+      # docs/fierypit_registration_plan.md).
+      - DIS_DOMAIN_PEER_TOKEN=${DIS_DOMAIN_PEER_TOKEN}
+      # The Dis domain this FieryPit registers under — must match clara-
+      # api's config/default.toml `server.dis_domain_id` by convention
+      # (not validated anywhere; same manual-consistency burden
+      # LILDAEMON_SERVICE_SECRET already carries).
+      - DIS_DOMAIN=${DIS_DOMAIN:-dis.local}
+      - FIERYPIT_HEARTBEAT_INTERVAL_SECONDS=${FIERYPIT_HEARTBEAT_INTERVAL_SECONDS:-30}
       - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
       - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
       # Ochecho TTS (goat.mcp.ochecho, used by the clara_mind_splinter evaluator's

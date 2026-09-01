@@ -10,6 +10,7 @@ pub mod source;
 pub mod ritual;
 pub mod coire_topics;
 pub mod transduce;
+pub mod fierypits;
 
 use actix_web::web;
 
@@ -76,5 +77,9 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/coire/topics",         web::post().to(coire_topics::create_topic))
             .route("/coire/topics",         web::get().to(coire_topics::list_topics))
             .route("/coire/topics/{subject:.*}", web::delete().to(coire_topics::delete_topic))
+            // FieryPit registration / discovery (literal before parameterised)
+            .route("/fierypits",               web::get().to(fierypits::list_fiery_pits))
+            .route("/fierypits/{id}",          web::put().to(fierypits::upsert_fiery_pit))
+            .route("/fierypits/{id}",          web::delete().to(fierypits::delete_fiery_pit))
     );
 }

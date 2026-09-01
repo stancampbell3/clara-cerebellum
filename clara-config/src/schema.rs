@@ -34,7 +34,17 @@ pub struct ServerConfig {
     /// messages are not shared across processes or server restarts).
     #[serde(default)]
     pub kafka_bootstrap: Option<String>,
+    /// TTL for FieryPit registrations (`fierypit_registry::FieryPitRegistry`)
+    /// in seconds. A registration not refreshed within this window is
+    /// excluded from `GET /fierypits`. Default 90s — well above the
+    /// recommended lildaemon heartbeat interval of 30s
+    /// (`FIERYPIT_HEARTBEAT_INTERVAL_SECONDS`) so one missed heartbeat
+    /// doesn't cause flapping.
+    #[serde(default = "default_fierypit_registration_ttl_seconds")]
+    pub fierypit_registration_ttl_seconds: u64,
 }
+
+fn default_fierypit_registration_ttl_seconds() -> u64 { 90 }
 
 /// CLIPS binary and subprocess configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

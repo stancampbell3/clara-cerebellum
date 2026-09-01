@@ -43,6 +43,14 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    // FIERYPIT_REGISTRATION_TTL_SECONDS env var wins over config file, same
+    // convention as KAFKA_BOOTSTRAP above.
+    if let Ok(val) = std::env::var("FIERYPIT_REGISTRATION_TTL_SECONDS") {
+        if let Ok(secs) = val.parse::<u64>() {
+            config.server.fierypit_registration_ttl_seconds = secs;
+        }
+    }
+
     let ritual_broker: Arc<dyn KafkaBridge> = if let Some(ref bootstrap) = config.server.kafka_bootstrap {
         let brokers: Vec<String> = bootstrap
             .split(',')
