@@ -6,6 +6,12 @@
 #
 # Or from this directory:
 #   docker compose --env-file .env up -d
+#
+# This is the LOCAL stack (Kafka + clara-api/Dis + this host's own
+# lildaemon/FieryPit). A FieryPit-capable host that only wants to lend
+# its own compute (Ollama/GPU) to Rituals against a Dis instance running
+# elsewhere runs docker-compose.remote-fierypit.yml instead — see
+# docs/remote_fierypit_deployment.md.
 
 services:
   kafka:

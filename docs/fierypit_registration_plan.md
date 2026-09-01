@@ -185,16 +185,19 @@ tests, pylint not installed), 0 failed, 0 warnings — no regressions.
    `0.0.0.0:9094` (was `127.0.0.1:9094`) and is reachable from another
    host on the LAN once the host firewall (`ufw`) allows it.
 3. **Cross-host, pineal → limbic** (a real second machine on the LAN, an
-   Nvidia 3070 box, SSH-reachable): [fill in from the actual run —
-   `lildaemon/scripts/verify_remote_fierypit.sh` SSHes to pineal, pulls
-   both repos, starts a FieryPit there pointed at limbic's Dis
-   (`DIS_BASE_URL`) and the LAN-exposed Kafka listener
-   (`KAFKA_BOOTSTRAP=<limbic LAN address>:9094`), confirms pineal's
-   FieryPit appears via `GET /fierypits` on limbic, then drives a real
-   Ritual across the two hosts end-to-end]. This is the step up from
+   Nvidia 3070 box, SSH-reachable): pineal runs its own standing
+   deployment via `docker-compose.remote-fierypit.yml` (see
+   `docs/remote_fierypit_deployment.md` — a separate, reusable artifact
+   for any FieryPit-capable host, not a one-off test script), pointed at
+   limbic's Dis and LAN-exposed Kafka; `lildaemon/scripts/
+   check_remote_fierypit.sh pineal <limbic-url>` confirms the
+   registration from limbic's side. **Not yet run** — needs real
+   SSH/terminal access to pineal, which this repo's automation sandbox
+   doesn't have; see `docs/remote_fierypit_deployment.md`'s "First remote
+   host: pineal" section for status. This will be the step up from
    `ritual_run_multi_fierypit.md`'s own same-host-two-processes
    verification — the first genuinely cross-host proof for this feature
-   family.
+   family — once run.
 4. **Regression**: existing `ritual_run_multi_fierypit.md` flows
    (same-host multi-node activation, `POST .../run`) unaffected — this
    feature is purely additive.
@@ -248,12 +251,15 @@ clara-cerebellum/
   config/default.toml
   docker/docker-compose.yml
   docker/.env
+  docker/docker-compose.remote-fierypit.yml        (new — see docs/remote_fierypit_deployment.md)
+  docker/remote-fierypit.env.example              (new)
   docs/fierypit_registration_plan.md               (this file)
+  docs/remote_fierypit_deployment.md               (new)
 
 lildaemon/
   goat/app/dis_client.py
   goat/app/main.py
   .env.example
   tests/test_dis_client.py
-  scripts/verify_remote_fierypit.sh                (new)
+  scripts/check_remote_fierypit.sh                 (new)
 ```
