@@ -157,6 +157,19 @@ services:
       - LILDAEMON_BASE_URL=http://lildaemon:6666
       - LILDAEMON_DB_PATH=/app/data/lildaemon.duc
       - LILDAEMON_OUTPUT_DIR=/app/output
+      # Base directory python_tools.py's file-tool functions (read_file,
+      # write_file, list_files, run_awk, run_sed, download_file) are
+      # confined to. Left unset, it defaults to the process cwd (/app),
+      # which has NO volume mount of its own -- every such write would be
+      # ephemeral, gone on the next `up`/`--force-recreate`. Pointing it at
+      # the already-mounted workspace volume below makes tool-driven file
+      # work actually persist to disk as intended. Each ToolifiedOllama-
+      # Evaluator instance additionally gets its own private subdirectory
+      # under this root (see workspace_dir in goat/evaluators/
+      # toolified_ollama.py) so concurrent instances -- e.g. multiple
+      # Ritual seats spawned from one evaluators.yaml registration, which
+      # share an evaluator_id -- never share files.
+      - PYTHON_TOOLS_WORKSPACE=/app/workspace
       - GROQ_API_KEY=${GROQ_API_KEY}
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       # Shared secret gating POST /auth/service-token.
