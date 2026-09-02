@@ -170,14 +170,34 @@ Notes:
 
 ---
 
-## Not covered by this worksheet (yet)
+## Part 5 — Actually perform a cross-host Ritual
 
-Actually performing a Ritual with a seat on the remote host — this
-worksheet only confirms registration/discovery and basic reachability
-(Ollama, Dis, firewall). That needs the standalone example script
-demonstrating a local-only Ritual vs. one with a discovered remote seat
-(queued, not built as of this worksheet's writing) — update this section
-with a Part 5 once that exists.
+Run from the Dis host, after Parts 2–4 all pass. Uses
+`lildaemon/examples_ritual_remote_fierypit.py` (see `lildaemon/docs/
+ritual_remote_fierypit_example.md` for the full design and the bugs
+found building it).
+
+```bash
+cd lildaemon
+python examples_ritual_remote_fierypit.py \
+  "Name one interesting fact about octopuses, briefly." \
+  --peer-token "$DIS_DOMAIN_PEER_TOKEN" \
+  --remote \
+  --remote-kafka-bootstrap <dis-host-LAN-address>:9094 \
+  --poll-max-wait-s 150
+```
+
+- [ ] Prints a `=== Local seat ===` section with an answer.
+- [ ] Prints a `=== Remote seat ===` section with a genuinely different
+      answer (confirms it actually came from the remote host's own
+      model, not a repeated local response).
+- [ ] Container logs on both hosts show the seat joining and leaving
+      cleanly (`RitualParticipant: stopped`, `RitualManager: left
+      ritual`) — no orphaned consumers left running after the script
+      exits.
+
+**Part 5 result:** Pass / Fail — Run by: __________ Date: __________
+Notes:
 
 ## Sign-off
 
@@ -186,4 +206,6 @@ with a Part 5 once that exists.
 | 1 (local sanity) | Pass | Claude (this session) | 2026-09-02 | limbic |
 | 2 (remote deploy) | | | | |
 | 3 (Dis firewall) | | | | |
+| 4 (cross-host confirm) | | | | |
+| 5 (cross-host Ritual) | | | | |
 | 4 (cross-host confirm) | | | | |
