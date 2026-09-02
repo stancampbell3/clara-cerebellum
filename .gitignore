@@ -21,6 +21,16 @@ clara-clips/clips-src/core/*.a
 # Environment
 .env
 .env.*
+# docker/remote-fierypit.env (and any host-specific variant of it) is a
+# REAL secrets file (LILDAEMON_JWT_SECRET/LILDAEMON_SERVICE_SECRET/
+# DIS_DOMAIN_PEER_TOKEN copied verbatim from a Dis host's own docker/.env
+# — see docs/remote_fierypit_deployment.md). Named with a .env SUFFIX,
+# not a .env prefix, so the two patterns above don't catch it — confirmed
+# live via `git check-ignore` before this line existed. The .example
+# template (committed on purpose) is unaffected: it doesn't match
+# *.env either, only the exact filenames below do.
+docker/*.env
+!docker/*.env.example
 
 # Logs and temp
 *.log
