@@ -29,16 +29,25 @@ services:
       context: ../..
       dockerfile: clara-cerebellum/docker/Dockerfile.lildaemon
     image: lildaemon:latest
-    ports:
-      # Unlike docker-compose.yml's own lildaemon (127.0.0.1-bound, since
-      # only same-host processes need it there), this MUST be reachable
-      # from the Dis host and any other FieryPit peer on the LAN — bound
-      # to all interfaces, access control is host firewall only (ufw),
-      # matching the same posture already chosen for Kafka's external
-      # listener (docker-compose.yml's kafka service comment).
-      - "0.0.0.0:${LILDAEMON_PORT:-6666}:6666"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # Host networking, not a published bridge port: this container needs
+    # unfiltered access to whatever local Ollama/GPU this host is lending
+    # to Rituals, and Docker's own DOCKER-USER iptables chain can silently
+    # drop bridge-to-host traffic ahead of ufw's own rules regardless of
+    # an explicit `ufw allow from <bridge-subnet> to any port <ollama>`
+    # rule — confirmed live on pineal (Docker 29.6.1): the host itself
+    # reached its own bridge gateway IP on Ollama's port fine, but the
+    # container, via the SAME address, timed out even after that ufw rule
+    # was added and reloaded. Host networking sidesteps the bridge (and
+    # that chain-ordering interaction) entirely — the container shares
+    # this host's network namespace directly, so `localhost:11434` inside
+    # it is the SAME loopback the host itself already reaches fine. Means
+    # no port mapping (the app binds directly to this host's port 6666 —
+    # make sure nothing else uses it) and no host.docker.internal alias
+    # needed (OLLAMA_BASE_URL below just uses localhost). Access control
+    # is still host firewall only, same posture as everywhere else in
+    # this feature — just enforced by ufw's normal INPUT chain now
+    # instead of a bridge-specific rule.
+    network_mode: host
     environment:
       # Dis (clara-api) on the remote host this FieryPit is joining —
       # e.g. http://limbic:8080 or http://10.0.0.192:8080. No sensible
@@ -61,8 +70,9 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       # This host's own Ollama — the whole point of this file existing is
       # to lend ITS OWN GPU/Ollama to Rituals, not to proxy back to
-      # wherever Dis lives.
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # wherever Dis lives. localhost, not host.docker.internal: with
+      # network_mode: host above there's no bridge hop to alias past.
+      - OLLAMA_BASE_URL=http://localhost:11434
       # Shared secret gating this FieryPit's own POST /auth/service-token
       # (used when Dis bootstraps a Ritual participant via POST /ritual).
       # Must match LILDAEMON_SERVICE_SECRET on the Dis host.
