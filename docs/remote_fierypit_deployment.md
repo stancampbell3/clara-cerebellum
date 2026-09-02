@@ -69,14 +69,26 @@ whatever's already registered.
 
 ## First remote host: pineal
 
-Pineal (a second LAN host, Nvidia 3070, Ubuntu, checkout at
+Pineal (a second LAN host, Nvidia RTX 5070/12GB, Ubuntu, checkout at
 `~stanc/widebody/Development` mirroring this layout) is the intended
-first host to run this. SSH access was opened (`sudo ufw allow OpenSSH`)
-in preparation, but the actual `docker compose ... up -d` on pineal
-itself, and the corresponding `check_remote_fierypit.sh pineal ...`
-confirmation from limbic, have not yet been run — this needs to happen
-from a session with real SSH/terminal access to pineal (this repo's
-automation sandbox has none). Once run, note the outcome here.
+first host to run this.
+
+**2026-09-02: non-interactive SSH established.** `sudo ufw allow
+OpenSSH` was run on pineal, then a dedicated key
+(`~/.ssh/pineal_deploy_ed25519` on limbic, no passphrase) was generated
+and its public half appended to pineal's `~/.ssh/authorized_keys`, with
+a matching `Host pineal` block in limbic's `~/.ssh/config`
+(`BatchMode yes`, `StrictHostKeyChecking accept-new`) — see the
+verification worksheet's Prerequisites section for the general version
+of these steps. `ssh pineal true` now succeeds with no prompt from
+limbic. Both `lildaemon/` and `clara-cerebellum/` checkouts on pineal
+are pulled up to date.
+
+**Still not run**: the actual `docker compose -f docker-compose.remote-
+fierypit.yml ... up -d` on pineal (Part 2 of the verification
+worksheet), and the corresponding `check_remote_fierypit.sh pineal ...`
+confirmation from limbic (Part 4) — SSH access being solved just means
+these are now actually executable; note the outcome here once run.
 
 ## Known gaps
 

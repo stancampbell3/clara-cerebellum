@@ -16,9 +16,34 @@ Parts 2–4 once per new remote host you bring online (pineal is the first).
 - [ ] `docker/.env` on the Dis host (e.g. limbic) has `DIS_DOMAIN_PEER_TOKEN`
       set (not blank/commented out).
 - [ ] You know the Dis host's LAN address (e.g. `limbic` / `10.0.0.192`).
-- [ ] For Parts 2–4: SSH access to the remote host (e.g. `ssh pineal` works
-      non-interactively), and its checkout is up to date (`git pull` in
-      both `lildaemon/` and `clara-cerebellum/`).
+- [ ] For Parts 2–4: **non-interactive SSH from the Dis host to the remote
+      host** — `ssh <remote-host> true` must succeed with no password/
+      passphrase/host-key prompt. This is a real requirement, not
+      optional: Part 2's commands run over SSH with no human at the
+      keyboard, and any prompt just hangs. Set this up once per Dis-host-
+      to-remote-host pair:
+      1. On the Dis host: `ssh-keygen -t ed25519 -f ~/.ssh/<name>_deploy_ed25519 -N ""`
+         (empty passphrase — it must be usable non-interactively).
+      2. Add a `Host <remote-host>` block to `~/.ssh/config` on the Dis
+         host pointing `IdentityFile` at that key, with `BatchMode yes`
+         (fails fast instead of prompting if the key isn't accepted yet)
+         and `StrictHostKeyChecking accept-new` (accepts the host key on
+         first connect without prompting).
+      3. Append the generated `.pub` file's contents to
+         `~/.ssh/authorized_keys` **on the remote host** (paste the
+         `ssh-keygen -y` output or the `.pub` file's own contents as ONE
+         single line — pasting a multi-line block here is a common
+         failure mode: it can mangle the `>>` redirect and produce a
+         confusing "Permission denied" that's actually a corrupted
+         command, not an actual permissions problem).
+      4. Confirm: `ssh <remote-host> true` from the Dis host, no prompt,
+         exit code 0.
+      This key lives outside both repos (`~/.ssh/`, not under
+      `Development/`) — never commit it; `docker/.env`-style secrets are
+      gitignored but a private key checked in by accident would not be
+      caught by that same pattern.
+- [ ] The remote host's checkout is up to date (`git pull` in both
+      `lildaemon/` and `clara-cerebellum/`).
 
 ---
 
