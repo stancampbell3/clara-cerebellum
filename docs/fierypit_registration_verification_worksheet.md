@@ -115,6 +115,14 @@ Run **on the remote host itself** (SSH in first).
    - [ ] Both pull cleanly, no local changes in the way.
 
 2. **Firewall allows the Dis host to reach this machine's FieryPit port.**
+   The `lildaemon` service runs with `network_mode: host` (see the
+   compose file's own comment — a real Docker/ufw interaction forced
+   this), so this is a genuine, load-bearing rule, not a nice-to-have:
+   confirmed live against pineal that registration and `/ritual/join`
+   both silently work WITHOUT this rule present as long as the service
+   is bridge-networked with a published port (Docker's own port-publish
+   bypasses ufw's INPUT filtering) — but break the moment you're on
+   `network_mode: host`, where that bypass no longer applies.
    ```bash
    sudo ufw allow from <dis-host-LAN-IP> to any port 6666 proto tcp
    sudo ufw status
@@ -145,12 +153,26 @@ Run **on the remote host itself** (SSH in first).
          failed`. If it failed: check `DIS_BASE_URL` is reachable from
          this host (`curl $DIS_BASE_URL/health`) and the firewall rule in
          Part 3 below is already in place on the Dis host side.
+   - [ ] **Dis host's own `docker/.env` has `KAFKA_EXTERNAL_ADVERTISED_
+         HOST` set to its real LAN name**, not left at the `localhost`
+         default — confirmed live this is easy to skip and produces a
+         confusing failure much later (Part 5, not here): registration
+         succeeds fine regardless, but every `caws_offer`/`caws_await`
+         to this seat silently hangs until patience runs out, because
+         the remote FieryPit's Kafka client gets told to reconnect to
+         its OWN loopback instead of the real broker. If unset, fix it
+         on the Dis host and `docker compose up -d --force-recreate
+         kafka` there before continuing to Part 5.
 
 5. **Ollama is actually reachable from inside the container** (needed for
    any Ollama-backed evaluator to actually work, not just register).
+   With `network_mode: host`, this is the SAME loopback the host itself
+   uses — if this fails, Ollama itself is the problem (not reachable
+   even from the host — check `curl localhost:11434/api/tags` on the
+   host directly first), not a container-networking issue.
    ```bash
    docker exec $(docker compose -f docker-compose.remote-fierypit.yml --env-file remote-fierypit.env ps -q lildaemon) \
-     python3 -c "import urllib.request; print(urllib.request.urlopen('http://host.docker.internal:11434/api/tags', timeout=5).read()[:200])"
+     python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:11434/api/tags', timeout=5).read()[:200])"
    ```
    - [ ] Returns a model list, not a connection error.
 
@@ -168,7 +190,11 @@ sudo ufw allow from <remote-host-LAN-IP> to any port 8080 proto tcp   # Dis HTTP
 sudo ufw allow from <remote-host-LAN-IP> to any port 9094 proto tcp   # Kafka external listener
 sudo ufw status
 ```
-- [ ] Both rules present.
+- [ ] Both rules present. (Against pineal, both ports turned out to
+      already be reachable without these — limbic's existing `ufw`
+      config was already permissive enough for this LAN. Don't assume
+      that generalizes to a new Dis host; add them explicitly and treat
+      "already worked" as a bonus, not a reason to skip this step.)
 
 **Part 3 result:** Pass / Fail — Run by: __________ Date: __________
 
@@ -209,8 +235,14 @@ python examples_ritual_remote_fierypit.py \
   --peer-token "$DIS_DOMAIN_PEER_TOKEN" \
   --remote \
   --remote-kafka-bootstrap <dis-host-LAN-address>:9094 \
-  --poll-max-wait-s 150
+  --poll-max-wait-s 280 --max-cycles 600 --patience-cycles 500
 ```
+
+(Larger budgets than the script's own defaults, deliberately: `demo_local`
+and `demo_remote` run as one sequential conjunction, so the shared cycle
+budget has to cover TWO real LLM round trips back to back, not one —
+confirmed live this matters, the defaults occasionally weren't enough
+even just for the local leg alone.)
 
 - [ ] Prints a `=== Local seat ===` section with an answer.
 - [ ] Prints a `=== Remote seat ===` section with a genuinely different
@@ -229,8 +261,7 @@ Notes:
 | Part | Result | Run by | Date | Host(s) |
 |------|--------|--------|------|---------|
 | 1 (local sanity) | Pass | Claude (this session) | 2026-09-02 | limbic |
-| 2 (remote deploy) | | | | |
-| 3 (Dis firewall) | | | | |
-| 4 (cross-host confirm) | | | | |
-| 5 (cross-host Ritual) | | | | |
-| 4 (cross-host confirm) | | | | |
+| 2 (remote deploy) | Pass | Claude (this session) + user (firewall/ufw steps) | 2026-09-02 | pineal |
+| 3 (Dis firewall) | Pass (already open) | Claude (this session) | 2026-09-02 | limbic |
+| 4 (cross-host confirm) | Pass | Claude (this session) | 2026-09-02 | limbic + pineal |
+| 5 (cross-host Ritual) | Pass (x2) | Claude (this session) | 2026-09-02 | limbic + pineal |

@@ -185,19 +185,23 @@ tests, pylint not installed), 0 failed, 0 warnings — no regressions.
    `0.0.0.0:9094` (was `127.0.0.1:9094`) and is reachable from another
    host on the LAN once the host firewall (`ufw`) allows it.
 3. **Cross-host, pineal → limbic** (a real second machine on the LAN, an
-   Nvidia 3070 box, SSH-reachable): pineal runs its own standing
-   deployment via `docker-compose.remote-fierypit.yml` (see
-   `docs/remote_fierypit_deployment.md` — a separate, reusable artifact
-   for any FieryPit-capable host, not a one-off test script), pointed at
-   limbic's Dis and LAN-exposed Kafka; `lildaemon/scripts/
-   check_remote_fierypit.sh pineal <limbic-url>` confirms the
-   registration from limbic's side. **Not yet run** — needs real
-   SSH/terminal access to pineal, which this repo's automation sandbox
-   doesn't have; see `docs/remote_fierypit_deployment.md`'s "First remote
-   host: pineal" section for status. This will be the step up from
-   `ritual_run_multi_fierypit.md`'s own same-host-two-processes
-   verification — the first genuinely cross-host proof for this feature
-   family — once run.
+   Nvidia RTX 5070/12GB box): **verified live 2026-09-02.** Pineal runs
+   its own standing deployment via `docker-compose.remote-fierypit.yml`
+   (see `docs/remote_fierypit_deployment.md` — a separate, reusable
+   artifact for any FieryPit-capable host, not a one-off test script),
+   pointed at limbic's Dis and LAN-exposed Kafka; `lildaemon/scripts/
+   check_remote_fierypit.sh pineal <limbic-url>` confirmed the
+   registration from limbic's side, and `lildaemon/examples_ritual_
+   remote_fierypit.py --remote` then performed a genuine two-host Ritual
+   — both seats answered independently with distinct text, both left
+   cleanly. Getting here needed three more real fixes beyond this
+   feature's own code (Kafka's advertised-listener host, a Docker/ufw
+   iptables-chain interaction forcing `network_mode: host`, and the
+   port-6666 firewall rule that interaction exposed) — full account in
+   `docs/remote_fierypit_deployment.md`'s "Real bugs found" section, not
+   repeated here. This is the step up from `ritual_run_multi_fierypit.md`'s
+   own same-host-two-processes verification — the first genuinely
+   cross-host Ritual performance in this system's history.
 4. **Regression**: existing `ritual_run_multi_fierypit.md` flows
    (same-host multi-node activation, `POST .../run`) unaffected — this
    feature is purely additive.
