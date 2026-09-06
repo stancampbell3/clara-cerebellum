@@ -21,11 +21,30 @@ if [[ ! -f "$DB_PATH" ]]; then
     exit 0
 fi
 
-if ! command -v duckdb &>/dev/null; then
-    echo "Error: 'duckdb' CLI not found in PATH." >&2
-    exit 1
-fi
-
 echo "Flushing: $DB_PATH"
-duckdb "$DB_PATH" < "$SQL_FILE"
+
+if command -v duckdb &>/dev/null; then
+    duckdb "$DB_PATH" < "$SQL_FILE"
+else
+    # Deployed Clara nodes won't always have the standalone `duckdb` CLI —
+    # fall back to the Python `duckdb` binding, which lildaemon's own venv
+    # (a sibling repo, needed for its own DuckDB access) already provides.
+    PY=""
+    if python3 -c "import duckdb" &>/dev/null; then
+        PY="python3"
+    elif [[ -x "$REPO_ROOT/../lildaemon/.venv/bin/python3" ]] \
+         && "$REPO_ROOT/../lildaemon/.venv/bin/python3" -c "import duckdb" &>/dev/null; then
+        PY="$REPO_ROOT/../lildaemon/.venv/bin/python3"
+    fi
+    if [[ -z "$PY" ]]; then
+        echo "Error: neither the 'duckdb' CLI nor a Python with the 'duckdb'" >&2
+        echo "package installed could be found." >&2
+        exit 1
+    fi
+    "$PY" -c "
+import duckdb, sys
+con = duckdb.connect(sys.argv[1])
+con.execute(open(sys.argv[2]).read())
+" "$DB_PATH" "$SQL_FILE"
+fi
 echo "Done... 🦫"
