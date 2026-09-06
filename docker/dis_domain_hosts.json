@@ -1,0 +1,13 @@
+{
+  "dis_domain": "dis.local",
+  "hosts": {
+    "pineal": {
+      "role": "remote-fierypit",
+      "repos": ["lildaemon", "clara-cerebellum"],
+      "compose_file": "docker-compose.remote-fierypit.yml",
+      "env_file": "remote-fierypit.env",
+      "env_example_file": "remote-fierypit.env.example",
+      "dis_base_url": "http://limbic:8080"
+    }
+  }
+}
