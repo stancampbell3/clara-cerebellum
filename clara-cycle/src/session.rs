@@ -206,7 +206,20 @@ impl DeductionSession {
         }
         let json = serde_json::to_string(context)
             .map_err(|e| CycleError::ContextSeedFailed(e.to_string()))?;
-        let escaped = json.replace('\'', "\\'");
+        // `json` is itself JSON, so it already contains real escape
+        // sequences (\", \\, \n, ...) for any message with a quote, a
+        // backslash, or a newline in it — virtually every real reply. Using
+        // the shared prolog_atom_escape helper (not a bespoke `'`-only
+        // replace) matters here specifically: SWI-Prolog's quoted-atom
+        // reader interprets `\"` and `\n` too, so without doubling existing
+        // backslashes FIRST, that reader silently "resolves" JSON's own
+        // escaping while parsing the atom (e.g. turning `\"` into a bare
+        // `"`), leaving a raw quote sitting inside what's supposed to be
+        // JSON text — atom_json_dict/3 then throws
+        // syntax_error(json(illegal_object)) reading it back via
+        // current_context/1. Confirmed live 2026-09-07 with a context
+        // message as simple as `He said "hello" to me.`.
+        let escaped = prolog_atom_escape(&json);
         self.prolog
             .assertz(&format!("the_rabbit:deduce_context_json('{escaped}')"))
             .map_err(CycleError::Prolog)?;

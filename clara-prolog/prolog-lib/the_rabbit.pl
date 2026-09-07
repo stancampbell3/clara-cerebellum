@@ -19,7 +19,18 @@
 ]).
 
 :- use_module(library(http/json)).
-:- dynamic(deduce_context_json/1).
+% MUST be thread_local, not dynamic: dynamic predicates share one global
+% clause store across every Prolog engine in the process, so an earlier
+% deduction's seeded context would satisfy (or, if malformed, poison) a
+% later, unrelated deduction's current_context/1 call — confirmed live
+% 2026-09-07: a single context payload containing an embedded double
+% quote broke JSON parsing for that call, and because the fact was never
+% retracted, EVERY subsequent current_context/1 call in the process kept
+% re-reading that same broken fact regardless of its own context, until
+% the process restarted. thread_local scopes the fact to the engine,
+% same pattern the_coire.pl's caws_result/2 etc. and edge_result/3 already
+% use for exactly this reason (see that file's own comment on it).
+:- thread_local(deduce_context_json/1).
 
 %% dict_to_json/2 - Safely serialize a dict to a JSON atom
 %%   Handles all escaping (newlines, quotes, unicode, control chars)
