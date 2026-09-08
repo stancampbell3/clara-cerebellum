@@ -48,6 +48,22 @@ docker compose -f docker-compose.remote-fierypit.yml \
   --env-file remote-fierypit.env up -d
 ```
 
+Then install `scripts/fierypit.sh` as this host's own front script — the
+"`./clara`" of a remote-fierypit host — from its `Development/`
+directory (sibling to the `lildaemon`/`clara-cerebellum` checkouts):
+
+```bash
+cd ~/Development   # wherever this host's checkouts live
+ln -sf clara-cerebellum/scripts/fierypit.sh fierypit.sh
+ln -sf ./fierypit.sh fierypit
+```
+
+From then on, use `./fierypit` exactly like `./clara` on the Dis host
+itself: `./fierypit up -d`, `./fierypit ps`, `./fierypit logs -f`,
+`./fierypit down`. **Never run `./clara` on a remote-fierypit host** —
+see "Real bugs found" below for why that's actively dangerous, not just
+wrong.
+
 The `lildaemon` service runs with `network_mode: host` (see the compose
 file's own comment for why — a real Docker/ufw interaction forced this,
 not a stylistic choice) — it binds directly to this host's port 6666,
@@ -138,6 +154,32 @@ ritual_remote_fierypit.py` for that fuller proof).
    block can mangle the `>>` redirect and produce a "Permission denied"
    that's actually bash trying to execute `authorized_keys` as a
    program, not a real permissions problem — paste as one line.
+5. **`./clara` run on a remote-fierypit host silently stood up the WRONG
+   stack, on top of the real one.** Confirmed live 2026-09-08 on pineal: a
+   stale `clara`/`clara.sh` (copied over early on, before this file's own
+   remote-fierypit split existed) plus a stale `clara-cerebellum/
+   docker/.env` full of placeholder secrets were still sitting in
+   pineal's `Development/` directory. Running `./clara up -d lildaemon`
+   didn't fail — `docker-compose.yml` and `docker-compose.remote-
+   fierypit.yml` both default to Compose project name `docker` (from
+   their containing directory) and both name their service `lildaemon`,
+   so they produce the SAME container name (`docker-lildaemon-1`) on the
+   same host. The command silently created/replaced that container using
+   the full local stack's bridge network, a spurious local `kafka`+
+   `clara-api` it also stood up, and the placeholder `.env` secrets —
+   completely disconnected from limbic's real Dis domain
+   (`DIS_DOMAIN_PEER_TOKEN` blank, `DIS_BASE_URL` pointed at pineal's own
+   sham `clara-api` instead of limbic). Diagnosed via `docker inspect
+   docker-lildaemon-1 --format '{{.HostConfig.NetworkMode}}'` (showed the
+   bridge network, not `host`) and its `Config.Env` (showed
+   `CEREBELLUM_URL=http://clara-api:8080` instead of `http://limbic:8080`).
+   Fixed by tearing the spurious stack down (`./clara down`), bringing
+   the real deployment back up via the correct compose file/env file
+   directly, and then deleting the stale `clara`/`clara.sh`/`docker/.env`
+   from pineal entirely so the collision can't recur by muscle memory.
+   `scripts/fierypit.sh` (see "Deploying on a new host" above) exists
+   specifically so a remote-fierypit host has its own differently-named
+   front script instead of ever reaching for `./clara`.
 
 ## First remote host: pineal
 
