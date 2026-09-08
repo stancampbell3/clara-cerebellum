@@ -162,6 +162,26 @@ else
   fi
 fi
 
+echo
+echo "--- Front script: fierypit ---"
+if [[ "$ROLE" != "remote-fierypit" ]]; then
+  echo "Role '$ROLE' has no front script convention yet — skipping."
+elif [[ "$DRY_RUN" == true ]]; then
+  echo "[DRY RUN] Would ensure $DEV_ROOT/fierypit(.sh) symlinks to scripts/fierypit.sh."
+else
+  # Idempotent, and deliberately NOT gated on ANY_CHANGED below — a
+  # freshly-provisioned host with repos already at HEAD should still get
+  # these on its first run. Never creates clara/clara.sh: this host's own
+  # differently-named front script is the whole point (see
+  # docs/remote_fierypit_deployment.md's "Real bugs found" #5 — ./clara
+  # on a remote-fierypit host silently stands up the wrong stack, since
+  # docker-compose.yml and docker-compose.remote-fierypit.yml collide on
+  # the same Compose project/service name).
+  ln -sf "clara-cerebellum/scripts/fierypit.sh" "$DEV_ROOT/fierypit.sh"
+  ln -sf "./fierypit.sh" "$DEV_ROOT/fierypit"
+  echo "OK ($DEV_ROOT/fierypit -> fierypit.sh -> clara-cerebellum/scripts/fierypit.sh)"
+fi
+
 if [[ "$DRY_RUN" == true ]]; then
   echo
   echo "[DRY RUN] No changes were made."
