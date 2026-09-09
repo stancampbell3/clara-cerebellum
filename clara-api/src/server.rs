@@ -189,6 +189,15 @@ pub async fn start_server(
             .wrap(actix_web::middleware::Logger::default())
             .configure(routes::configure)
     })
+    // Default is 5s — too tight for this deployment: every caller here is a
+    // trusted FieryPit on the LAN/Docker network (no public slowloris
+    // exposure), and live 2026-09-09 logs showed GET /deduce/{id} polls
+    // getting a literal 408 under concurrent load despite poll_deduce
+    // itself being a trivial in-memory lookup with no way to be genuinely
+    // slow — almost certainly this default tripping on a transient
+    // connection-handling hiccup, not a real slow client. Raised to give
+    // that headroom; see project memory dis_client_408_backoff_fix.md.
+    .client_request_timeout(Duration::from_secs(30))
     .bind(&addr)?
     .run()
     .await
