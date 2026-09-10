@@ -465,11 +465,70 @@ prepends "Yes,"), and any Qwen3-thinking variant.
   Worth checking what constrained decoding Ollama's API actually
   supports (`format` takes a JSON schema; enum support varies by
   version).
-- **Recommendation:** pull Qwen2.5-3B-Instruct and Qwen2.5-1.5B-Instruct
-  (both Apache-2.0, no licence question), plus Llama-3.2-1B-Instruct if
-  the licence bar is soft, and run all through the 12-question harness +
-  a constrained-decoding trial. Empirical result is the tiebreaker —
-  both reviewers said as much.
+### Harness run — 2026-09-10 (all Q5_K_M, terse verdict prompt)
+
+Team OK'd dogfooding Llama-3.2-1B ("make legal nervous later"), so all
+three ran. Reference = `qwen-clara-27b:latest`.
+
+| model | ~VRAM | correct /12 | agree-w-27b /12 | lead-token /12 | clear factual errors |
+|---|---|---|---|---|---|
+| qwen-clara-27b (ref) | 17.5 GB | 10 | 12 | 12 | 0 |
+| **qwen2.5:1.5b** | 1.1 GB | 9 | 9 | 12 | **0** |
+| qwen2.5:3b | 2.2 GB | 9 | 9 | 12 | 1 (said Paris ≠ capital of France) |
+| llama3.2:1b | 0.9 GB | 7 | 7 | 12 | 2 (Paris = capital of Germany; adequacy miss) |
+
+Reading the detail matters more than the raw score:
+
+- **`lead-token` 12/12 and `classifier` 0/12 for every model** — with
+  the terse prompt, `response_shortcut` carries every verdict and the
+  `dagda-0.2` fastText model is fully off the path. That result holds
+  regardless of which small model wins.
+- **qwen2.5:1.5b was the cleanest on facts** — zero clear errors, got
+  Paris/France, Paris/Germany, all the plain cases. qwen2.5:3b's
+  Paris/France miss is a bad look for a classifier. llama3.2:1b had two
+  real factual errors — weakest, as Gemini warned.
+- **Shared weakness, all three small models:** they collapse genuinely
+  contested questions ("should violence carry a content warning?", "is
+  capital punishment justified?") to yes/no instead of `unresolved`.
+  The 27b is better at that. **But `clara_fy/2` forces a yes/no anyway**
+  (its pass-2 is literally "Answer yes or no: …"), and the real call
+  sites (`progressive_research.pl` sufficiency / answer-adequacy checks)
+  are binary questions, not philosophy — so this may not matter in
+  practice. The 12-question set here is deliberately adversarial.
+
+### Constrained decoding — confirmed, retires the string ops
+
+Ollama 0.33.3: `format: {"type":"string","enum":["yes","no","unresolved"]}`
+on `/api/chat` **forces** output to exactly one enum value — tested
+against a prompt explicitly telling the model to "explain your reasoning
+in detail first"; the grammar won, output was just `"yes"`. Comes back
+JSON-quoted, so the Prolog side needs a one-line deterministic unquote,
+nothing heuristic.
+
+**This makes `the_rabbit.pl`'s `response_shortcut/2` obsolete** — the
+model physically cannot emit anything but the three tokens, so there is
+nothing to prefix-match. Fold the `format` enum into `descriminate/*`'s
+`splinteredmind` payload; delete the string-prefix logic. (Memory:
+`constrained_decoding_verdict_model`.)
+
+### Open question this raised
+
+The small-model split saves ~15 GB VRAM and maybe a few hundred ms/call,
+but the 27b is already resident (for generation), does verdict calls at
+0.6–0.9 s warm, *and* calibrates "unresolved" better. If residency is
+solid with headroom, is the split worth the extra moving part — or just
+run the 27b for verdicts too, with the terse prompt + `format` enum?
+Decide before wiring `verdict_model/1`.
+
+### Next, if pursuing the small model
+
+- Re-run with a **realistic** prompt set (sufficiency / adequacy checks
+  pulled from `progressive_research.pl`, not adversarial ethics) — more
+  decision-relevant.
+- Re-run **with the `format` enum applied** — forcing a commit may shift
+  scores either way.
+- Leaning `qwen2.5:1.5b` on this evidence (Apache-2.0, 1.1 GB, zero
+  factual errors), pending the above.
 
 ## Open issues / decisions needed
 
