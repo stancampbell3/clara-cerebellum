@@ -537,38 +537,39 @@ factual errors) — the three pulled models
 (`qwen2.5:{1.5b,3b}-instruct-q5_K_M`, `llama3.2:1b-instruct-q5_K_M`) can
 be deleted from Ollama unless wanted for something else.
 
-### What's left to build on the verdict path
+### Verdict-path build — DONE (2026-09-10, awaiting review before deploy)
 
-1. **`format` enum plumbing** — `descriminate/*`'s `splinteredmind`
-   payload needs a `format: {"type":"string","enum":["yes","no","unresolved"]}`
-   field, and `toolified_ollama.py` needs to forward `offering.data`'s
-   `format` into the Ollama payload (same one-line pattern as the
-   `system` field, which already flows).
-2. **Simplify `descriminate` / `descriminate_k`** in `the_rabbit.pl` —
-   with constrained output there is exactly one verdict token (implied
-   probability 1.0). Drop `response_shortcut/2` and the `classify_text`
-   fallback; parse the (JSON-quoted) enum result directly.
-   `descriminate_k` returns a one-element `[{label, probability: 1.0}]`
-   list, which still satisfies `the_rat.pl`'s `extract_top_k_labels`.
-3. Fold `verdict_system_prompt` + the `format` enum into the same
-   `ponder_text/3` call `descriminate` already makes in the draft.
+1. **`format` forwarding** — `toolified_ollama.py`'s `_evaluate` /
+   `_evaluate_async` forward `offering.data["format"]` into the Ollama
+   payload (per-Offering, same pattern as `think`). lildaemon `bd5fee0`.
+   5 tests, suite 1181 passed.
+2. **`the_rabbit.pl` verdict path rewritten** — clara-cerebellum
+   `96280b2`. New `ponder_verdict/2,3` (verdict prompt + `verdict_format/1`
+   enum + `think:false`); `descriminate/*` now just call it and wrap the
+   result. **Removed** `response_shortcut/2` + `trim_leading/*` —
+   nothing to prefix-match any more. `classify_text/2,3` kept (still a
+   valid predicate) but off the path. `verdict_atom/2` +
+   `verdict_result/2` do the deterministic unquote → label-JSON.
+   Smoke-tested in a devils session (parses clean, `verdict_atom`
+   handles `"yes"` / ` NO. ` / `unresolved` / rejects `maybe`).
+3. **Constrained decoding confirmed live** — Ollama 0.33.3 enforces the
+   `format` enum even against a "reason first" prompt.
+
+**Not yet deployed.** Full `ponder_verdict` round-trip needs `bd5fee0`
+in the running lildaemon; `96280b2` needs `clara-api` rebuilt (it's a
+`docker cp` on the running container right now).
 
 ## Open issues / decisions needed
 
-1. ~~Commit the evaluator plumbing~~ — **done** (lildaemon `eab9c4c`).
-   Still needs wiring into `evaluators.yaml` as part of the held swap.
-   `the_rabbit.pl` verdict/reasoning-prompt draft (`a42d935`):
-   **smoke-tested 2026-09-10** — parses clean (`the_rabbit library
-   loaded`, no warnings), `verdict_system_prompt/1` +
-   `reasoning_system_prompt/1` facts intact, `ponder_text/3`,
-   `ponder_text_with_context/4`, `ponder_reason/2` all defined. Full
-   `descriminate` round-trip needs a focused evaluator (not testable in
-   a bare devils session; the logic itself was validated by the gate-#1
-   compat harness). **Ran via `docker cp` + `clara-api` restart — the
-   running container has the draft but the image does not.** A plain
-   restart-from-image or `./clara up` without `--build` reverts it;
-   `./clara up -d --build clara-api` bakes it in (branch carries the
-   actix-timeout merge now, so no repeat regression).
+1. ~~Commit the evaluator plumbing~~ / ~~wire `evaluators.yaml`~~ / ~~the
+   `the_rabbit.pl` verdict path~~ — **all done, all committed**
+   (lildaemon `eab9c4c` + `dfabdb6` + `bd5fee0`; clara-cerebellum
+   `a42d935` + `96280b2`). See the "Verdict-path build" section above.
+   **State: built + committed + smoke-tested, NOT deployed.** The
+   running `clara-api` has the Prolog changes via `docker cp` only —
+   `./clara up -d --build clara-api` bakes it in; the running lildaemon
+   needs `bd5fee0` (`./clara up -d --build lildaemon`). Both are the
+   review-then-deploy step.
 2. ~~Which model backs the promotion~~ — **decided: vanilla
    `qwen3.8:27b`** (Stan, 2026-09-10; not the uncensored Heretic
    fusion). One model for the whole stack.
