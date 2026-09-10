@@ -34,11 +34,52 @@
   recommended there). **PR not yet opened** — was waiting on team
   feedback before that step.
 
-## Built and tested, NOT yet committed
+## Prep implemented and committed (2026-09-10) — model swap held per Stan
 
-**Evaluator plumbing for `think`/`num_predict`**, in lildaemon,
-implementing Option A's missing piece — 7 files changed, uncommitted
-locally right now:
+Scope agreed: prep only, hold the model swap; promotion target is
+**vanilla qwen3.8:27b** (not an uncensored variant).
+
+- **`think`/`num_predict` plumbing committed** — lildaemon `eab9c4c`,
+  pushed both remotes. Opt-in; not wired into `evaluators.yaml`.
+- **`clara_system_prompt.txt` slimmed to persona only** — lildaemon
+  `dfabdb6`. Dropped the hand-rolled "EXACT JSON format" tool-call block
+  and the "After receiving tool results" paragraph (§5.2). Also fixed
+  the character name: **Clara Oswald**, not Osborne — in the file and in
+  `ClaraMindSplinter.SYSTEM_PROMPT` (which `GroqEvaluator` inherits).
+- **`Modelfile.qwen-clara-27b` cleaned** — clara-cerebellum `6ef7ccd`.
+  Dropped `presence_penalty 1.5` and `stop "<tool_res>"` (§5.3);
+  `qwen-clara-27b:latest` rebuilt from it.
+
+### Verification (§6 step 1) — clean GPU, slimmed prompt
+
+| | 9b (regression check) | 27b default | 27b `think:false` |
+|---|---|---|---|
+| persona | intact, "Clara Oswald" | good voice, concise | good, 1.0s |
+| single tool call | ✅ `get_datetime` | ✅ clean | ✅ clean |
+| logic puzzle | solves (barrels through) | ✅ flags it under-specified | ✅ works |
+| strict "one word" | still emits reasoning + sentence | exactly `Paris` | exactly `Paris` |
+| **fake `{"name":"think"}` in text** | none | none | **none — §4.4 fixed** |
+| `<think>` tag in content | still present (9b renderer) | none | none |
+
+The slim fixes the fake-think-call on the 27b with thinking disabled and
+does not regress the 9b. Everything sub-6s on the dedicated GPU.
+
+### Still open on this track
+
+- Plumbing is committed but **not wired into `evaluators.yaml`** — no
+  evaluator sets `think`/`num_predict` yet. That's part of the held
+  model swap.
+- `id_analyst.pl`'s documented 9b runaway-generation incident
+  (2026-08-08) is still unguarded — a standalone `num_predict` on the
+  current 9b seats would address it independent of any swap; not done.
+
+---
+
+_Earlier state, for history — this section is now superseded by the one
+above:_
+
+**Evaluator plumbing for `think`/`num_predict`** was built and tested
+before being committed — 7 files:
 
 - `goat/evaluators/toolified_ollama.py`: `ToolifiedOllamaEvaluator.
   __init__` gains `think: Optional[bool]` and `num_predict:
@@ -208,10 +249,8 @@ and would use `think: false` anyway per the design. So:
 
 ## Open issues / decisions needed
 
-1. **Commit and deploy the evaluator plumbing?** (lildaemon, 7 files,
-   currently uncommitted — see above.) Independent of everything else
-   below; it's needed either way before any model swap for either the
-   Id/chat path or Dis's predicates can use `think`/`num_predict`.
+1. ~~Commit the evaluator plumbing~~ — **done** (lildaemon `eab9c4c`).
+   Still needs wiring into `evaluators.yaml` as part of the held swap.
 2. **Which model, if any, backs Dis's predicates going forward** —
    vanilla `qwen-clara-27b` (closer to current behavior, smaller
    refusal-reduction) vs. the uncensored Heretic fusion (more willing on
