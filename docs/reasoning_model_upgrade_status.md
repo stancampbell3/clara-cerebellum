@@ -64,6 +64,26 @@ Scope agreed: prep only, hold the model swap; promotion target is
 The slim fixes the fake-think-call on the 27b with thinking disabled and
 does not regress the 9b. Everything sub-6s on the dedicated GPU.
 
+### Deployed + regression-tested (2026-09-10)
+
+- Slimmed prompt is **live** — `./clara up -d --build lildaemon` (local)
+  + `update_stack_host.sh pineal`. Both containers healthy, "Clara
+  Oswald" confirmed inside each.
+- **Caught and fixed a self-inflicted regression:** `./clara up --build
+  lildaemon` rebuilds `clara-api` too (dependency), from whatever branch
+  is checked out — and `docs/qwen-clara-27b-eval` forked from `fb9b608`,
+  *before* the actix `client_request_timeout` fix (`3c854f7`, master
+  only). So the local `clara-api` briefly rebuilt without it. Fixed by
+  merging master into the branch (`6565e72`) and rebuilding — the branch
+  now carries the actix fix, so it survives the eventual PR.
+- **Regression suites, both green:**
+  - lildaemon: `1178 passed, 25 skipped` (skips all environmental — no
+    Kafka broker, no pylint, FieryPit unreachable). Identical to
+    pre-prep.
+  - clara-cerebellum: `cargo test --workspace` — `521 passed, 0 failed,
+    4 ignored` (the 4 ignores are doc-test examples marked `no_run`,
+    pre-existing).
+
 ### Still open on this track
 
 - Plumbing is committed but **not wired into `evaluators.yaml`** — no
@@ -72,6 +92,9 @@ does not regress the 9b. Everything sub-6s on the dedicated GPU.
 - `id_analyst.pl`'s documented 9b runaway-generation incident
   (2026-08-08) is still unguarded — a standalone `num_predict` on the
   current 9b seats would address it independent of any swap; not done.
+- **Deploy hygiene:** any `./clara up --build <anything>` from a feature
+  branch rebuilds `clara-api` from that branch. Keep feature branches
+  merged up with master, or build `clara-api` explicitly from master.
 
 ---
 
