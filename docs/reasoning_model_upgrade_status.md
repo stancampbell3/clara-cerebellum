@@ -270,23 +270,105 @@ and would use `think: false` anyway per the design. So:
   for tool-selection, off for the compose turn) — actually matters.
   Creative turns will be 15–35s even done right.
 
+## Gate #1 — `classify_text` compatibility: done, and it reframed the problem
+
+Traced the real path: `progressive_research.pl` → `clara_fy/2,3`
+(`the_rat.pl`) → `top_status` → `descriminate_k` (`the_rabbit.pl`) →
+`ponder_text` (LLM) → `response_shortcut/2` **or** `classify_text`
+(fastText `dagda-0.2.bin`). `clara_fy` re-asks with an "Answer yes or
+no:" prompt when the first pass returns `unresolved`.
+
+**Finding: the pipeline is fragile for *both* models, not just after a
+swap.** Under the current witty-persona system prompt, both `gemma4:e4b`
+and `qwen-clara-27b` answer roundaboutly ("Oh, heavens no…", "Quite."),
+so `response_shortcut` misses and the weak fastText classifier gets the
+call — and it *inverts* clear answers (classified "Is Paris the capital
+of Germany? Oh heavens no…" as **true**). ~8/12 correct for gemma,
+~9/12 for the 27b, 6/12 agreement between them.
+
+**Fix (validated): a terse verdict system prompt for predicate mode.**
+Same 12 questions, both models, "reply with one word: yes / no /
+unresolved":
+
+| | persona prompt | terse verdict prompt |
+|---|---|---|
+| gemma↔27b agreement | 6/12 | **11/12** |
+| verdicts via `response_shortcut` (classifier bypassed) | ~4/12 | **11/12** |
+| gemma correct | ~8/12 | **~11/12** |
+| 27b correct | ~9/12 | **~11/12** |
+
+The one remaining flip ("Is water wet?") is a genuine semantic debate,
+not a regression. So: **the 27b swap for the Dis-predicate path is safe
+— conditional on the terse-prompt change landing first.** The two are
+coupled.
+
+**Shipped this as a draft:** `the_rabbit.pl` commit `a42d935` —
+`verdict_system_prompt/1` + `reasoning_system_prompt/1` facts,
+`ponder_text/3` + `ponder_text_with_context/4` (explicit `System`),
+`ponder_reason/2,3` wrappers; `descriminate/*` now use the verdict
+prompt; `ponder_text/2` and `/3`(ctx) keep the persona default (they
+generate the user-facing `Reply` in `progressive_research.pl`).
+**Not yet loaded in a live devils session** — needs a scratch-session
+smoke test before merge (no `swipl` on the box to lint).
+
+**Separately noted for the team:** the `dagda-0.2` fastText model and
+its brittle `response_shortcut` string-prefix backstop both need work —
+the terse prompt keeps them off the critical path but doesn't fix them.
+That's its own workstream.
+
+## Retiring `gemma4:e4b` — VRAM checked
+
+`ponder_text` hardcoded `gemma4:e4b` as a pineal-era workaround (12 GB
+5070 couldn't hold the base Clara model + Edgequake's LLM, so matching
+them dodged Ollama hot-swaps). On limbic's 32 GB 5090 (ComfyUI gone):
+
+- `qwen-clara-27b` alone: 17.5 GB
+- **`qwen-clara-27b` + `embeddinggemma`: co-reside fine — 18.2 GB**
+- `qwen-clara-27b` + `gemma4:e4b`: **Ollama evicts the 27b every time**
+
+So "run the 27b alongside gemma" doesn't work — the path is to **retire
+`gemma4:e4b`** and converge the whole stack on `qwen-clara:latest`
+(+ `embeddinggemma`). The `the_rabbit.pl` draft above already does this
+for `ponder_text`. Edgequake needs the matching change:
+
+- **Edgequake model config lives in three places:** the `edgequake-api`
+  container env (`EDGEQUAKE_LLM_MODEL` / `OLLAMA_MODEL`, currently
+  `gemma4:-e4b` — note the stray dash), the **tenant** row's
+  `default_llm_model` (what new workspaces inherit), and **each
+  workspace** row's own `llm_model` (copied from the tenant at creation).
+- **Vision:** `qwen-clara-27b` is a vision model (that's eval finding #1
+  — the `qwen3.8` renderer fixes image tokenisation, which is broken on
+  the current 9b). Edgequake's `default_vision_llm_model` is currently
+  `null` and `EDGEQUAKE_VISION_MODEL` is empty — so pointing both at
+  `qwen-clara:latest` gives Edgequake image understanding it does not
+  have today, on the already-resident model, zero extra VRAM. Needs a
+  smoke test that the Modelfile renderer accepts Edgequake's vision
+  request shape.
+- **Reset:** Stan is planning a full Edgequake reset (KBs, workspaces,
+  docs) for a clean-slate test on the shared model. Sequence: update the
+  env + tenant `default_llm_model` (and `default_vision_llm_model`)
+  *before* recreating workspaces, so new ones inherit the right model;
+  the wipe takes care of the stale per-workspace `llm_model` values.
+
 ## Open issues / decisions needed
 
 1. ~~Commit the evaluator plumbing~~ — **done** (lildaemon `eab9c4c`).
    Still needs wiring into `evaluators.yaml` as part of the held swap.
+   `the_rabbit.pl` verdict/reasoning-prompt draft: **done** (`a42d935`),
+   needs the live smoke test.
 2. **Which model, if any, backs Dis's predicates going forward** —
    vanilla `qwen-clara-27b` (closer to current behavior, smaller
    refusal-reduction) vs. the uncensored Heretic fusion (more willing on
    borderline-but-legitimate requests, unofficial/community fine-tune).
    Latency is no longer the blocker; this is now a judgment call about
    how much refusal-reduction is wanted for this specific role.
-3. **`classify_text` (fastText) downstream compatibility is unverified.**
-   It was presumably trained/tuned against the *current* model's output
-   style. Swapping the upstream LLM changes the raw text
-   `descriminate/2` feeds it — nobody has checked whether the classifier
-   still behaves correctly against a different model's phrasing. This
-   needs validation before any promotion, and isn't something I can test
-   without the classifier's training data/eval set.
+3. ~~`classify_text` downstream compatibility~~ — **checked** (see the
+   gate-#1 section above). Reframed: the pipeline is fragile for both
+   models; a terse verdict system prompt fixes it and makes the swap
+   safe. Draft shipped. Remaining: (a) live smoke test of the
+   `the_rabbit.pl` draft; (b) `dagda-0.2` fastText model + the
+   `response_shortcut` string-prefix backstop both need their own
+   rework — separate workstream.
 4. **The `num_predict` cap for the chat path needs to be ~6,000–8,000**,
    not a small number — a cap below the thinking-phase size deletes the
    answer entirely rather than truncating it (see the cap-floor table
