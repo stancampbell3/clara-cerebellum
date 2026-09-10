@@ -430,12 +430,46 @@ generation model — a fast, obedient one-word classifier.
   question). Long-context variants waste VRAM.
 - **Licence:** permissive (Apache-2.0 / MIT) for a production stack.
 - **Availability:** in the Ollama library, or a clean GGUF on HF.
-- **Candidate families to try:** Qwen2.5-1.5B/3B-Instruct,
-  Llama-3.2-1B/3B-Instruct, Gemma-3-1B-it, Phi-3.5-mini, SmolLM2-1.7B.
 - **Acceptance test:** the 12-question verdict compat set (same harness
   as gate #1) — target **≥ 11/12 correct** *and* **≥ 11/12 agreement
   with the 27b's verdicts** under the terse prompt. Also spot-check that
   every answer leads with a bare `yes`/`no`/`unresolved`.
+
+### External review (Gemini + Copilot, 2026-09-10 — see `_feedback.md`)
+
+Both independently converge on the **Qwen2.5-Instruct small** family and
+both reject Phi (reasoning/chatty), Gemma-3-1B (verbose/sycophantic,
+prepends "Yes,"), and any Qwen3-thinking variant.
+
+| model | ~VRAM @ Q5–Q6 | licence | 1-word obedience | says "unresolved"? |
+|---|---|---|---|---|
+| **Qwen2.5-3B-Instruct** | ~2.3 GB | Apache-2.0 | excellent | good (best calibration of the set) |
+| **Qwen2.5-1.5B-Instruct** | ~1.2–2.0 GB | Apache-2.0 | very good (occasional trailing `.`) | fair-good |
+| Llama-3.2-1B-Instruct | ~1.7 GB | Llama Community | excellent | good | 
+| SmolLM2-1.7B | ~1.8 GB | Apache-2.0 / MIT | good | **poor — tends to guess** |
+
+- **The split call:** Gemini treats "Apache-2.0 / MIT" as hard and
+  eliminates Llama (Llama Community License) and Gemma; Copilot is
+  looser ("commercial OK") and ranks Llama-3.2-1B first. **Team decides
+  how strict the licence bar is.** If strict → Qwen2.5. If Llama is
+  acceptable → Llama-3.2-1B is the other top contender and needs the
+  head-to-head.
+- **Gemini's pick:** Qwen2.5-3B if the ~2.3 GB fits (it does — see the
+  VRAM math above), else Qwen2.5-1.5B at Q6_K.
+- **Bulletproof the leading token at the inference layer, don't lean on
+  the model's obedience:** `num_predict: 1–2`, plus — if Ollama exposes
+  it — a `format` enum / GBNF grammar constraining output to exactly
+  `{yes, no, unresolved}`. This would also **retire the brittle
+  `response_shortcut/2` string-prefix matching entirely** — the model
+  physically cannot emit anything else, so there's nothing to parse.
+  Worth checking what constrained decoding Ollama's API actually
+  supports (`format` takes a JSON schema; enum support varies by
+  version).
+- **Recommendation:** pull Qwen2.5-3B-Instruct and Qwen2.5-1.5B-Instruct
+  (both Apache-2.0, no licence question), plus Llama-3.2-1B-Instruct if
+  the licence bar is soft, and run all through the 12-question harness +
+  a constrained-decoding trial. Empirical result is the tiebreaker —
+  both reviewers said as much.
 
 ## Open issues / decisions needed
 
@@ -463,14 +497,19 @@ generation model — a fast, obedient one-word classifier.
    gate-#1 section above). Reframed: the pipeline is fragile for both
    models; a terse verdict system prompt fixes it and makes the swap
    safe. Draft shipped + smoke-tested. Remaining: `dagda-0.2` fastText
-   model + the `response_shortcut` string-prefix backstop both need
-   their own rework — separate workstream.
-3a. **Model split by predicate class** (new — see the section above).
-   Needs: pick a small verdict model (search params documented),
-   `OLLAMA_MAX_LOADED_MODELS` on the systemd unit, a `num_ctx` cap on the
-   27b Modelfile, residency re-test, then `verdict_model/1` /
-   `reasoning_model/1` facts in `the_rabbit.pl`. **Team is researching
-   small-model candidates.**
+   model needs its own rework; the brittle `response_shortcut/2`
+   string-prefix backstop could be **retired outright** if the small
+   verdict model uses constrained decoding (enum/grammar) — the model
+   can't emit anything but `yes`/`no`/`unresolved`, so there's nothing
+   to parse.
+3a. **Model split by predicate class** (see the section above).
+   External review (Gemini + Copilot) done — both land on **Qwen2.5-3B
+   or -1.5B-Instruct** (Apache-2.0); Llama-3.2-1B contested on licence.
+   Needs: team's licence-strictness call → run the 12-question harness
+   on the shortlist + a constrained-decoding trial → pick →
+   `OLLAMA_MAX_LOADED_MODELS` on the systemd unit + `num_ctx` cap on the
+   27b Modelfile + residency re-test → `verdict_model/1` /
+   `reasoning_model/1` facts in `the_rabbit.pl`.
 4. **The `num_predict` cap for the chat path needs to be ~6,000–8,000**,
    not a small number — a cap below the thinking-phase size deletes the
    answer entirely rather than truncating it (see the cap-floor table
