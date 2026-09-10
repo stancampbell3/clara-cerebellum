@@ -1,13 +1,16 @@
 # Reasoning-model upgrade: status & open issues
 
-> **Handoff doc, written 2026-09-10, updated same day with the clean
-> A/B re-run.** Session paused here for team review. Companion to
-> `thinking_model_timeout_problem.md` (the original analysis) and
-> `qwen_clara_27b_upgrade_plan.md` (the base eval) — this doc covers
-> what happened *after* that analysis: the evaluator plumbing that got
-> built, a second investigation into backing Dis's own deduction-loop
-> predicates with an uncensored 27b, and a clean re-measurement of the
-> base eval once ComfyUI was off the GPU.
+> **Handoff doc, 2026-09-10 — paused here for team review.** Companion
+> to `thinking_model_timeout_problem.md` (the original analysis) and
+> `qwen_clara_27b_upgrade_plan.md` (the base eval). Covers what happened
+> *after* that analysis: the evaluator plumbing that got built; the
+> clean A/B re-run once ComfyUI was off the GPU; gate #1 (`classify_text`
+> compat) and how it reframed into a system-prompt fix (`the_rabbit.pl`
+> draft, `a42d935`); retiring `gemma4:e4b`; and the current design
+> direction — **splitting models by predicate class**, with search
+> parameters for a small verdict model the team is now researching.
+> Nothing here is deployed to the running stack except the prompt slim
+> and the (image-less, `docker cp`'d) `the_rabbit.pl` draft on `clara-api`.
 
 ## Done and deployed
 
@@ -350,12 +353,106 @@ for `ponder_text`. Edgequake needs the matching change:
   *before* recreating workspaces, so new ones inherit the right model;
   the wipe takes care of the stale per-workspace `llm_model` values.
 
+### Edgequake config — where it stands (2026-09-10)
+
+- `assistant.general` workspace `llm_model` → **`qwen-clara:latest`**
+  (Stan set this; not re-ingested, since the reset will clear it). This
+  is the single shared workspace the current design uses, so it's the
+  one that matters at runtime.
+- Still on `gemma4:-e4b`, to clean up for consistency (not blocking a
+  test): tenant `default_llm_model` (inherited by any *new* workspace),
+  tenant `default_vision_llm_model` (currently `null` — set to
+  `qwen-clara:latest` for the vision win), and `docker/.env`
+  `EDGEQUAKE_LLM_MODEL` (re-seed source on an edgequake-api restart).
+- The stored `gemma4:-e4b` string is a malformed tag, but Edgequake
+  normalises it to `gemma4:e4b` before the Ollama call (confirmed in its
+  logs) — cosmetic, not a live bug. Just write the replacement as a
+  clean `name:tag`.
+
+## Model split by predicate class (design direction — 2026-09-10)
+
+Rather than one model for everything, run a deliberate *small set*, each
+matched to a class of Prolog-predicate call, all co-resident so there is
+never a hot-swap:
+
+| predicate class | model | rationale |
+|---|---|---|
+| `descriminate` / `clara_fy` verdicts, `classify`-adjacent | **small fast (1–3 B), no tools, terse verdict prompt, tiny `num_ctx`** | one-word yes/no/unresolved output, high call frequency, latency-critical *inside* a deduction loop — thinking spiral and tool schema are pure overhead here |
+| `ponder_text` / `reasoned_response` generation, splinter tool-use, vision, user-facing `Reply` | **`qwen-clara` 27b** | capability, persona, image understanding |
+| Edgequake ingestion extraction | small fast (structured, high-volume) — Edgequake already has an `extraction_profile` flag for this axis | speed matters more than depth for entity/relation extraction |
+| Edgequake RAG synthesis (query) | 27b (or small — TBD by quality test) | answer quality |
+| embeddings | `embeddinggemma` (0.6 GB) | — |
+
+**VRAM math (32 GB 5090):** 27b (~17.5) + small verdict model (~1–2) +
+`embeddinggemma` (~0.7) ≈ 20 GB. Fits with ~12 GB spare.
+
+**Blocker — residency is not automatic.** Observed 2026-09-10: Ollama
+*evicted* the 27b when `gemma4:e4b` (3.4 GB) loaded, despite the total
+fitting in 32 GB. `27b + embeddinggemma` co-resided fine. To hold
+27b + small + embed simultaneously we need:
+
+1. `OLLAMA_MAX_LOADED_MODELS` set on the `ollama.service` systemd unit
+   (currently unset — the unit only sets `OLLAMA_HOST` and
+   `OLLAMA_MODELS`). Likely `3`.
+2. Probably cap the 27b's `num_ctx` in `Modelfile.qwen-clara-27b` — its
+   32 k KV cache is what makes Ollama's fit-estimate balk; the deduction
+   path never needs 32 k. Try 8 k or 16 k.
+3. Re-test each combo after (1) and (2).
+
+**Mechanism:** extend the `the_rabbit.pl` draft with `verdict_model/1`
+and `reasoning_model/1` as overridable facts (parallel to
+`verdict_system_prompt/1` / `reasoning_system_prompt/1` already added in
+`a42d935`); `descriminate/*` calls `ponder_text/3` with `verdict_model`,
+plain `ponder_text` uses `reasoning_model`.
+
+### Small verdict-model search parameters (for the team's research)
+
+Looking for a model to sit behind `descriminate` / `clara_fy`. Not a
+generation model — a fast, obedient one-word classifier.
+
+- **Size:** 1–4 B parameters; target ≤ 2 GB VRAM at the quant below.
+- **Quantisation:** Q5_K_M or Q6_K (small models degrade more under Q4;
+  the footprint is tiny either way, so don't cheap out on bits).
+- **NOT a reasoning / "thinking" model.** No chain-of-thought, no
+  `<think>` channel — we want an instant leading token. A reasoning
+  model actively defeats the purpose (see this doc's thinking-spiral
+  sections). Rules out the Qwen3 "thinking" variants unless thinking can
+  be hard-disabled and verified off.
+- **Instruction-following:** must reliably obey "reply with exactly one
+  word: yes / no / unresolved" — leading token only, no preamble, so
+  `response_shortcut/2` catches it on pass 1.
+- **Calibration:** must be *willing to say "unresolved"* — not
+  sycophantic / always-pick-a-side. Test this explicitly with genuinely
+  contested prompts.
+- **Speed:** ≥ 150 tok/s on the 5090 (trivial for this size); sub-100 ms
+  warm for a one-word answer.
+- **Context:** 2–4 k `num_ctx` is plenty (verdict prompt + one
+  question). Long-context variants waste VRAM.
+- **Licence:** permissive (Apache-2.0 / MIT) for a production stack.
+- **Availability:** in the Ollama library, or a clean GGUF on HF.
+- **Candidate families to try:** Qwen2.5-1.5B/3B-Instruct,
+  Llama-3.2-1B/3B-Instruct, Gemma-3-1B-it, Phi-3.5-mini, SmolLM2-1.7B.
+- **Acceptance test:** the 12-question verdict compat set (same harness
+  as gate #1) — target **≥ 11/12 correct** *and* **≥ 11/12 agreement
+  with the 27b's verdicts** under the terse prompt. Also spot-check that
+  every answer leads with a bare `yes`/`no`/`unresolved`.
+
 ## Open issues / decisions needed
 
 1. ~~Commit the evaluator plumbing~~ — **done** (lildaemon `eab9c4c`).
    Still needs wiring into `evaluators.yaml` as part of the held swap.
-   `the_rabbit.pl` verdict/reasoning-prompt draft: **done** (`a42d935`),
-   needs the live smoke test.
+   `the_rabbit.pl` verdict/reasoning-prompt draft (`a42d935`):
+   **smoke-tested 2026-09-10** — parses clean (`the_rabbit library
+   loaded`, no warnings), `verdict_system_prompt/1` +
+   `reasoning_system_prompt/1` facts intact, `ponder_text/3`,
+   `ponder_text_with_context/4`, `ponder_reason/2` all defined. Full
+   `descriminate` round-trip needs a focused evaluator (not testable in
+   a bare devils session; the logic itself was validated by the gate-#1
+   compat harness). **Ran via `docker cp` + `clara-api` restart — the
+   running container has the draft but the image does not.** A plain
+   restart-from-image or `./clara up` without `--build` reverts it;
+   `./clara up -d --build clara-api` bakes it in (branch carries the
+   actix-timeout merge now, so no repeat regression).
 2. **Which model, if any, backs Dis's predicates going forward** —
    vanilla `qwen-clara-27b` (closer to current behavior, smaller
    refusal-reduction) vs. the uncensored Heretic fusion (more willing on
@@ -365,10 +462,15 @@ for `ponder_text`. Edgequake needs the matching change:
 3. ~~`classify_text` downstream compatibility~~ — **checked** (see the
    gate-#1 section above). Reframed: the pipeline is fragile for both
    models; a terse verdict system prompt fixes it and makes the swap
-   safe. Draft shipped. Remaining: (a) live smoke test of the
-   `the_rabbit.pl` draft; (b) `dagda-0.2` fastText model + the
-   `response_shortcut` string-prefix backstop both need their own
-   rework — separate workstream.
+   safe. Draft shipped + smoke-tested. Remaining: `dagda-0.2` fastText
+   model + the `response_shortcut` string-prefix backstop both need
+   their own rework — separate workstream.
+3a. **Model split by predicate class** (new — see the section above).
+   Needs: pick a small verdict model (search params documented),
+   `OLLAMA_MAX_LOADED_MODELS` on the systemd unit, a `num_ctx` cap on the
+   27b Modelfile, residency re-test, then `verdict_model/1` /
+   `reasoning_model/1` facts in `the_rabbit.pl`. **Team is researching
+   small-model candidates.**
 4. **The `num_predict` cap for the chat path needs to be ~6,000–8,000**,
    not a small number — a cap below the thinking-phase size deletes the
    answer entirely rather than truncating it (see the cap-floor table
