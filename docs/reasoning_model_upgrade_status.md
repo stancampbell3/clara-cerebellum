@@ -1,11 +1,13 @@
 # Reasoning-model upgrade: status & open issues
 
-> **Handoff doc, written 2026-09-10.** Session paused here for team
-> review. Companion to `thinking_model_timeout_problem.md` (the original
-> analysis) and `qwen_clara_27b_upgrade_plan.md` (the base eval) — this
-> doc covers what happened *after* that analysis: the evaluator plumbing
-> that got built, and a second investigation into using an uncensored
-> 27b model to back Dis's own deduction-loop predicates specifically.
+> **Handoff doc, written 2026-09-10, updated same day with the clean
+> A/B re-run.** Session paused here for team review. Companion to
+> `thinking_model_timeout_problem.md` (the original analysis) and
+> `qwen_clara_27b_upgrade_plan.md` (the base eval) — this doc covers
+> what happened *after* that analysis: the evaluator plumbing that got
+> built, a second investigation into backing Dis's own deduction-loop
+> predicates with an uncensored 27b, and a clean re-measurement of the
+> base eval once ComfyUI was off the GPU.
 
 ## Done and deployed
 
@@ -133,12 +135,76 @@ less-refusal-prone model for better raw material.
    question, not a model-choice one).
 
 5. Per Stan's decision: **ComfyUI is a co-tenant, not part of the Clara
-   stack, and Clara has GPU priority.** It's being relocated off this
-   box. It was stopped (gracefully — queue was empty) to run the clean
-   benchmark above and **is currently still stopped** — an attempt to
-   restart it was blocked by the session's own permission guardrails;
-   someone should restart it manually or fold that into the relocation
-   work, whichever comes first.
+   stack, and Clara has GPU priority.** Stan has shut it down and is
+   relocating it off this box. The GPU is now dedicated to Clara, which
+   enabled the clean re-run in the next section.
+
+## Clean re-run of the section-3 A/B (2026-09-10, GPU dedicated)
+
+Repeated `qwen_clara_27b_upgrade_plan.md`'s eval with the real deployed
+artifacts (`clara_system_prompt.txt` + `python_tools.json`), 9b vs 27b,
+across persona / creative-open-ended / single-tool-call / logic-puzzle /
+strict-instruction tasks. Two passes: thinking default, then a
+`num_predict` cap.
+
+### Throughput — the doc's numbers were badly contention-poisoned
+
+| | doc (contended) | clean, now |
+|---|---|---|
+| 9b (`qwen-clara:latest`) | ~195 tok/s | ~195–202 tok/s (unchanged — it always fit) |
+| **27b (`qwen-clara-27b`)** | 45–62 "GPU-resident" / 15–28 contended | **106–187 tok/s** |
+
+The 27b is ~1.5–2× slower per token than the 9b, **not 3–4×**. Cold-load
+is ~150s, one-time (stays warm on `keep_alive`).
+
+### Warm per-task latency (27b, clean)
+
+| task | 27b warm | notes |
+|---|---|---|
+| persona, 2 sentences | 1.5s | |
+| single tool call | 0.9s | correct `get_datetime` call, clean |
+| logic puzzle | 5–7s | 27b correctly flags it as under-specified; 9b just guesses |
+| strict "one word only" | 0.6s | 27b returns exactly `Paris`; 9b emits reasoning + a sentence |
+| **creative 120-word monologue** | **31s, ~5,800 tokens (~3,200 thinking)** | the spiral — faster GPU helped (was 60–100s) but did **not** fix it |
+
+### The `num_predict` cap floor (creative prompt, 3 runs per cap)
+
+| cap | outcome |
+|---|---|
+| 2,048 | ❌ empty content — entire budget spent thinking |
+| 4,000 | ❌ 2 of 3 hit the cap; one empty, one truncated to 352 chars |
+| **6,000** | ✅ 3 of 3 fine (used 2,485–3,556 tokens) |
+| 8,000 / 12,000 | ✅ 3 of 3 fine; one 12k run still took 35s |
+
+Thinking for this single prompt varied **~1,400–4,000 tokens across
+runs** (non-deterministic at temp 0.2); the answer itself is ~170 tokens
+every time. **A cap below ~6,000 risks deleting the answer, not
+shortening it.** A well-chosen cap (6–8k) prevents the empty-answer
+failure and bounds the tail, but does **not** make creative prompts fast
+— they're 15–35s on the 27b regardless.
+
+### `<think>` separation, confirmed clean
+
+Zero `<think>`-tag leakage into `content` on the 27b across every task
+(`thinking` field populated instead). The 9b pollutes **every** response
+with `<think>…</think>` markers in content via its `qwen3-coder`
+renderer.
+
+### Implication: split the decision
+
+The spiral is triggered by **open-ended / creative** prompts. Dis's
+deduction predicates (`descriminate` / `ponder_text`) don't send those —
+they send narrow judgment tasks, which ran **0.6–0.9s warm on the 27b**
+and would use `think: false` anyway per the design. So:
+
+- **Dis-backing role:** a 27b works cleanly and fast *now* — `think:
+  false` + a small `num_predict` (few hundred tokens). Spiral doesn't
+  apply. Only open item is the `classify_text` compatibility check
+  (#3 below).
+- **Frontdesk / assistant chat path:** separate call. This is where the
+  spiral lives and where Option A's 6–8k cap — or Option B (thinking on
+  for tool-selection, off for the compose turn) — actually matters.
+  Creative turns will be 15–35s even done right.
 
 ## Open issues / decisions needed
 
@@ -159,7 +225,12 @@ less-refusal-prone model for better raw material.
    still behaves correctly against a different model's phrasing. This
    needs validation before any promotion, and isn't something I can test
    without the classifier's training data/eval set.
-4. **Restart or relocate ComfyUI.** Currently stopped on the dev box.
+4. **The `num_predict` cap for the chat path needs to be ~6,000–8,000**,
+   not a small number — a cap below the thinking-phase size deletes the
+   answer entirely rather than truncating it (see the cap-floor table
+   above). Even a good cap leaves creative turns at 15–35s; if that's
+   unacceptable, Option B (thinking off for the compose turn) is the
+   real lever, not a tighter cap.
 5. **Open the PR for `docs/qwen-clara-27b-eval`** once team feedback is
    in — was deferred pending review of `thinking_model_timeout_problem.
    md`; this doc adds to the same branch.
