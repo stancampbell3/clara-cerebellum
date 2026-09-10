@@ -8,7 +8,13 @@
     classify_text_k/3,
     enable_evaluator/2,
     ponder_text/2,
+    ponder_text/3,
     ponder_text_with_context/3,
+    ponder_text_with_context/4,
+    ponder_reason/2,
+    ponder_reason_with_context/3,
+    verdict_system_prompt/1,
+    reasoning_system_prompt/1,
     extract_field/3,
     extract_response/3,
     extract_nested/3,
@@ -74,28 +80,100 @@ enable_evaluator(Evaluator, Result) :-
                                 evaluator: Evaluator}}, Json),
     clara_evaluate(Json, Result).
 
-%% ponder_text/2 - Evaluate a prompt using the LLM
-%%   Model matches the assistant's Edgequake workspace default (gemma4:e4b,
-%%   set in the workspace's own tenant config) rather than a separate tag
-%%   ("gemma4:latest") — answer_step/9 already reconciles a ponder_text/2
-%%   answer with an Edgequake ruminate answer in the same turn; using the
-%%   same model for both avoids Ollama swapping models mid-turn.
+%% --- System prompts for predicate-answering mode -----------------------
+%%
+%% ponder_text/2 and _with_context/3 send NO `system` override, so they
+%% inherit whatever persona the focused evaluator carries
+%% (config/prompts/clara_system_prompt.txt — the witty Clara Oswald
+%% voice). That's right for user-facing answer *generation*, but wrong
+%% for the two other things these predicates get used for inside a Dis
+%% deduction:
+%%
+%%   1. descriminate/*  -> clara_fy/2,3 truth classification. The persona
+%%      ("Oh, heavens no...", "Quite.") almost never leads with a bare
+%%      yes/no, so response_shortcut/2 misses and the (currently weak)
+%%      fastText classifier gets the call — and inverts clear answers.
+%%      Verified 2026-09-10: a terse "reply with one word: yes/no/
+%%      unresolved" system prompt lifts gemma4:e4b AND qwen-clara-27b
+%%      from ~8/12 to ~11/12 correct on a fixed set, and makes the two
+%%      models agree 11/12 (was 6/12) — response_shortcut carries 11/12,
+%%      classifier off the critical path.
+%%
+%%   2. plain internal reasoning / musing steps that feed rule logic
+%%      rather than the user. Internal monologue does not need a flowery
+%%      voice; a plain, direct, truthful prompt is cheaper, faster, and
+%%      leaves less room for out-of-band framing.
+%%
+%% These are plain facts so a caller (or a future config layer) can
+%% override them without editing this file's logic.
+verdict_system_prompt(
+'You classify a statement or question into a truth value. Reply with EXACTLY ONE WORD and nothing else: "yes" if the statement is true or the answer is affirmative; "no" if it is false or the answer is negative; "unresolved" if it is genuinely contested, subjective, ambiguous, or cannot be determined from established knowledge. Output only that single lowercase word. No punctuation, no explanation.').
+
+reasoning_system_prompt(
+'You are a careful reasoning engine operating inside a larger inference system. Answer directly, concisely, and truthfully. State what is known, what is uncertain, and why. Do not adopt a persona, do not use a conversational or theatrical voice, and do not add pleasantries — your output is consumed by downstream logic, not shown to a person.').
+
+%% ponder_text/2 - Evaluate a prompt using the LLM (persona default).
+%%   Model: the Clara base tag (qwen-clara:latest). The `gemma4:e4b`
+%%   hardcode this replaces was chosen when Dis ran on pineal's 12 GB
+%%   5070, where the base Clara model and Edgequake's LLM couldn't both
+%%   stay resident — matching them dodged Ollama hot-swaps mid-turn
+%%   (answer_step/9 reconciles a ponder_text answer with an Edgequake
+%%   ruminate answer in the same turn). On limbic's 32 GB 5090 that
+%%   constraint is gone: qwen-clara-27b (~17.5 GB) + embeddinggemma
+%%   (~0.7 GB) co-reside with room to spare (verified 2026-09-10), so
+%%   the whole stack — ponder_text, descriminate, and Edgequake's own
+%%   EDGEQUAKE_LLM_MODEL — should point at one model. NB: gemma4:e4b and
+%%   the 27b do NOT co-reside (Ollama evicts the 27b), so retiring
+%%   gemma4:e4b from the stack is the point, not running it alongside.
+%%   Unchanged: still inherits the evaluator's persona. Use ponder_text/3
+%%   (or ponder_reason/2) for non-user-facing calls.
 ponder_text(Text, Result) :-
     dict_to_json(_{tool: splinteredmind,
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
-                                         model: 'gemma4:e4b'}}}, Json),
+                                         model: 'qwen-clara:latest'}}}, Json),
     clara_evaluate(Json, Result).
+
+%% ponder_text/3 - As ponder_text/2 but with an explicit system prompt,
+%%   overriding the evaluator's persona for this one call.
+ponder_text(Text, System, Result) :-
+    dict_to_json(_{tool: splinteredmind,
+                   arguments: _{operation: evaluate,
+                                data: _{prompt: Text,
+                                         system: System,
+                                         model: 'qwen-clara:latest'}}}, Json),
+    clara_evaluate(Json, Result).
+
+%% ponder_reason/2 - plain, voiceless internal reasoning (reasoning_system_prompt/1).
+ponder_reason(Text, Result) :-
+    reasoning_system_prompt(Sys),
+    ponder_text(Text, Sys, Result).
 
 %% ponder_text_with_context/3 - Evaluate a prompt using the LLM with conversation context.
 %%   Context is a list of message dicts, e.g. [_{role:user, content:"hello"}, ...].
+%%   Unchanged: persona default.
 ponder_text_with_context(Text, Context, Result) :-
     dict_to_json(_{tool: splinteredmind,
                    arguments: _{operation: evaluate,
                                 data: _{prompt: Text,
                                         context: Context,
-                                        model: 'gemma4:e4b'}}}, Json),
+                                        model: 'qwen-clara:latest'}}}, Json),
     clara_evaluate(Json, Result).
+
+%% ponder_text_with_context/4 - As /3 but with an explicit system prompt.
+ponder_text_with_context(Text, Context, System, Result) :-
+    dict_to_json(_{tool: splinteredmind,
+                   arguments: _{operation: evaluate,
+                                data: _{prompt: Text,
+                                        context: Context,
+                                        system: System,
+                                        model: 'qwen-clara:latest'}}}, Json),
+    clara_evaluate(Json, Result).
+
+%% ponder_reason_with_context/3 - plain voiceless internal reasoning, grounded.
+ponder_reason_with_context(Text, Context, Result) :-
+    reasoning_system_prompt(Sys),
+    ponder_text_with_context(Text, Context, Sys, Result).
 
 %% current_context/1 - Retrieve the conversational context injected at deduce time.
 %%   Returns a list of message dicts parsed from the deduce_context_json/1 fact.
@@ -187,9 +265,14 @@ extract_llm_response(RawJson, Response) :-
 extract_llm_response(RawJson, Response) :-
     extract_nested(RawJson, [hohi, response, response], Response).
 
-%% descriminate - Extract the response from the LLM and classify it
+%% descriminate - Extract the response from the LLM and classify it.
+%%   Uses verdict_system_prompt/1: the LLM is asked for a bare
+%%   yes/no/unresolved, so response_shortcut/2 carries the verdict and
+%%   the fastText classifier is only a fallback (see the system-prompt
+%%   comment above).
 descriminate(Text, TruthValue) :-
-    ponder_text(Text, LLMSez), % Get the JSON response from the LLM
+    verdict_system_prompt(Sys),
+    ponder_text(Text, Sys, LLMSez), % Get the JSON response from the LLM
     extract_llm_response(LLMSez, Response),
     !,
     % If the LLM response begins with an explicit token, shortcut and return
@@ -210,7 +293,8 @@ descriminate(_, _) :-
 
 %% descriminate_k - Extract the response from the LLM and classify it with top K results
 descriminate_k(Text, K, Results) :-
-    ponder_text(Text, LLMSez), % Get the JSON response from the LLM
+    verdict_system_prompt(Sys),
+    ponder_text(Text, Sys, LLMSez), % Get the JSON response from the LLM
     extract_llm_response(LLMSez, Response),
     !,
     ( response_shortcut(Response, Shortcut) ->
@@ -230,7 +314,8 @@ descriminate_k(_, _, _) :-
 %% descriminate_k_with_context/4 - Like descriminate_k/3 but grounds the LLM
 %%   call with a conversation context list.
 descriminate_k_with_context(Text, K, Context, Results) :-
-    ponder_text_with_context(Text, Context, LLMSez),
+    verdict_system_prompt(Sys),
+    ponder_text_with_context(Text, Context, Sys, LLMSez),
     extract_llm_response(LLMSez, Response),
     !,
     ( response_shortcut(Response, Shortcut) ->
