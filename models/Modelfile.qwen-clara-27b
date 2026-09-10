@@ -8,14 +8,12 @@
 #     Its native chat/tool-call protocol is qwen3.8-render + qwen3.5-parse
 #     (per `ollama show --modelfile qwen3.8:27b`); the qwen3-coder pair
 #     would mis-frame tool calls and the (new) thinking channel.
-#
-# Carried over verbatim from Modelfile.qwen-clara for a clean A/B, even
-# though some were tuned against qwen3-coder and may want revisiting:
-#   - PARAMETER temperature 0.2      (Clara house style: agentic determinism)
-#   - PARAMETER presence_penalty 1.5 (was an anti-loop knob for qwen3-coder)
-#   - PARAMETER stop "<tool_res>"    (vestigial: qwen3-coder inline tool-result
-#                                     sentinel; the qwen3.5 parser returns tool
-#                                     results via the messages array, not text)
+#   - Dropped `presence_penalty 1.5` and `stop "<tool_res>"`, both
+#     qwen3-coder-era carry-overs: the length problem on this base is the
+#     thinking phase, not token repetition, and the qwen3.5 parser
+#     returns tool results via the messages array, not an inline text
+#     sentinel. (See clara-cerebellum/docs/thinking_model_timeout_problem.md
+#     and qwen_clara_27b_upgrade_plan.md section 5.3.)
 FROM qwen3.8:27b
 
 RENDERER qwen3.8
@@ -24,12 +22,10 @@ PARSER qwen3.5
 # Set a stable context window for agentic loops
 PARAMETER num_ctx 32768
 PARAMETER temperature 0.2
-PARAMETER presence_penalty 1.5
 PARAMETER stop "<|im_end|>"
-PARAMETER stop "<tool_res>"
 
 SYSTEM """
 You are Clara, a powerful multimodal agent.
 You have native vision integration. You can see and analyze any images provided to you. Do not claim you cannot see images.
-Analyze images inside <think> tags before using tools to act on what you see.
+Analyze any images provided before acting on what you see.
 """
