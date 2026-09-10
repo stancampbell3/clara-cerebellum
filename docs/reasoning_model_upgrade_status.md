@@ -369,7 +369,24 @@ for `ponder_text`. Edgequake needs the matching change:
   logs) — cosmetic, not a live bug. Just write the replacement as a
   clean `name:tag`.
 
-## Model split by predicate class (design direction — 2026-09-10)
+## Model split by predicate class — investigated, then dropped (2026-09-10)
+
+> **DECISION (Stan, 2026-09-10): no small verdict model. Run the 27b for
+> verdict calls too**, with the terse verdict prompt + a `format` enum
+> constraint. The split saved ~15 GB but the 27b is already resident,
+> does verdicts at 0.6–0.9 s warm, and calibrates "unresolved" better
+> than any small model tested (see the harness below). One model
+> (`qwen-clara:latest`) + `embeddinggemma` — which already co-reside.
+>
+> **Consequences:** no `OLLAMA_MAX_LOADED_MODELS` change needed; the
+> `num_ctx` cap on the 27b Modelfile is now optional (headroom, not
+> fit); the `the_rabbit.pl` draft's single `model: 'qwen-clara:latest'`
+> across all `ponder_*` variants is already correct. The one thing to
+> still build: the `format` enum on the verdict path (see "Constrained
+> decoding" below) — that's the real win, and it retires
+> `response_shortcut/2` regardless.
+>
+> The investigation below is kept for context.
 
 Rather than one model for everything, run a deliberate *small set*, each
 matched to a class of Prolog-predicate call, all co-resident so there is
@@ -511,24 +528,30 @@ nothing to prefix-match. Fold the `format` enum into `descriminate/*`'s
 `splinteredmind` payload; delete the string-prefix logic. (Memory:
 `constrained_decoding_verdict_model`.)
 
-### Open question this raised
+### Resolved
 
-The small-model split saves ~15 GB VRAM and maybe a few hundred ms/call,
-but the 27b is already resident (for generation), does verdict calls at
-0.6–0.9 s warm, *and* calibrates "unresolved" better. If residency is
-solid with headroom, is the split worth the extra moving part — or just
-run the 27b for verdicts too, with the terse prompt + `format` enum?
-Decide before wiring `verdict_model/1`.
+The open question was answered: **no small model** (decision banner at
+the top of this section). The 27b runs verdicts too. `qwen2.5:1.5b`
+would have been the pick if we went small (Apache-2.0, 1.1 GB, zero
+factual errors) — the three pulled models
+(`qwen2.5:{1.5b,3b}-instruct-q5_K_M`, `llama3.2:1b-instruct-q5_K_M`) can
+be deleted from Ollama unless wanted for something else.
 
-### Next, if pursuing the small model
+### What's left to build on the verdict path
 
-- Re-run with a **realistic** prompt set (sufficiency / adequacy checks
-  pulled from `progressive_research.pl`, not adversarial ethics) — more
-  decision-relevant.
-- Re-run **with the `format` enum applied** — forcing a commit may shift
-  scores either way.
-- Leaning `qwen2.5:1.5b` on this evidence (Apache-2.0, 1.1 GB, zero
-  factual errors), pending the above.
+1. **`format` enum plumbing** — `descriminate/*`'s `splinteredmind`
+   payload needs a `format: {"type":"string","enum":["yes","no","unresolved"]}`
+   field, and `toolified_ollama.py` needs to forward `offering.data`'s
+   `format` into the Ollama payload (same one-line pattern as the
+   `system` field, which already flows).
+2. **Simplify `descriminate` / `descriminate_k`** in `the_rabbit.pl` —
+   with constrained output there is exactly one verdict token (implied
+   probability 1.0). Drop `response_shortcut/2` and the `classify_text`
+   fallback; parse the (JSON-quoted) enum result directly.
+   `descriminate_k` returns a one-element `[{label, probability: 1.0}]`
+   list, which still satisfies `the_rat.pl`'s `extract_top_k_labels`.
+3. Fold `verdict_system_prompt` + the `format` enum into the same
+   `ponder_text/3` call `descriminate` already makes in the draft.
 
 ## Open issues / decisions needed
 
@@ -561,14 +584,12 @@ Decide before wiring `verdict_model/1`.
    verdict model uses constrained decoding (enum/grammar) — the model
    can't emit anything but `yes`/`no`/`unresolved`, so there's nothing
    to parse.
-3a. **Model split by predicate class** (see the section above).
-   External review (Gemini + Copilot) done — both land on **Qwen2.5-3B
-   or -1.5B-Instruct** (Apache-2.0); Llama-3.2-1B contested on licence.
-   Needs: team's licence-strictness call → run the 12-question harness
-   on the shortlist + a constrained-decoding trial → pick →
-   `OLLAMA_MAX_LOADED_MODELS` on the systemd unit + `num_ctx` cap on the
-   27b Modelfile + residency re-test → `verdict_model/1` /
-   `reasoning_model/1` facts in `the_rabbit.pl`.
+3a. ~~Model split by predicate class~~ — **dropped** (Stan, 2026-09-10).
+   Run the 27b for verdicts too. What's left: `format` enum plumbing
+   (`toolified_ollama.py` + `descriminate`'s payload) and simplifying
+   `descriminate`/`descriminate_k` to drop `response_shortcut/2` +
+   `classify_text`. See the "What's left to build on the verdict path"
+   subsection.
 4. **The `num_predict` cap for the chat path needs to be ~6,000–8,000**,
    not a small number — a cap below the thinking-phase size deletes the
    answer entirely rather than truncating it (see the cap-floor table
