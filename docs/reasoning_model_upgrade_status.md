@@ -559,17 +559,69 @@ be deleted from Ollama unless wanted for something else.
 in the running lildaemon; `96280b2` needs `clara-api` rebuilt (it's a
 `docker cp` on the running container right now).
 
+### DEPLOYED + promoted (2026-09-10, Stan approved "let's go ahead and deploy")
+
+- **lildaemon** `bd5fee0` + `681eca2` built into the running image
+  (`./clara up -d --build`). **clara-cerebellum / clara-api** rebuilt from
+  the branch (`96280b2`, actix fix `3c854f7` folded in via merge `6565e72`).
+- **`clara_mind_splinter` config** — `evaluators.yaml` now carries
+  `think: true` + `num_predict: 8000` (Option A). Not on `_lite` / `_groq`.
+- **27b promotion** — `ollama cp qwen-clara-27b:latest qwen-clara:latest`.
+  `qwen-clara:latest` is now 27.3B (arch `clip`, ctx 262144) on limbic.
+  **pineal `qwen-clara:latest` is still the 9b** (RTX 5070, 12 GB — can't
+  hold the 27b comfortably). Known, intentional split; pineal's clara-api
+  verdicts + the remote FieryPit evaluator run on the 9b there.
+- **Edgequake reset** — `reset_clara_stack.sh --yes --start` run (Stan
+  authorised resetting the Default workspace on limbic during dev).
+  `assistant.general` workspace `default_llm_model` = `qwen-clara:latest`.
+
+**Two bugs found + fixed during the deploy:**
+
+1. **Blessed-Offering allowlist dropped `think` / `format`** (`681eca2`).
+   `_bless_prompt_data` (ember) and `KindlingEvaluator.evaluate_async`'s
+   inline builder rebuild the Offering from a fixed key list and silently
+   drop anything not listed — so `ponder_verdict`'s `think:false` + `format`
+   enum never reached Ollama (payload showed `think: True`, no `format`).
+   Same bug class as the `eab9c4c` constructor-forwarding gap. Both
+   allowlists now pass `("options","num_ctx","num_predict","think","format")`.
+2. **Poisoned evaluate cache** — clara-api's CoireStore evaluate cache held
+   a stale echo-fallback response for `"Is Paris the capital of France?"`
+   from an earlier broken-state test (`task_id 5f3add30`), so `descriminate`
+   on that exact string kept returning the old failure in ~0.02 s. Cleared
+   by the stack reset. (Cache TTL 30 s but the CarrionPicker sweep is
+   hourly — a poisoned row can outlive its TTL by up to an hour.)
+
+**Verified post-deploy (cache-miss, novel strings, warm 27b):**
+
+- Verdict path — `the_rabbit:descriminate/2` via a devils session:
+  "Olympus Mons is the tallest mountain on Mars" → true (1.1 s),
+  "Roman Empire used paper currency" → false (0.6 s),
+  "always ethically acceptable to lie to protect a friend" → false (0.6 s).
+  Earlier warm/cached set (Paris / flat Earth / water freezing / abortion /
+  vaccines-autism) all correct-shaped and correct.
+- Chat path — `the_rabbit:ponder_text/2` (Option A, think:true + cap 8000):
+  noir lighthouse opening (2.4 s) and a "heist planned by two rival chess
+  grandmasters" (2.4 s) both returned full non-empty prose — no refusal on
+  the mildly-transgressive prompt, which is the Id design intent.
+
+**Still to do:** open the PR; run the formal integration pass (full
+lildaemon suite + assistant demo end-to-end against the promoted model);
+Edgequake **tenant** `default_llm_model` still `gemma4:-e4b` (the partial
+`PUT /api/v1/tenants/{id}` returned 200 but didn't apply — needs a
+full-object PUT or the UI); `EDGEQUAKE_LLM_MODEL` env in the separate
+`edgequake-*` deployment.
+
 ## Open issues / decisions needed
 
 1. ~~Commit the evaluator plumbing~~ / ~~wire `evaluators.yaml`~~ / ~~the
    `the_rabbit.pl` verdict path~~ — **all done, all committed**
-   (lildaemon `eab9c4c` + `dfabdb6` + `bd5fee0`; clara-cerebellum
-   `a42d935` + `96280b2`). See the "Verdict-path build" section above.
-   **State: built + committed + smoke-tested, NOT deployed.** The
-   running `clara-api` has the Prolog changes via `docker cp` only —
-   `./clara up -d --build clara-api` bakes it in; the running lildaemon
-   needs `bd5fee0` (`./clara up -d --build lildaemon`). Both are the
-   review-then-deploy step.
+   (lildaemon `eab9c4c` + `dfabdb6` + `bd5fee0` + `681eca2`;
+   clara-cerebellum `a42d935` + `96280b2`). See the "Verdict-path build"
+   and "DEPLOYED + promoted" sections above.
+   **State: DEPLOYED + 27b promoted + verified (2026-09-10).** Both
+   images rebuilt from the branch, `qwen-clara:latest` is the 27b on
+   limbic, stack reset. Two deploy bugs found + fixed (`681eca2`
+   allowlist; poisoned evaluate cache → reset).
 2. ~~Which model backs the promotion~~ — **decided: vanilla
    `qwen3.8:27b`** (Stan, 2026-09-10; not the uncensored Heretic
    fusion). One model for the whole stack.
@@ -603,9 +655,10 @@ in the running lildaemon; `96280b2` needs `clara-api` rebuilt (it's a
    2026-09-10). The 27b unlocks images but `toolified_ollama.py` has no
    per-message `images` path; that's a new capability, tracked
    separately.
-5. **Open the PR for `docs/qwen-clara-27b-eval`** once team feedback is
-   in — was deferred pending review of `thinking_model_timeout_problem.
-   md`; this doc adds to the same branch.
+5. **Open the PR for `docs/qwen-clara-27b-eval`** — still not opened.
+   The work is deployed and verified on limbic; the PR is the paperwork.
+   Also pending: the formal integration pass (full lildaemon suite +
+   assistant demo against the promoted model).
 6. **Groq's side of the thinking-timeout problem is still unaddressed.**
    `clara_mind_splinter_groq` (now the standard default evaluator) has
    the documented empty-content-on-reasoning-budget-exhaustion failure
