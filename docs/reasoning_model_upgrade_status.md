@@ -604,12 +604,30 @@ in the running lildaemon; `96280b2` needs `clara-api` rebuilt (it's a
   grandmasters" (2.4 s) both returned full non-empty prose — no refusal on
   the mildly-transgressive prompt, which is the Id design intent.
 
-**Still to do:** open the PR; run the formal integration pass (full
-lildaemon suite + assistant demo end-to-end against the promoted model);
-Edgequake **tenant** `default_llm_model` still `gemma4:-e4b` (the partial
-`PUT /api/v1/tenants/{id}` returned 200 but didn't apply — needs a
-full-object PUT or the UI); `EDGEQUAKE_LLM_MODEL` env in the separate
-`edgequake-*` deployment.
+### Formal integration pass — 2026-09-10, all green
+
+- **lildaemon suite:** 1182 passed / 25 skipped / 0 failed (51 s). The 25
+  skips are all environmental (`KAFKA_BOOTSTRAP` unset, `pylint` absent).
+- **clara-cerebellum `cargo test --workspace`:** 521 passed / 0 failed / 4
+  ignored — after fixing 2 tests `96280b2` broke: `test_reasoned_response`
+  and `test_reasoned_response_with_context` mocked `ponder_text/2` and
+  relied on the now-deleted `response_shortcut/2` firing inside
+  `descriminate_k/3`. Rewrote them (+ `test_clara_fy_unresolved_retry`,
+  which had been passing vacuously) to mock the new boundary
+  `ponder_verdict/2` + `ponder_verdict_with_context/3`. clara-cerebellum
+  `1fec6be`. `prolog_integration_tests` 20/20.
+- **Assistant demo end-to-end** (live HTTP API → running lildaemon →
+  promoted 27b): `progressive` chat "capital of Australia" 3.8 s ✓
+  (Canberra, in-persona); `progressive` witty 2-liner (Option A) 3.2 s ✓
+  full reply, no thinking-spiral; **`id_analyst`** "discourage litter"
+  57.8 s ✓ parallel unfiltered "Impulse" alternatives from member-gemma +
+  member-qwen, no refusal (the Id-workstream path); `terse` "is 91 prime"
+  1.7 s ✓ ("7 × 13").
+
+**Still to do:** open the PR; Edgequake **tenant** `default_llm_model` still
+`gemma4:-e4b` (the partial `PUT /api/v1/tenants/{id}` returned 200 but
+didn't apply — needs a full-object PUT or the UI); `EDGEQUAKE_LLM_MODEL`
+env in the separate `edgequake-*` deployment.
 
 ## Open issues / decisions needed
 
@@ -656,9 +674,8 @@ full-object PUT or the UI); `EDGEQUAKE_LLM_MODEL` env in the separate
    per-message `images` path; that's a new capability, tracked
    separately.
 5. **Open the PR for `docs/qwen-clara-27b-eval`** — still not opened.
-   The work is deployed and verified on limbic; the PR is the paperwork.
-   Also pending: the formal integration pass (full lildaemon suite +
-   assistant demo against the promoted model).
+   The work is deployed and verified on limbic; the formal integration
+   pass is done + green (see the section above); the PR is the paperwork.
 6. **Groq's side of the thinking-timeout problem is still unaddressed.**
    `clara_mind_splinter_groq` (now the standard default evaluator) has
    the documented empty-content-on-reasoning-budget-exhaustion failure
