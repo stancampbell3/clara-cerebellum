@@ -569,12 +569,9 @@ be deleted from Ollama unless wanted for something else.
    restart-from-image or `./clara up` without `--build` reverts it;
    `./clara up -d --build clara-api` bakes it in (branch carries the
    actix-timeout merge now, so no repeat regression).
-2. **Which model, if any, backs Dis's predicates going forward** —
-   vanilla `qwen-clara-27b` (closer to current behavior, smaller
-   refusal-reduction) vs. the uncensored Heretic fusion (more willing on
-   borderline-but-legitimate requests, unofficial/community fine-tune).
-   Latency is no longer the blocker; this is now a judgment call about
-   how much refusal-reduction is wanted for this specific role.
+2. ~~Which model backs the promotion~~ — **decided: vanilla
+   `qwen3.8:27b`** (Stan, 2026-09-10; not the uncensored Heretic
+   fusion). One model for the whole stack.
 3. ~~`classify_text` downstream compatibility~~ — **checked** (see the
    gate-#1 section above). Reframed: the pipeline is fragile for both
    models; a terse verdict system prompt fixes it and makes the swap
@@ -590,12 +587,21 @@ be deleted from Ollama unless wanted for something else.
    `descriminate`/`descriminate_k` to drop `response_shortcut/2` +
    `classify_text`. See the "What's left to build on the verdict path"
    subsection.
-4. **The `num_predict` cap for the chat path needs to be ~6,000–8,000**,
-   not a small number — a cap below the thinking-phase size deletes the
-   answer entirely rather than truncating it (see the cap-floor table
-   above). Even a good cap leaves creative turns at 15–35s; if that's
-   unacceptable, Option B (thinking off for the compose turn) is the
-   real lever, not a tighter cap.
+4. ~~Thinking strategy for the chat path~~ — **decided: Option A**
+   (Stan, 2026-09-10) — thinking stays ON, bounded by a `num_predict`
+   cap. **Cap = 8,000** (the sweep showed ≥ 6,000 needed to not delete
+   the answer; 8,000 gives margin, worst-case ~35 s at the 27b's warm
+   rate). Not Option B.
+   **Build:** set `num_predict: 8000` (and `think: true` explicitly,
+   for clarity) on `clara_mind_splinter` / `clara_mind_splinter_lite`
+   in `evaluators.yaml` — the plumbing (`eab9c4c`) already accepts both.
+   No `toolified_ollama.py` change; no think-loop restructuring.
+   Accepted tradeoff: creative/open-ended turns run 15–35 s.
+
+   *Vision:* **out of scope for this upgrade — follow-on** (Stan,
+   2026-09-10). The 27b unlocks images but `toolified_ollama.py` has no
+   per-message `images` path; that's a new capability, tracked
+   separately.
 5. **Open the PR for `docs/qwen-clara-27b-eval`** once team feedback is
    in — was deferred pending review of `thinking_model_timeout_problem.
    md`; this doc adds to the same branch.
