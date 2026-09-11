@@ -2,13 +2,12 @@
 
 > **Status:** approved 2026-09-11, round 2 closed. Repo fork done. SPEC-084
 > signed off 2026-09-11. **Tier 1 (Edgequake) and Tier 2 (`the_leannan.pl`)
-> are both implemented, tested, and committed** — see the "done" notes
-> under §Tier 1 and §2d below. Tier 3 (`id_analyst.pl`) not started; the
-> live clara-api rebuild/restart + end-to-end `/deduce` verification are
-> also still outstanding (deliberately deferred to alongside Tier 3).
-> Round-1 and round-2 `[STAN]` feedback are both folded in below; see
-> **Review round 1 — resolutions** and **Review round 2 — resolutions** at
-> the bottom for the point-by-point trace.
+> are both implemented, tested, committed, and live-verified against the
+> real running stack** — see the "done" notes under §Tier 1 and §2d
+> below. Tier 3 (`id_analyst.pl`) not started. Round-1 and round-2
+> `[STAN]` feedback are both folded in below; see **Review round 1 —
+> resolutions** and **Review round 2 — resolutions** at the bottom for the
+> point-by-point trace.
 
 ## Context
 
@@ -381,13 +380,43 @@ while implementing, same pattern as Tier 1's FR-004 correction:
   integration + 9 unit) and `clara-toolbox` (58) suites pass; full
   `cargo build --workspace` clean.
 
-**Not done this pass:** rebuilding/restarting the live `clara-api`
-service to pick up the new binary (§Build & sequencing step 2's "Rebuild
-the clara-api / FieryPit images" — a deploy-affecting action on the live
-Clara stack, deferred to be done deliberately alongside or after Tier 3,
-not mid-Tier-2). The design doc's Tier 2 live-verification step (a
-scratch `/deduce` against a running clara-api) is accordingly still
-outstanding.
+**Live verification — done 2026-09-11.** Rebuilt the `clara-api` Docker
+image (`docker compose build clara-api` from `clara-cerebellum/docker`)
+and recreated just that container (`--no-deps`, other stack services
+untouched) — confirmed `the_leannan library loaded` in startup logs.
+Verified against the live stack (Edgequake at `10.0.0.192:8082`, real
+tenant/workspace):
+- Regression check: a plain arithmetic `/deduce` goal still converges
+  correctly on the rebuilt binary.
+- The `graph_search_entities` `entity_type` fix confirmed live against the
+  real, populated `assistant.general` workspace (140 real entities
+  matched searching "ritual" — the search silently returned 0 before this
+  fix, since `label=` was never a real filter key).
+- `the_leannan:leannan_entities/2` and `the_leannan:leannan_sparks/4`
+  exercised end-to-end via `/deduce`'s `initial_goal` against the
+  *default* (data-empty) workspace the container is actually configured
+  to point at — `leannan_sparks('what is a ritual?', 1, Sparks,
+  AllCitations)` returned `NS=1, NC=54` real citations (real chunk ids,
+  document ids, scores) from the live Edgequake, round-tripping the full
+  `context_only`/`ll_keywords`/`mix_weights`/`rrf_k`/`fusion` payload
+  through the *currently-un-upgraded* live Edgequake without error —
+  confirms Tier 1's backward-compatibility design (unknown fields
+  silently ignored) holds in practice, not just in the unit tests.
+- One transient finding, root-caused as pre-existing and unrelated to
+  this work: an early back-to-back pair of `/deduce` calls both hit a
+  real 90s `reqwest` client timeout against Edgequake
+  (`clara-toolbox/src/tools/edgequake.rs`'s existing, pre-Tier-2 timeout
+  constant) — reproduced with a *baseline* `the_cow:ruminate_opts/3` call
+  carrying **none** of the new fields, which hit the same multi-tens-of-
+  seconds latency before eventually succeeding, and GPU utilization was
+  idle (0%) throughout. Concluded this is query-serialization/contention
+  from firing concurrent test requests, not a regression from this
+  session's changes; a clean single-spark retry afterward completed in
+  under 10s with real data.
+
+No other stack services were touched or restarted; full `docker compose
+ps` shows all services (lildaemon, frontdesk, cobbler, kafka, both MCP
+adapters) healthy throughout.
 
 ---
 
