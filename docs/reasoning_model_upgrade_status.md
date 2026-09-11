@@ -624,10 +624,41 @@ in the running lildaemon; `96280b2` needs `clara-api` rebuilt (it's a
   member-qwen, no refusal (the Id-workstream path); `terse` "is 91 prime"
   1.7 s ✓ ("7 × 13").
 
-**Still to do:** open the PR; Edgequake **tenant** `default_llm_model` still
-`gemma4:-e4b` (the partial `PUT /api/v1/tenants/{id}` returned 200 but
-didn't apply — needs a full-object PUT or the UI); `EDGEQUAKE_LLM_MODEL`
-env in the separate `edgequake-*` deployment.
+**Still to do:** open the PR.
+
+### Edgequake model config — fixed 2026-09-11
+
+The earlier `PUT /api/v1/tenants/{id}` no-op was the wrong endpoint — tenants
+don't carry model fields at all. The real config lives three layers deep,
+each of which needed fixing:
+
+1. **Per-workspace override** (highest priority, per the resolution ladder
+   in `specs/043-update-edgequake-llm/007-settings-server-config.md`):
+   `PUT /api/v1/workspaces/{workspace_id}` with `{llm_model, vision_llm_model}`
+   — partial body works fine here (it's already nullable-partial-update
+   shaped, unlike the tenant endpoint). Three workspaces existed:
+   `assistant.general` (already `qwen-clara:latest` — Stan had set this one
+   via the UI) and **`default`** + **`calfresh`** (both still `gemma4:e4b`).
+   Fixed the latter two.
+2. **Server-wide default** (`server_config` table, wins over env):
+   `PATCH /api/v1/settings/llm-defaults` `{llm_model, vision_model}` — set
+   to `qwen-clara:latest` so any future workspace with no override inherits
+   the right model. Survives container restarts (Postgres-backed).
+3. **Env defaults** (lowest priority, but what a full `docker compose up`
+   *recreate* falls back to): `/home/stanc/moonpool/tools/edgequake/.env`
+   had none of `EDGEQUAKE_LLM_MODEL`/`EDGEQUAKE_VISION_MODEL`/`OLLAMA_MODEL`
+   set, so `docker-compose.quickstart.yml`'s own baked-in defaults applied
+   — including a genuine **upstream typo**, `EDGEQUAKE_LLM_MODEL:-gemma4:-e4b`
+   (stray colon-dash). Pinned all three to `qwen-clara:latest` in `.env` so
+   a recreate can't silently regress the server_config-level fix.
+
+Verified via `edgequake-api` logs on a real query
+(`LLM provider created with safety limits provider=ollama
+model=qwen-clara:latest source=Workspace`) and the query response itself
+(`stats.llm_model: "qwen-clara:latest"`, real generation: 285 tokens,
+120 tok/s, 13.4 s total). `docker compose up -d` recreate (to pick up the
+`.env` change) left `edgequake-postgres`/`edgequake-frontend` untouched and
+`edgequake-api` came back healthy.
 
 ## Open issues / decisions needed
 
