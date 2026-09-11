@@ -472,11 +472,13 @@ fn test_quoted_strings_in_query_with_bindings() {
 /// Test that reasoned_response/2 binds RR to the LLM's text response when
 /// clara_fy validates it as adequate.
 ///
-/// Avoids live LLM calls by replacing ponder_text/2 in the_rabbit with a
-/// Prolog-level mock after abolishing the original static clause.  Two cases:
-///   1. Validation questions (contain "adequately answer") return "yes" so
-///      response_shortcut fires inside descriminate_k and skips the classifier.
-///   2. All other prompts return the canned answer "Four".
+/// Avoids live LLM calls with two Prolog-level mocks installed after
+/// abolishing the original static clauses:
+///   1. ponder_text/2 — the answer-generation call — returns "Four".
+///   2. ponder_verdict/2 — the classification call descriminate_k/3 now
+///      makes (constrained yes/no/unresolved, no more response_shortcut) —
+///      returns `true` for the adequacy-validation question, `unresolved`
+///      otherwise.
 #[test]
 fn test_reasoned_response() {
     let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
@@ -488,18 +490,24 @@ fn test_reasoned_response() {
     // Load the_rat; the :- enable_evaluator directive runs but its result is ignored
     env.query_once("use_module(library(the_rat))").expect("Failed to load the_rat");
 
-    // Swap out the live ponder_text/2 for a deterministic mock.
+    // Swap out the live LLM predicates for deterministic mocks.
     // abolish removes the static definition; assertz installs a dynamic replacement
     // in the_rabbit so that unqualified calls from the_rat resolve to the mock.
     env.query_once("abolish(the_rabbit:ponder_text/2)").ok();
     env.query_once(
-        r#"assertz((the_rabbit:ponder_text(Prompt, Result) :-
-            (   sub_atom(Prompt, _, _, _, 'adequately answer')
-            ->  atom_json_dict(Result, _{hohi:_{response:_{response:"yes"}}}, [])
-            ;   atom_json_dict(Result, _{hohi:_{response:_{response:"Four"}}}, [])
-            )))"#,
+        r#"assertz((the_rabbit:ponder_text(_Prompt, Result) :-
+            atom_json_dict(Result, _{hohi:_{response:_{response:"Four"}}}, [])))"#,
     )
     .expect("Failed to assert ponder_text mock");
+    env.query_once("abolish(the_rabbit:ponder_verdict/2)").ok();
+    env.query_once(
+        r#"assertz((the_rabbit:ponder_verdict(Prompt, Verdict) :-
+            (   sub_atom(Prompt, _, _, _, 'adequately answer')
+            ->  Verdict = true
+            ;   Verdict = unresolved
+            )))"#,
+    )
+    .expect("Failed to assert ponder_verdict mock");
 
     let result = env.query_with_bindings("the_rat:reasoned_response('What is 2 + 2?', RR)");
     match &result {
@@ -520,8 +528,8 @@ fn test_reasoned_response() {
 /// Test that clara_fy/2 retries with an explicit "Answer yes or no:" prefix when
 /// the first classification returns unresolved.
 ///
-/// The mock returns "unresolved" for the plain validation question and "yes" for
-/// the prefixed retry, verifying that the retry path resolves to true.
+/// The mock returns `unresolved` for the plain validation question and `true`
+/// for the prefixed retry, verifying that the retry path resolves to true.
 #[test]
 fn test_clara_fy_unresolved_retry() {
     let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
@@ -532,17 +540,18 @@ fn test_clara_fy_unresolved_retry() {
 
     env.query_once("use_module(library(the_rat))").expect("Failed to load the_rat");
 
-    // Mock ponder_text/2: plain questions return "unresolved"; questions prefixed
-    // with "Answer yes or no:" return "yes" to simulate the retry succeeding.
-    env.query_once("abolish(the_rabbit:ponder_text/2)").ok();
+    // clara_fy/2's classification path is descriminate_k/3 -> ponder_verdict/2
+    // (constrained yes/no/unresolved). Mock ponder_verdict/2: the plain question
+    // returns `unresolved`; the "Answer yes or no:"-prefixed retry returns `true`.
+    env.query_once("abolish(the_rabbit:ponder_verdict/2)").ok();
     env.query_once(
-        r#"assertz((the_rabbit:ponder_text(Prompt, Result) :-
+        r#"assertz((the_rabbit:ponder_verdict(Prompt, Verdict) :-
             (   sub_atom(Prompt, 0, _, _, 'Answer yes or no:')
-            ->  atom_json_dict(Result, _{hohi:_{response:_{response:"yes"}}}, [])
-            ;   atom_json_dict(Result, _{hohi:_{response:_{response:"unresolved"}}}, [])
+            ->  Verdict = true
+            ;   Verdict = unresolved
             )))"#,
     )
-    .expect("Failed to assert ponder_text mock");
+    .expect("Failed to assert ponder_verdict mock");
 
     let result = env.query_with_bindings(
         "the_rat:clara_fy('Is the sky blue?', TruthValue)"
@@ -565,8 +574,9 @@ fn test_clara_fy_unresolved_retry() {
 /// Test that reasoned_response_with_context/3 threads context through both the
 /// LLM call and the adequacy validation via clara_fy/3.
 ///
-/// Mocks ponder_text_with_context/3 — the context argument is verified to be
-/// passed through by asserting it is a non-empty list before responding.
+/// Mocks ponder_text_with_context/3 and ponder_verdict_with_context/3 — the
+/// context argument is verified to be threaded through both by asserting it is
+/// a non-empty list before responding.
 #[test]
 fn test_reasoned_response_with_context() {
     let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
@@ -577,19 +587,27 @@ fn test_reasoned_response_with_context() {
 
     env.query_once("use_module(library(the_rat))").expect("Failed to load the_rat");
 
-    // Mock ponder_text_with_context/3: verify context is non-empty, then behave
-    // like the reasoned_response mock — validation questions return "yes", others
-    // return the canned answer "Green".
+    // Mock the answer-generation call: verify context is non-empty, return "Green".
     env.query_once("abolish(the_rabbit:ponder_text_with_context/3)").ok();
     env.query_once(
-        r#"assertz((the_rabbit:ponder_text_with_context(Prompt, Context, Result) :-
+        r#"assertz((the_rabbit:ponder_text_with_context(_Prompt, Context, Result) :-
             Context = [_|_],
-            (   sub_atom(Prompt, _, _, _, 'adequately answer')
-            ->  atom_json_dict(Result, _{hohi:_{response:_{response:"yes"}}}, [])
-            ;   atom_json_dict(Result, _{hohi:_{response:_{response:"Green"}}}, [])
-            )))"#,
+            atom_json_dict(Result, _{hohi:_{response:_{response:"Green"}}}, [])))"#,
     )
     .expect("Failed to assert ponder_text_with_context mock");
+    // Mock the classification call clara_fy/3 -> descriminate_k_with_context/4
+    // now makes: verify context threads through, `true` for the adequacy
+    // validation question, `unresolved` otherwise.
+    env.query_once("abolish(the_rabbit:ponder_verdict_with_context/3)").ok();
+    env.query_once(
+        r#"assertz((the_rabbit:ponder_verdict_with_context(Prompt, Context, Verdict) :-
+            Context = [_|_],
+            (   sub_atom(Prompt, _, _, _, 'adequately answer')
+            ->  Verdict = true
+            ;   Verdict = unresolved
+            )))"#,
+    )
+    .expect("Failed to assert ponder_verdict_with_context mock");
 
     let result = env.query_with_bindings(concat!(
         "the_rat:reasoned_response_with_context(",
