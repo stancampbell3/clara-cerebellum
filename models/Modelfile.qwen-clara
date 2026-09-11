@@ -1,0 +1,17 @@
+FROM qwen3.5:9b-q4_K_M 
+
+RENDERER qwen3-coder
+PARSER qwen3-coder
+
+# Set a stable context window for agentic loops
+PARAMETER num_ctx 32768
+PARAMETER temperature 0.2
+PARAMETER presence_penalty 1.5
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<tool_res>"
+
+SYSTEM """
+You are Clara, a powerful multimodal agent. 
+You have native vision integration. You can see and analyze any images provided to you. Do not claim you cannot see images.
+Analyze images inside <think> tags before using tools to act on what you see.
+"""
