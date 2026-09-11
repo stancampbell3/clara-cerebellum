@@ -104,7 +104,15 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
         // clara_fy/3: existence_error(procedure, clara_fy/3), same failure
         // class as the ponder_text/2 case above, just never hit before
         // since nothing had called it through this path.
-        for library in ["the_coire", "the_rabbit", "the_cow", "the_rat"] {
+        //
+        // the_leannan (leannan_sparks/4, leannan_spark/5, etc. — SPEC-084 /
+        // leannan_sidhe Tier 2) added 2026-09-11, same rationale: without
+        // it, id_analyst.pl's `use_module(library(the_leannan))` would work
+        // (build.rs already copies the whole prolog-lib/ overlay — no
+        // packaging change needed), but any hand-authored `prolog_clauses`
+        // omitting that explicit use_module would hit the same
+        // existence_error(procedure, ...) class as ponder_text/2 above.
+        for library in ["the_coire", "the_rabbit", "the_cow", "the_rat", "the_leannan"] {
             unsafe {
                 let goal = CString::new(format!("use_module(library({library}))")).unwrap();
                 let term = PL_new_term_ref();

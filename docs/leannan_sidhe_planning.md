@@ -1,11 +1,14 @@
 # leannan_sidhe — divergent retrieval for the Id analyst (planning draft)
 
-> **Status:** planning draft, review round 2. Not yet approved, nothing
-> implemented. Round-1 `[STAN]` feedback has been folded into the tiers below;
-> see **Review round 1 — resolutions** at the bottom for the point-by-point
-> trace. Fresh feedback wanted on the reduced graph-operator set (§2b), the
-> reflected-rank fringe fusion math (§1b), and whether to write the Edgequake
-> SPEC doc before starting implementation (§0).
+> **Status:** approved 2026-09-11, round 2 closed. Repo fork done. SPEC-084
+> signed off 2026-09-11. **Tier 1 (Edgequake) and Tier 2 (`the_leannan.pl`)
+> are both implemented, tested, and committed** — see the "done" notes
+> under §Tier 1 and §2d below. Tier 3 (`id_analyst.pl`) not started; the
+> live clara-api rebuild/restart + end-to-end `/deduce` verification are
+> also still outstanding (deliberately deferred to alongside Tier 3).
+> Round-1 and round-2 `[STAN]` feedback are both folded in below; see
+> **Review round 1 — resolutions** and **Review round 2 — resolutions** at
+> the bottom for the point-by-point trace.
 
 ## Context
 
@@ -69,10 +72,17 @@ upstream as a PR, the SPEC doc is the artifact reviewers want first.
 and the request-field contract (`rrf_k`, `fusion`, later `band_lo`/`band_hi`)
 before code, and gives the team + upstream a single thing to sign off on.
 
-- Locate the repo's spec convention first (`specs/`, `specifications/`,
-  `docs/adr/` all exist in the tree — confirm which is canonical and the
-  numbering in use).
-- New `SPEC-0NN: Per-request fusion control (rrf_k, fusion strategy, fringe mode)`.
+- Repo layout confirmed: the git root is `~/moonpool/tools/edgequake` (the
+  `edgequake/` subdirectory below it is just the Rust workspace, not a nested
+  repo). Spec convention is **`specs/NNN-slug/`** — numbered, incrementing,
+  each a directory of docs (`docs/adr/` cross-references it, e.g.
+  `specs/073-relational-rag-layout/`). Highest existing number is
+  `specs/083-improvements` (matches the `spec083_matrix_contracts.rs` test
+  name in §1c). `specifications/` is a *different*, older/parallel numbering
+  scheme (`0001_..._issueNNN`) — not the one `@implements SPEC-NNN` doc
+  comments reference; ignore it for this work.
+- New `specs/084-leannan-sidhe-divergent-fusion/` (or similar slug) —
+  `SPEC-084: Per-request fusion control (rrf_k, fusion strategy, fringe mode)`.
   Rides conceptually alongside SPEC-022 (per-request Mix weight overrides) and
   SPEC-023 (retrieval fusion), but is its own doc.
 - Contents: the two new `QueryRequest` fields; the `MixFusionMode::Fringe`
@@ -81,6 +91,33 @@ before code, and gives the team + upstream a single thing to sign off on.
   backward-compat statement (all `Option`, env defaults unchanged).
 
 Team sign-off on the SPEC gates Tier 1 implementation.
+
+**Repo fork — done 2026-09-11.** Per round-2 feedback below: `origin` on the
+local `~/moonpool/tools/edgequake` checkout now points at a new private
+GitLab project, `root/edgequake` on limbic
+(`http://limbic:8929/root/edgequake`, branch `edgequake-main`, pushed).
+`upstream` still points at `github.com/raphaelmansuy/edgequake` for pulling
+updates from the real project. Work happens on GitLab first (matches the
+`origin`=GitLab / `github`=backup pattern used elsewhere in the stack); a
+`stancampbell3/edgequake` GitHub fork as an explicit push-mirror backup is
+deferred until Tier 1 is far enough along to be worth a backup copy or an
+upstream PR — revisit then.
+
+**SPEC-084 — drafted, signed off, and implemented (Tier 1) 2026-09-11.**
+`specs/084-leannan-sidhe-divergent-fusion.md` in the fork (commit
+`944f61e4`). Covers FR-001–005 (per-request `rrf_k`, per-request `fusion`
+override, the new `Fringe` mode + its reflected-rank math, the exact
+call-path threading through `query_mix_with_vector_storage` →
+`fuse_mix_contexts`, and the reserved `bandpass` fields), plus API
+contract, edge cases, backward-compat, and a test plan. One correction
+surfaced while grounding the spec against current source: the
+`QueryExecutionParams` struct and `build_engine_request` actually live in
+`crates/edgequake-api/src/services/query_request_builder.rs`, not
+`handlers/query/query_execute.rs` as originally drafted in §1a/§1b above —
+`query_execute.rs` only *calls* `build_engine_request`. Tier 1
+implementation should follow the SPEC doc's FR-004 threading section,
+which has the corrected path. Sign-off on the SPEC gates starting Tier 1
+Rust work.
 
 ---
 
@@ -150,6 +187,43 @@ reflected-rank ships first because it needs no new tuning params.
 - `context_only` responses already return `sources: Vec<SourceReference>` with
   `score`. Per-arm provenance on `SourceReference` is **out of scope** for v1 (the
   audit trail lives Prolog-side, see Tier 2); revisit if the tableau needs it.
+
+**Tier 1 — done 2026-09-11.** Implemented against SPEC-084 exactly as
+specced, committed to the GitLab fork (`06a0643a`, pushed). 17 files
+changed across `edgequake-query` and `edgequake-api`:
+- `fusion.rs`: `MixFusionMode::Fringe`, `fringe_rrf_fusion` (reflected-rank
+  formula), `mix_fusion_mode_from_str` (strict per-request parser — the
+  shared alias table refactored out of `mix_fusion_mode_from_env` so both
+  share the alias list but differ on unrecognized-value handling: the env
+  parser still silently falls back to `Rrf`, the per-request parser
+  returns `None`/`Reserved` for the API layer to turn into a `400`).
+- `mix.rs`: `query_mix_with_vector_storage` / `fuse_mix_contexts` now take
+  explicit `rrf_k: Option<f32>, fusion: Option<&str>` params instead of
+  reading `RRF_K` / the env fusion mode unconditionally — threaded through
+  both call sites (`query_pipeline.rs`'s vector-storage and default-storage
+  paths) and the `query_mix` convenience wrapper (`query_modes.rs`).
+- API layer: `rrf_k`/`fusion` added to the HTTP `QueryRequest` DTO and the
+  engine `QueryRequest`, threaded through `QueryExecutionParams` /
+  `build_engine_request` (confirmed home:
+  `services/query_request_builder.rs`, per the FR-004 correction);
+  `validate_fusion_override` (`services/query_execution.rs`, next to
+  `validate_llm_override_pair`) rejects an unrecognized or reserved
+  (`bandpass`) `fusion` value with `ApiError::BadRequest` — wired into
+  `execute_query` right after `validate_query`. `/api/v1/query/stream` and
+  `/api/v1/query/context` deliberately **not** touched — matches SPEC-084's
+  stated scope (`/api/v1/query` only) and existing precedent (neither
+  already supports `hl_keywords`/`ll_keywords` overrides either).
+- Contract tests extended: `spec083_matrix_contracts.rs`
+  (`contract_fusion_mode_names`) and `contract_rrf_fusion.rs` both assert
+  the `fringe` mode name, the reserved `bandpass` handling, and the
+  defining inversion property (a chunk ranked #1 in every arm ranks
+  **last** under fringe).
+
+Verified: `cargo test -p edgequake-query --lib` 288/288 pass; `edgequake-api`
+query-path tests (78 lib tests + `spec083_matrix_contracts` with
+`--features postgres`) all pass except one pre-existing, unrelated failure
+(`contract_tasks_pk_documented` — a docs-file-existence check untouched by
+this change). `cargo check --workspace` clean.
 
 ---
 
@@ -235,6 +309,85 @@ whole `prolog-lib/` overlay — no packaging change.
 ### 2d. Tests
 
 Prolog module load test + arg-parse tests alongside the `the_cow` equivalents.
+
+**Tier 2 — done 2026-09-11.** Implemented in `clara-cerebellum` (uncommitted
+locally as of this writing — not yet pushed to the GitLab mirror; do that
+alongside committing). Several corrections surfaced against live source
+while implementing, same pattern as Tier 1's FR-004 correction:
+
+- **§2a (Rust).** `EdgequakeArgs` gained `context_only`, `hl_keywords`,
+  `ll_keywords`, `mix_weights` (a new `MixWeightsArg` struct — **not** in
+  the original §2a list, but required by §2b step 3's spark builder, which
+  always specifies `mix_weights`; a real omission in the original draft),
+  `rrf_k`, `fusion`, and `depth`. **Two real, pre-existing wire-format bugs
+  found and fixed** while wiring this up, confirmed against Edgequake's
+  actual `ListEntitiesQuery`/`ListRelationshipsQuery` structs: (1)
+  `graph_search_entities`/`graph_search_relationships` were sending a
+  `label=`/`limit=` query param that Edgequake's real endpoints don't
+  recognize (the real filter keys are `entity_type`/`relationship_type`,
+  and the real page-size key is `page_size`) — both silently no-op'd
+  server-side (no `deny_unknown_fields`) since these tools were first
+  written; now fixed. (2) `graph_entity_neighborhood` never forwarded a
+  `depth` param at all even though the endpoint supports one natively
+  (server-clamped `[1,3]`) — now threaded through. 10 unit tests, all
+  passing (`cargo test -p clara-toolbox edgequake`).
+- **§2b (Prolog, `the_leannan.pl`).** Implemented close to the draft, with
+  three implementation-time corrections (documented in the file's own
+  module doc comment, same spirit as the Tier 1 FR-004 correction):
+  1. `leannan_neighborhood/3` passes `Hops` straight through as
+     Edgequake's native `depth` param (see the Rust fix above) instead of
+     the draft's "iterate for Hops > 1" — one call does what the draft
+     assumed needed several.
+  2. **`bridge` does not use a `leannan_relationships(+Src,+Tgt,-Rels)`
+     primitive** — confirmed live that Edgequake's `/graph/relationships`
+     list endpoint has no source/target filter at all (only pagination +
+     `relationship_type` — see the Rust fix above and
+     `clara-toolbox/src/tools/edgequake.rs`'s doc comment on `source`/
+     `target` for the full finding). `bridge` instead intersects the
+     1-hop neighborhoods of each pair of seeds in Prolog — entities
+     appearing in both *are* "what joins the query's own entities",
+     without depending on a filter Edgequake doesn't have.
+     `leannan_relationships/2` (label/`relationship_type`-only — the one
+     filter that's real) is still exported for future operators
+     (`relation_hop`), just not used by `bridge`.
+  3. `leannan_and_assert_citations/4` (not `/3`) — the extra `SparkId` arg
+     is needed to key `spark_cites/2` (which spark used which citation),
+     something the_cow.pl's non-spark-scoped `ruminate_and_assert_citations/3`
+     has no reason to track. Also: the actual per-spark Edgequake RAG
+     query reuses `the_cow:ruminate_opts/3` / `ruminate_and_assert_citations/3`
+     directly (their `Opts.put/1` merge already forwards any QueryRequest
+     field — `context_only`, `ll_keywords`, `mode`, `mix_weights`, `rrf_k`,
+     `fusion`) rather than re-implementing that dispatch a second time;
+     only the four graph-walk primitives (which the_cow.pl has no
+     equivalent for) get their own dispatch helper, `leannan_dispatch/2`.
+  `leannan_spark/5` (SparkId added vs. the draft's `/4`, needed for the
+  `spark/3` memo key) and `leannan_sparks/4` implemented as drafted,
+  including the assert-once memoization (mirrors
+  `deliberative_analyst.pl`'s `committee_deadline_for/3` pattern) and the
+  explicit recursion over the profile list.
+- **§2c (auto-load).** Done — `"the_leannan"` added to
+  `environment.rs`'s auto-load list.
+- **§2d (tests).** 5 Prolog integration tests added to
+  `clara-prolog/tests/prolog_integration_tests.rs`: library auto-load,
+  `leannan_profiles/1` structure, and — via a `MockEdgequakeTool` `Tool`
+  registered in `ToolboxManager` (mocking `the_rabbit:clara_evaluate/2`
+  itself doesn't work: it's a genuine `PL_register_foreign` C predicate,
+  not a plain interpreted one like the_rat.pl's mocked predicates, so
+  `abolish`/`assertz` on it silently no-ops — documented on
+  `MockEdgequakeTool`) — `leannan_entities/2` and `leannan_neighborhood/3`
+  dict-field extraction, and `leannan_spark/5`'s memoization (proven via a
+  shared call counter: a second call with the same SparkId does not
+  re-invoke the mocked query). All pass; full `clara-prolog` (25
+  integration + 9 unit) and `clara-toolbox` (58) suites pass; full
+  `cargo build --workspace` clean.
+
+**Not done this pass:** rebuilding/restarting the live `clara-api`
+service to pick up the new binary (§Build & sequencing step 2's "Rebuild
+the clara-api / FieryPit images" — a deploy-affecting action on the live
+Clara stack, deferred to be done deliberately alongside or after Tier 3,
+not mid-Tier-2). The design doc's Tier 2 live-verification step (a
+scratch `/deduce` against a running clara-api) is accordingly still
+outstanding.
 
 ---
 
@@ -430,3 +583,32 @@ divergence, just without `rrf_k` / `fringe`, until Tier 1 ships.
 
 - **§1b** — sanity-check the reflected-rank math and the `min_arms = 2` default.
 [STAN] we'll go with your recommendations
+
+## Review round 2 — resolutions
+
+1. **Graph operators (§2b).** `[STAN]` affirmative — keep `relation_hop` and
+   `contrast` as later work, don't drop them.
+   **→ Resolved.** v1 ships the 3-operator set (`neighbor`, `sibling`,
+   `bridge`) as drafted. `relation_hop` / `contrast` stay explicitly tracked
+   as deferred follow-ups (§2b already documents why each is deferred), not
+   cut from scope.
+
+2. **Persona/operator decoupling (§Tier 3).** `[STAN]` correct.
+   **→ Confirmed.** Fixed rotating impulse voices in `system`, operator
+   intent in the `prompt` body, as drafted.
+
+3. **SPEC-before-code + repo location (§0).** `[STAN]` fork EQ; operate off
+   the local GitLab, push to GitHub as backup.
+   **→ Resolved.** Repo root confirmed as `~/moonpool/tools/edgequake`;
+   spec convention confirmed as `specs/NNN-slug/` (next number **084**).
+   Fork stood up 2026-09-11 — see "Repo fork — done" note under §0 above.
+   GitHub backup mirror deferred until Tier 1 is far enough along to be
+   worth it.
+
+4. **Reflected-rank math + `min_arms` (§1b).** `[STAN]` go with the
+   recommendations.
+   **→ Confirmed.** Reflected-rank RRF as specified in §1b, `min_arms`
+   default 2, ships as drafted — no changes.
+
+**Round 2 closed. Plan fully approved.** Next: write `specs/084-*` (§0),
+then Tier 1 implementation.

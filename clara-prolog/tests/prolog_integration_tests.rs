@@ -5,7 +5,9 @@
 
 use clara_prolog::PrologEnvironment;
 use clara_prolog::register_clara_evaluate;
-use std::sync::Mutex;
+use clara_toolbox::{Tool, ToolError};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 // Tests that abolish and reassert global Prolog predicates must not run
 // concurrently — they share the module database across all engines.
@@ -629,4 +631,243 @@ fn test_reasoned_response_with_context() {
     }
 
     println!("=== reasoned_response_with_context/3 Test PASSED ===");
+}
+
+// ---------------------------------------------------------------------
+// the_leannan.pl (leannan_sidhe divergent retrieval, SPEC-084 Tier 2)
+// ---------------------------------------------------------------------
+
+/// Test that library(the_leannan) is auto-loaded (environment.rs's startup
+/// list) and its exported predicates are visible without an explicit
+/// use_module — the same existence_error(procedure, ...) class the_rat's
+/// addition to that list fixed (see environment.rs's doc comment).
+#[test]
+fn test_the_leannan_library_loads() {
+    println!("=== Testing library(the_leannan) auto-load ===");
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    for pred in [
+        "the_leannan:leannan_profiles/1",
+        "the_leannan:leannan_entities/2",
+        "the_leannan:leannan_neighborhood/3",
+        "the_leannan:leannan_by_label/2",
+        "the_leannan:leannan_relationships/2",
+        "the_leannan:leannan_perturb/4",
+        "the_leannan:leannan_spark/5",
+        "the_leannan:leannan_sparks/4",
+    ] {
+        let goal = format!("current_predicate({pred})");
+        let result = env.query_once(&goal);
+        assert!(result.is_ok(), "{pred} should be visible after auto-load: {:?}", result.err());
+    }
+
+    println!("=== library(the_leannan) auto-load Test PASSED ===");
+}
+
+/// Test the fixed 6-profile list's structure (design doc §2b table) —
+/// pure data, no mocking needed. Catches transcription mistakes (wrong
+/// operator, wrong weight order, wrong fusion mode) directly.
+#[test]
+fn test_leannan_profiles_structure() {
+    println!("=== Testing leannan_profiles/1 structure ===");
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    let result = env
+        .query_with_bindings("the_leannan:leannan_profiles(Profiles), length(Profiles, N)")
+        .expect("leannan_profiles/1 should succeed");
+    println!("    Result: {}", result);
+    assert!(result.contains("N = 6") || result.contains("6"), "expected 6 profiles: {}", result);
+
+    // Spot-check profile 4 (the first `fringe` mode profile, sibling operator).
+    let result = env
+        .query_with_bindings(concat!(
+            "the_leannan:leannan_profiles(Profiles), ",
+            "nth1(4, Profiles, spark(sibling, weights(1.0,1.0,1.0), 200, fringe))"
+        ))
+        .expect("profile 4 should be spark(sibling, weights(1.0,1.0,1.0), 200, fringe)");
+    println!("    Profile 4 match: {}", result);
+
+    // Spot-check profile 6 (the last profile, bridge operator, fringe mode).
+    let result = env
+        .query_with_bindings(concat!(
+            "the_leannan:leannan_profiles(Profiles), ",
+            "nth1(6, Profiles, spark(bridge, weights(1.0,1.0,0.5), 500, fringe))"
+        ))
+        .expect("profile 6 should be spark(bridge, weights(1.0,1.0,0.5), 500, fringe)");
+    println!("    Profile 6 match: {}", result);
+
+    println!("=== leannan_profiles/1 structure Test PASSED ===");
+}
+
+/// A stand-in `edgequake` tool for the_leannan.pl tests. `clara_evaluate/2`
+/// is a genuine `PL_register_foreign` C predicate (see callbacks.rs) —
+/// unlike the_rat.pl's plain interpreted predicates, `abolish`/`assertz`
+/// does not meaningfully override it, so mocking happens one layer down:
+/// swap the "edgequake"-named `Tool` in the global `ToolboxManager`
+/// registry (`ToolboxManager::execute_tool` looks tools up by name — see
+/// manager.rs), which `clara_evaluate/2` dispatches through for real. The
+/// tool returns its raw JSON value un-wrapped; `ToolResponse::success`
+/// adds the `status: success` envelope the_leannan.pl's leannan_dispatch/2
+/// checks for (see tool.rs's `#[serde(flatten)]`).
+struct MockEdgequakeTool {
+    query_calls: Arc<AtomicUsize>,
+    /// Records the last `depth` seen on a `graph_entity_neighborhood` call
+    /// (`None` until one arrives), so a test can assert the caller forwarded
+    /// the value it expected without the mock rejecting calls it doesn't
+    /// care about (this tool is shared across tests with different Hops).
+    last_neighborhood_depth: Arc<Mutex<Option<i64>>>,
+}
+
+impl Tool for MockEdgequakeTool {
+    fn name(&self) -> &str {
+        "edgequake"
+    }
+    fn description(&self) -> &str {
+        "mock edgequake tool for the_leannan.pl tests"
+    }
+    fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        match args.get("operation").and_then(|v| v.as_str()) {
+            Some("graph_search_entities") => Ok(serde_json::json!({
+                "items": [
+                    {"id": "clara", "entity_name": "Clara", "entity_type": "PERSON"},
+                    {"id": "cerebellum", "entity_name": "Cerebellum", "entity_type": "ORGANIZATION"}
+                ]
+            })),
+            Some("graph_entity_neighborhood") => {
+                let depth = args.get("depth").and_then(|v| v.as_i64());
+                *self.last_neighborhood_depth.lock().unwrap() = depth;
+                Ok(serde_json::json!({
+                    "nodes": [
+                        {"id": "cerebellum", "label": "Cerebellum", "entity_type": "ORGANIZATION", "degree": 3}
+                    ],
+                    "edges": [
+                        {"id": "e1", "source": "clara", "target": "cerebellum", "relation_type": "USES", "weight": 1.0}
+                    ]
+                }))
+            }
+            Some("query") => {
+                self.query_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({
+                    "sources": [{"id": "src1", "source_type": "chunk", "score": 0.9, "snippet": "evidence"}]
+                }))
+            }
+            other => Err(ToolError::ExecutionFailed(format!(
+                "mock: unexpected operation {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Test leannan_entities/2's dict-field extraction against a canned
+/// GraphSearchEntities-shaped response (ListEntitiesResponse's real field
+/// names: `items`, each with `id`/`entity_name`/`entity_type` — confirmed
+/// live against Edgequake source, see the_leannan.pl's module doc
+/// comment). Mocks the `edgequake` Tool registration (see
+/// MockEdgequakeTool's doc comment for why clara_evaluate/2 itself can't
+/// be Prolog-level mocked the way the_rat.pl's tests mock ponder_text/2).
+#[test]
+fn test_leannan_entities_via_mock() {
+    let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
+    println!("=== Testing leannan_entities/2 against a mocked edgequake tool ===");
+
+    clara_toolbox::ToolboxManager::init_global();
+    clara_toolbox::ToolboxManager::global().lock().unwrap().register_tool(Arc::new(
+        MockEdgequakeTool {
+            query_calls: Arc::new(AtomicUsize::new(0)),
+            last_neighborhood_depth: Arc::new(Mutex::new(None)),
+        },
+    ));
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    let result = env
+        .query_with_bindings("the_leannan:leannan_entities(clara, Entities)")
+        .expect("leannan_entities/2 should succeed against the mock");
+    println!("    Result: {}", result);
+    assert!(result.contains("clara"), "expected the clara entity id: {}", result);
+    assert!(result.contains("Clara"), "expected the Clara entity_name: {}", result);
+    assert!(result.contains("cerebellum"), "expected the cerebellum entity id: {}", result);
+
+    println!("=== leannan_entities/2 mock Test PASSED ===");
+}
+
+/// Test leannan_neighborhood/3's dict-field extraction against a canned
+/// EntityNeighborhoodResponse-shaped payload (`nodes` with `id`/`label`/
+/// `entity_type` — note `label` here, NOT `entity_name`; a different key
+/// than the search-results shape above for the same presentation-name
+/// concept, per the_leannan.pl's module doc comment) and that Hops is
+/// forwarded as the `depth` argument (checked via MockEdgequakeTool's
+/// `last_neighborhood_depth` after the call).
+#[test]
+fn test_leannan_neighborhood_via_mock() {
+    let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
+    println!("=== Testing leannan_neighborhood/3 against a mocked edgequake tool ===");
+
+    clara_toolbox::ToolboxManager::init_global();
+    let last_neighborhood_depth = Arc::new(Mutex::new(None));
+    clara_toolbox::ToolboxManager::global().lock().unwrap().register_tool(Arc::new(
+        MockEdgequakeTool {
+            query_calls: Arc::new(AtomicUsize::new(0)),
+            last_neighborhood_depth: last_neighborhood_depth.clone(),
+        },
+    ));
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    let result = env
+        .query_with_bindings("the_leannan:leannan_neighborhood(clara, 2, Neighbors)")
+        .expect("leannan_neighborhood/3 should succeed against the mock");
+    println!("    Result: {}", result);
+    assert!(result.contains("cerebellum"), "expected the cerebellum neighbor id: {}", result);
+    assert!(result.contains("Cerebellum"), "expected the Cerebellum label: {}", result);
+    assert_eq!(
+        *last_neighborhood_depth.lock().unwrap(),
+        Some(2),
+        "Hops=2 must be forwarded as the `depth` argument"
+    );
+
+    println!("=== leannan_neighborhood/3 mock Test PASSED ===");
+}
+
+/// End-to-end test of leannan_spark/5 (one profile) against mocked entity
+/// search + neighborhood + query calls, verifying:
+///   - the spark result carries the mocked source,
+///   - the memoization: a second call with the same SparkId does NOT
+///     re-invoke the mocked `query` operation (proven by
+///     MockEdgequakeTool's shared call counter, checked unchanged after
+///     the second call) — the rituals_101.md anti-pattern this memo
+///     exists to prevent.
+#[test]
+fn test_leannan_spark_memoized_against_mock() {
+    let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
+    println!("=== Testing leannan_spark/5 (mocked, checks memoization) ===");
+
+    clara_toolbox::ToolboxManager::init_global();
+    let query_calls = Arc::new(AtomicUsize::new(0));
+    clara_toolbox::ToolboxManager::global()
+        .lock()
+        .unwrap()
+        .register_tool(Arc::new(MockEdgequakeTool {
+            query_calls: query_calls.clone(),
+            last_neighborhood_depth: Arc::new(Mutex::new(None)),
+        }));
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    let profile = "spark(neighbor(1), weights(3.0,1.0,0.2), 60, rrf)";
+    let goal1 = format!("the_leannan:leannan_spark(1, 'what is clara?', {profile}, Spark, _Prov)");
+    let result1 = env.query_with_bindings(&goal1).expect("first leannan_spark/5 call should succeed");
+    println!("    First call: {}", result1);
+    assert!(result1.contains("src1"), "spark result should carry the mocked source: {}", result1);
+    assert_eq!(query_calls.load(Ordering::SeqCst), 1, "expected exactly 1 query call");
+
+    // Second call, same SparkId/Query/Profile — must fast-forward from the
+    // spark/3 memo, NOT re-invoke the mocked query.
+    let result2 = env.query_with_bindings(&goal1).expect("second (memoized) leannan_spark/5 call should succeed");
+    println!("    Second (memoized) call: {}", result2);
+    assert!(result2.contains("src1"), "memoized spark result should still carry the mocked source: {}", result2);
+    assert_eq!(
+        query_calls.load(Ordering::SeqCst),
+        1,
+        "memoized call must NOT re-invoke the query mock (rituals_101.md anti-pattern)"
+    );
+
+    println!("=== leannan_spark/5 memoization Test PASSED ===");
 }
