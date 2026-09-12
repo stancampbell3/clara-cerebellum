@@ -1,13 +1,15 @@
 # leannan_sidhe — divergent retrieval for the Id analyst (planning draft)
 
-> **Status:** approved 2026-09-11, round 2 closed. Repo fork done. SPEC-084
-> signed off 2026-09-11. **All three tiers (Edgequake, `the_leannan.pl`,
-> `id_analyst.pl`) are implemented, tested, and committed** — Tier 1 and
-> Tier 2 additionally live-verified against the real running stack (see
-> the "done" notes under §Tier 1, §2d, and §Tier 3 below). Tier 3's own
-> live end-to-end verification (a real multi-model turn through
-> lildaemon) is the one remaining outstanding step — see §Tier 3's "Not
-> done this pass" note. Round-1 and round-2 `[STAN]` feedback are both
+> **Status: DONE.** approved 2026-09-11, round 2 closed. Repo fork done.
+> SPEC-084 signed off 2026-09-11. **All three tiers (Edgequake,
+> `the_leannan.pl`, `id_analyst.pl`) are implemented, tested, committed,
+> and live-verified end-to-end** against the real running stack — a real
+> query through the `id` ruleset produced 6 genuinely distinct,
+> evidence-grounded impulses with correct citations (see the "done" notes
+> under §Tier 1, §2d, and §Tier 3 below for the full trace, including 3
+> more real bugs found and fixed during that final live pass). No known
+> open work remains on this design; round-1 and round-2 `[STAN]` feedback
+> are both
 > folded in below; see **Review round 1 — resolutions** and **Review
 > round 2 — resolutions** at the bottom for the point-by-point trace.
 
@@ -590,13 +592,60 @@ every leannan mock test). Full `clara-prolog` (28 tests), `clara-toolbox`
 (58), and `lildaemon` (1184 passed / 25 skipped, 1 unrelated pre-existing
 flaky live-Ollama-timeout failure) suites all green.
 
-**Not done this pass:** rebuilding/restarting the live `lildaemon`
-container and running a real end-to-end assistant turn through
-`POST /assistant/sessions/{id}/send` with `ruleset_key=id` (the design
-doc's own verification step 4) — a real 6-spark, 6-model turn is a
-meaningfully more expensive live check than Tier 1/2's, and deploying it
-touches the live Clara stack's actual `id` ruleset. Deferred pending an
-explicit go-ahead, same as Tier 1/2's rebuild/restart was.
+**Live end-to-end verification — done 2026-09-12.** Rebuilt/restarted
+`lildaemon` (and, twice more, `clara-api` — see below) and ran a real turn
+through `POST /assistant/sessions/{id}/send` with `ruleset_key=id`
+against the real `assistant.general` workspace. This surfaced and fixed
+**two more real bugs**, on top of the max_results cap above, before the
+turn actually succeeded:
+
+1. **clara-api was stale.** The first live attempt failed instantly
+   (`existence_error(procedure, leannan_sparks/5)`) — clara-api's baked-in
+   `the_leannan.pl` was still the pre-Tier-3 version (`leannan_sparks/4`);
+   the Tier 2 WorkspaceId-threading addendum landed *after* the last
+   Tier 1/2 rebuild. Rebuilt clara-api to pick it up. (Process note: any
+   `the_leannan.pl`/`the_cow.pl` change requires a clara-api rebuild,
+   since that library is baked into the Rust binary via `clara-prolog`'s
+   build.rs overlay — only `id_analyst.pl` changes are picked up by a
+   lildaemon-only rebuild, since ruleset files are read from the
+   lildaemon image at registration time.)
+2. **A dict-notation leak.** The second attempt ran but a huge, garbled
+   block of raw unevaluated dict terms (`Tag{...}.get(key,default)`) leaked
+   into every impulse's prompt — `source_evidence_line/2` used dict
+   `.get(...)` functional notation, which does **not** goal-expand for a
+   plain ruleset file consulted via `prolog_source_id` (only real
+   `:- module(...)` files loaded via `use_module` get that expansion —
+   confirmed by the fact that `the_leannan.pl`/`the_cow.pl`'s own
+   `.get(...)` calls work fine). `extract_caws_response/2` in the same
+   file already knew this and used `get_dict/3` — `source_evidence_line/2`
+   didn't follow suit. Fixed by switching to `get_dict/3`. Combined with
+   the max_results cap (found in the same debugging pass — an uncapped
+   query was returning 50+ sources per spark), this also explains why
+   that second attempt's real 6-model turn ran ~89s and still failed to
+   converge within its classify cycle budget: correct behavior held up
+   (real Ollama/Groq calls happened, "hohi" and "tabu" responses came
+   back), but prompts were enormous and garbled.
+3. **A genuine arity-mismatch bug**, found on the *third* attempt (with
+   both fixes above deployed): the real 6-model turn now converged in 100
+   cycles with every offer getting a real response — and the top-level
+   `assistant_turn/5` goal *still* came back `known_false`. Root cause:
+   `offer_id_sparks/7`'s **base case was accidentally arity 6** (missing
+   the `Index` argument), making it a different predicate from the arity-7
+   recursive clause. All 6 real `caws_offer`/`caws_await` legs succeeded,
+   but once the recursion reached the empty-list base case, no matching
+   arity-7 clause existed — the whole chain failed right at the finish
+   line despite everything upstream working. Fixed by giving the base
+   case the matching arity.
+
+**Fourth attempt: full success.** `POST /assistant/sessions/{id}/send`
+with `ruleset_key=id` and query "what is a ritual?" produced 6 genuinely
+distinct, evidence-grounded impulses — blunt/associative/provocative/
+lateral/skeptical voices all visibly reacting to different graph-perturbed
+retrieval angles, one gracefully degraded to `(no response)`
+(member-groq-gptoss) proving the per-member degrade path works live too —
+each with a correct, deduped per-impulse citation footnote,
+`citation_count: 42`, `action: chat`. leannan_sidhe is now verified
+working end-to-end for real, not just unit-tested.
 
 ---
 
