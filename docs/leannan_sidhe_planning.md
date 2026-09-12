@@ -1,13 +1,15 @@
 # leannan_sidhe — divergent retrieval for the Id analyst (planning draft)
 
 > **Status:** approved 2026-09-11, round 2 closed. Repo fork done. SPEC-084
-> signed off 2026-09-11. **Tier 1 (Edgequake) and Tier 2 (`the_leannan.pl`)
-> are both implemented, tested, committed, and live-verified against the
-> real running stack** — see the "done" notes under §Tier 1 and §2d
-> below. Tier 3 (`id_analyst.pl`) not started. Round-1 and round-2
-> `[STAN]` feedback are both folded in below; see **Review round 1 —
-> resolutions** and **Review round 2 — resolutions** at the bottom for the
-> point-by-point trace.
+> signed off 2026-09-11. **All three tiers (Edgequake, `the_leannan.pl`,
+> `id_analyst.pl`) are implemented, tested, and committed** — Tier 1 and
+> Tier 2 additionally live-verified against the real running stack (see
+> the "done" notes under §Tier 1, §2d, and §Tier 3 below). Tier 3's own
+> live end-to-end verification (a real multi-model turn through
+> lildaemon) is the one remaining outstanding step — see §Tier 3's "Not
+> done this pass" note. Round-1 and round-2 `[STAN]` feedback are both
+> folded in below; see **Review round 1 — resolutions** and **Review
+> round 2 — resolutions** at the bottom for the point-by-point trace.
 
 ## Context
 
@@ -487,6 +489,114 @@ idempotency cache). Retry cycles skip phase 1 and fast-forward resolved legs.
   deduce result to include `Citations`; assert they propagate to the turn
   result and `touch_cited_documents` is called).
 - `test_assistant_runtime_rulesets.py` already covers registration/syntax load.
+
+**Tier 3 — done 2026-09-12.** Rewrote `id_analyst.pl` per the draft, with
+corrections found while building it — same pattern as every earlier tier
+(FR-004, the Tier 2 addenda):
+
+- **WorkspaceId (new, not in the original draft).** Discovered while
+  wiring this up: `progressive_research.pl`'s `answer_step/9` and
+  `deliberative_analyst.pl`'s `reading_of_reports/4` pass an explicit,
+  dynamically-resolved `WorkspaceId` to `ruminate_opts/3` — the real
+  knowledge lives in a specific Edgequake workspace
+  (`assistant.general`/`e2fd2658-...`), not the tool's static
+  `EDGEQUAKE_DEFAULT_WORKSPACE` env default (confirmed live: that env var
+  deliberately points at a different, empty "Default Workspace" —
+  `clara-cerebellum/docker/.env`). the_leannan.pl's every
+  Edgequake-touching predicate gained a trailing `WorkspaceId` arg
+  (`none` = use the tool default) to make this possible. **However**,
+  `progressive_research.pl`'s own SYNCHRONOUS classify-time Edgequake
+  tier (the one running inside `assistant_turn/5` itself, same execution
+  context id_step/2 runs in) does **not** thread a WorkspaceId either — only
+  the deferred/background tier does, because `assistant_turn/5`'s arity is
+  fixed and shared across every ruleset (runtime.py's `turn()`), so there's
+  nowhere to receive a resolved WorkspaceId synchronously without a
+  platform-wide contract change. `id_step/4` matches this existing
+  precedent and passes `none`, same as progressive_research.pl's
+  synchronous tier — not a leannan_sidhe-specific gap, and threading a
+  cached WorkspaceId into every synchronous ruleset tier is logged as a
+  future platform improvement, out of scope here.
+- **the_leannan.pl gained two more additions** while building the real
+  consumer: `leannan_sparks/5`'s `Sparks` list is now
+  `spark_entry(SparkId, Operator, spark_result(Sources, Sources))` (not a
+  bare `spark_result/2`) so id_analyst.pl doesn't need to re-derive the
+  profile-cycling arithmetic to get each spark's Operator (for its
+  one-line framing) and SparkId (to look up its citations); and
+  `leannan_sparks_/7` now catches a single spark's failure (**confirmed
+  live 2026-09-11: a real Edgequake query can time out** — hit this
+  during the Tier 1/2 live verification) and degrades it to
+  `spark_result([], [])` instead of failing the whole batch, extending
+  id_analyst.pl's own existing "a member that errors degrades to a
+  placeholder" discipline one layer down to the retrieval leg.
+  `leannan_spark_citations/2` also added/exported (accessor over the
+  private `spark_cites/2` fact store, so id_analyst.pl can look up a
+  spark's citations without reaching into the module's internals).
+- **`id_step/2` → `id_step/4`** (not `/3` as drafted): Citations must flow
+  out too, since `assistant_turn/5` needs them for the real
+  Citations/CitationCount bind.
+- **Seat pool decoupled from persona.** `id_seat_pool_all/1` /
+  `id_seat_pool_local/1` now hold Node/Model pairs only;
+  `id_impulse_voice/2` holds the 6 fixed personas (blunt, associative,
+  provocative, contrarian, lateral, skeptical — 2 new relative to the old
+  4-persona set, which conflated "skeptical" and "contrarian" into one
+  voice) indexed independently (`i mod 6`) from both the seat
+  (`i mod pool-size`) and the spark's graph operator (its own one-line
+  `id_operator_framing/2` text in the prompt body) — matches the
+  round-2-confirmed decoupling decision.
+- **Empty-snippet finding (live, 2026-09-11):** this Edgequake
+  deployment's `context_only` sources currently come back with an empty
+  `snippet` field for every citation observed (a data/ingestion
+  characteristic of the current knowledge base — `chunk.content` itself
+  appears to be empty for this document set, not a query-parameter
+  issue). `sources_evidence_block/2` degrades gracefully to a
+  `document_id`-only evidence line rather than feeding a blank string to
+  the impulse voice; richer snippets will flow through automatically once
+  the underlying content is there. Not a leannan_sidhe defect — flagged
+  for whoever owns ingestion.
+- **Citation footnotes**: `render_alternative/2` now appends a
+  `*Sources: doc-id, doc-id*` footnote per impulse, built from
+  `leannan_spark_citations/2` + `the_cow.pl`'s `citation/8` (both
+  auto-loaded, callable unqualified from this plain — non-`:- module`—
+  ruleset file, same as `ruminate_and_assert_citations/3` already is in
+  progressive_research.pl).
+- **`LEANNAN_LOCAL_ONLY=1`** restricts `id_seat_pool/1` to the 2 local
+  seats; **`LEANNAN_SPARK_COUNT`** overrides the default spark count of
+  6 — both read via `getenv/2` inside `id_step`/`assistant_turn`, matching
+  the `committee_deadline_for/3`-style env-reading convention elsewhere.
+- **`runtime.py`: no changes needed**, confirmed rather than assumed —
+  `turn()`'s generic `action != "knowledge_query"` branch already reads
+  `Citations`/`CitationCount` off the classify result and calls
+  `touch_cited_documents` for *any* ruleset binding `chat`, id_analyst.pl
+  included; `_ensure_deliberation_seats()` already gets called for
+  `ruleset_key == "id"` before classify; `_RULESETS` already registers
+  `id_analyst.pl`.
+
+**Verification.** Live syntax check: submitted the full rewritten
+`id_analyst.pl` as `prolog_clauses` to the running clara-api's `/deduce`
+and confirmed `current_predicate(id_step/4)`,
+`current_predicate(assistant_turn/5)`, `current_predicate(id_seat_pool/1)`
+all hold — clean consult, no warnings in the container logs. Tests: 2 new
+`lildaemon/tests/test_assistant_runtime_turn.py` cases (citation
+propagation for the `id` ruleset specifically — the generic path was
+already covered by an existing test); 2 new/updated
+`clara-prolog/tests/prolog_integration_tests.rs` cases for
+`leannan_sparks/5`'s `spark_entry` wrapper and its per-spark degrade
+behavior (which surfaced and fixed a genuine test-isolation bug along the
+way — `clara-toolbox`'s process-wide `evaluate_cache` was serving a stale
+cached response across two different mock-based tests with
+coincidentally-identical derived request payloads; fixed by calling the
+already-documented `clara_toolbox::clear_evaluate_cache()` at the start of
+every leannan mock test). Full `clara-prolog` (28 tests), `clara-toolbox`
+(58), and `lildaemon` (1184 passed / 25 skipped, 1 unrelated pre-existing
+flaky live-Ollama-timeout failure) suites all green.
+
+**Not done this pass:** rebuilding/restarting the live `lildaemon`
+container and running a real end-to-end assistant turn through
+`POST /assistant/sessions/{id}/send` with `ruleset_key=id` (the design
+doc's own verification step 4) — a real 6-spark, 6-model turn is a
+meaningfully more expensive live check than Tier 1/2's, and deploying it
+touches the live Clara stack's actual `id` ruleset. Deferred pending an
+explicit go-ahead, same as Tier 1/2's rebuild/restart was.
 
 ---
 

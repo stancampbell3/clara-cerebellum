@@ -648,13 +648,13 @@ fn test_the_leannan_library_loads() {
 
     for pred in [
         "the_leannan:leannan_profiles/1",
-        "the_leannan:leannan_entities/2",
-        "the_leannan:leannan_neighborhood/3",
-        "the_leannan:leannan_by_label/2",
-        "the_leannan:leannan_relationships/2",
-        "the_leannan:leannan_perturb/4",
-        "the_leannan:leannan_spark/5",
-        "the_leannan:leannan_sparks/4",
+        "the_leannan:leannan_entities/3",
+        "the_leannan:leannan_neighborhood/4",
+        "the_leannan:leannan_by_label/3",
+        "the_leannan:leannan_relationships/3",
+        "the_leannan:leannan_perturb/5",
+        "the_leannan:leannan_spark/6",
+        "the_leannan:leannan_sparks/5",
     ] {
         let goal = format!("current_predicate({pred})");
         let result = env.query_once(&goal);
@@ -716,6 +716,10 @@ struct MockEdgequakeTool {
     /// the value it expected without the mock rejecting calls it doesn't
     /// care about (this tool is shared across tests with different Hops).
     last_neighborhood_depth: Arc<Mutex<Option<i64>>>,
+    /// When true, every `query` operation fails — used to prove
+    /// leannan_sparks/5 degrades a single spark's failure instead of
+    /// failing the whole batch (Tier 3 addendum #2).
+    fail_query: bool,
 }
 
 impl Tool for MockEdgequakeTool {
@@ -747,6 +751,11 @@ impl Tool for MockEdgequakeTool {
             }
             Some("query") => {
                 self.query_calls.fetch_add(1, Ordering::SeqCst);
+                if self.fail_query {
+                    return Err(ToolError::ExecutionFailed(
+                        "mock: simulated query failure".to_string(),
+                    ));
+                }
                 Ok(serde_json::json!({
                     "sources": [{"id": "src1", "source_type": "chunk", "score": 0.9, "snippet": "evidence"}]
                 }))
@@ -758,7 +767,7 @@ impl Tool for MockEdgequakeTool {
     }
 }
 
-/// Test leannan_entities/2's dict-field extraction against a canned
+/// Test leannan_entities/3's dict-field extraction against a canned
 /// GraphSearchEntities-shaped response (ListEntitiesResponse's real field
 /// names: `items`, each with `id`/`entity_name`/`entity_type` — confirmed
 /// live against Edgequake source, see the_leannan.pl's module doc
@@ -768,29 +777,31 @@ impl Tool for MockEdgequakeTool {
 #[test]
 fn test_leannan_entities_via_mock() {
     let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
-    println!("=== Testing leannan_entities/2 against a mocked edgequake tool ===");
+    println!("=== Testing leannan_entities/3 against a mocked edgequake tool ===");
 
     clara_toolbox::ToolboxManager::init_global();
+    clara_toolbox::clear_evaluate_cache(); // see leannan_sparks degrade test for why
     clara_toolbox::ToolboxManager::global().lock().unwrap().register_tool(Arc::new(
         MockEdgequakeTool {
             query_calls: Arc::new(AtomicUsize::new(0)),
             last_neighborhood_depth: Arc::new(Mutex::new(None)),
+            fail_query: false,
         },
     ));
     let env = PrologEnvironment::new().expect("Failed to create environment");
 
     let result = env
-        .query_with_bindings("the_leannan:leannan_entities(clara, Entities)")
-        .expect("leannan_entities/2 should succeed against the mock");
+        .query_with_bindings("the_leannan:leannan_entities(clara, none, Entities)")
+        .expect("leannan_entities/3 should succeed against the mock");
     println!("    Result: {}", result);
     assert!(result.contains("clara"), "expected the clara entity id: {}", result);
     assert!(result.contains("Clara"), "expected the Clara entity_name: {}", result);
     assert!(result.contains("cerebellum"), "expected the cerebellum entity id: {}", result);
 
-    println!("=== leannan_entities/2 mock Test PASSED ===");
+    println!("=== leannan_entities/3 mock Test PASSED ===");
 }
 
-/// Test leannan_neighborhood/3's dict-field extraction against a canned
+/// Test leannan_neighborhood/4's dict-field extraction against a canned
 /// EntityNeighborhoodResponse-shaped payload (`nodes` with `id`/`label`/
 /// `entity_type` — note `label` here, NOT `entity_name`; a different key
 /// than the search-results shape above for the same presentation-name
@@ -800,21 +811,23 @@ fn test_leannan_entities_via_mock() {
 #[test]
 fn test_leannan_neighborhood_via_mock() {
     let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
-    println!("=== Testing leannan_neighborhood/3 against a mocked edgequake tool ===");
+    println!("=== Testing leannan_neighborhood/4 against a mocked edgequake tool ===");
 
     clara_toolbox::ToolboxManager::init_global();
+    clara_toolbox::clear_evaluate_cache(); // see leannan_sparks degrade test for why
     let last_neighborhood_depth = Arc::new(Mutex::new(None));
     clara_toolbox::ToolboxManager::global().lock().unwrap().register_tool(Arc::new(
         MockEdgequakeTool {
             query_calls: Arc::new(AtomicUsize::new(0)),
             last_neighborhood_depth: last_neighborhood_depth.clone(),
+            fail_query: false,
         },
     ));
     let env = PrologEnvironment::new().expect("Failed to create environment");
 
     let result = env
-        .query_with_bindings("the_leannan:leannan_neighborhood(clara, 2, Neighbors)")
-        .expect("leannan_neighborhood/3 should succeed against the mock");
+        .query_with_bindings("the_leannan:leannan_neighborhood(clara, 2, none, Neighbors)")
+        .expect("leannan_neighborhood/4 should succeed against the mock");
     println!("    Result: {}", result);
     assert!(result.contains("cerebellum"), "expected the cerebellum neighbor id: {}", result);
     assert!(result.contains("Cerebellum"), "expected the Cerebellum label: {}", result);
@@ -824,10 +837,10 @@ fn test_leannan_neighborhood_via_mock() {
         "Hops=2 must be forwarded as the `depth` argument"
     );
 
-    println!("=== leannan_neighborhood/3 mock Test PASSED ===");
+    println!("=== leannan_neighborhood/4 mock Test PASSED ===");
 }
 
-/// End-to-end test of leannan_spark/5 (one profile) against mocked entity
+/// End-to-end test of leannan_spark/6 (one profile) against mocked entity
 /// search + neighborhood + query calls, verifying:
 ///   - the spark result carries the mocked source,
 ///   - the memoization: a second call with the same SparkId does NOT
@@ -838,9 +851,10 @@ fn test_leannan_neighborhood_via_mock() {
 #[test]
 fn test_leannan_spark_memoized_against_mock() {
     let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
-    println!("=== Testing leannan_spark/5 (mocked, checks memoization) ===");
+    println!("=== Testing leannan_spark/6 (mocked, checks memoization) ===");
 
     clara_toolbox::ToolboxManager::init_global();
+    clara_toolbox::clear_evaluate_cache(); // see leannan_sparks degrade test for why
     let query_calls = Arc::new(AtomicUsize::new(0));
     clara_toolbox::ToolboxManager::global()
         .lock()
@@ -848,19 +862,21 @@ fn test_leannan_spark_memoized_against_mock() {
         .register_tool(Arc::new(MockEdgequakeTool {
             query_calls: query_calls.clone(),
             last_neighborhood_depth: Arc::new(Mutex::new(None)),
+        fail_query: false,
         }));
     let env = PrologEnvironment::new().expect("Failed to create environment");
 
     let profile = "spark(neighbor(1), weights(3.0,1.0,0.2), 60, rrf)";
-    let goal1 = format!("the_leannan:leannan_spark(1, 'what is clara?', {profile}, Spark, _Prov)");
-    let result1 = env.query_with_bindings(&goal1).expect("first leannan_spark/5 call should succeed");
+    let goal1 =
+        format!("the_leannan:leannan_spark(1, 'what is clara?', {profile}, none, Spark, _Prov)");
+    let result1 = env.query_with_bindings(&goal1).expect("first leannan_spark/6 call should succeed");
     println!("    First call: {}", result1);
     assert!(result1.contains("src1"), "spark result should carry the mocked source: {}", result1);
     assert_eq!(query_calls.load(Ordering::SeqCst), 1, "expected exactly 1 query call");
 
-    // Second call, same SparkId/Query/Profile — must fast-forward from the
-    // spark/3 memo, NOT re-invoke the mocked query.
-    let result2 = env.query_with_bindings(&goal1).expect("second (memoized) leannan_spark/5 call should succeed");
+    // Second call, same SparkId/Query/Profile/WorkspaceId — must fast-forward
+    // from the spark/3 memo, NOT re-invoke the mocked query.
+    let result2 = env.query_with_bindings(&goal1).expect("second (memoized) leannan_spark/6 call should succeed");
     println!("    Second (memoized) call: {}", result2);
     assert!(result2.contains("src1"), "memoized spark result should still carry the mocked source: {}", result2);
     assert_eq!(
@@ -869,5 +885,48 @@ fn test_leannan_spark_memoized_against_mock() {
         "memoized call must NOT re-invoke the query mock (rituals_101.md anti-pattern)"
     );
 
-    println!("=== leannan_spark/5 memoization Test PASSED ===");
+    println!("=== leannan_spark/6 memoization Test PASSED ===");
+}
+
+/// Test that leannan_sparks/5 degrades a single failing spark to an empty
+/// `spark_result([], [])` instead of failing the whole batch (Tier 3
+/// addendum #2 — a real Edgequake query timeout was observed live
+/// 2026-09-11; id_analyst.pl's whole turn must not die because one of
+/// several sparks' retrieval failed).
+#[test]
+fn test_leannan_sparks_degrades_failed_spark() {
+    let _guard = PROLOG_MOCK_LOCK.lock().unwrap();
+    println!("=== Testing leannan_sparks/5 degrades a failing spark ===");
+
+    clara_toolbox::ToolboxManager::init_global();
+    clara_toolbox::ToolboxManager::global().lock().unwrap().register_tool(Arc::new(
+        MockEdgequakeTool {
+            query_calls: Arc::new(AtomicUsize::new(0)),
+            last_neighborhood_depth: Arc::new(Mutex::new(None)),
+            fail_query: true,
+        },
+    ));
+    // clara-toolbox's clara_evaluate/2 result cache is process-wide, keyed
+    // by request JSON only (ffi.rs's `evaluate_cache`) — NOT scoped to
+    // this test's freshly-registered mock. Without clearing it, an
+    // earlier test's *coincidentally identical* request (this test's
+    // profile 1's derived ll_keywords/weights/rrf_k happen to match that
+    // test's ad hoc profile exactly) would return a stale cached success
+    // instead of ever reaching this test's fail_query mock — confirmed
+    // live 2026-09-11 (`ffi.rs`'s own `clear_evaluate_cache` doc comment:
+    // "Call before a test run to ensure a cold cache").
+    clara_toolbox::clear_evaluate_cache();
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+
+    let result = env
+        .query_with_bindings(
+            "the_leannan:leannan_sparks('what is clara?', 2, none, Sparks, AllCitations), \
+             length(Sparks, NS), length(AllCitations, NC)",
+        )
+        .expect("leannan_sparks/5 must still succeed when every query op fails");
+    println!("    Result: {}", result);
+    assert!(result.contains("\"NS\":2"), "expected 2 spark_entry results despite the failures: {}", result);
+    assert!(result.contains("\"NC\":0"), "expected zero citations when every query failed: {}", result);
+
+    println!("=== leannan_sparks/5 degrade Test PASSED ===");
 }

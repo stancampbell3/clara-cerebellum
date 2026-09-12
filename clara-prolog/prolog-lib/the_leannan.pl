@@ -13,8 +13,8 @@
 %% ranked well. Six fixed profiles, no LLM/think loop anywhere in the
 %% perturbation itself — the divergence is entirely graph-mechanical.
 %%
-%% Structure: graph-walk primitives (leannan_entities/2,
-%% leannan_neighborhood/3, leannan_by_label/2) are thin wrappers over the
+%% Structure: graph-walk primitives (leannan_entities/3,
+%% leannan_neighborhood/4, leannan_by_label/3) are thin wrappers over the
 %% `edgequake` tool's graph endpoints, dispatched the same way the_cow.pl
 %% dispatches — {tool, arguments} dict -> the_rabbit:clara_evaluate/2 ->
 %% atom_json_dict/3 -> status check — via the private helper
@@ -29,7 +29,7 @@
 %%
 %% Implementation-time corrections against live source (see the design doc
 %% for the full trace, mirrors the SPEC-084 FR-004 correction there):
-%%   - leannan_neighborhood/3 passes Hops straight through as Edgequake's
+%%   - leannan_neighborhood/4 passes Hops straight through as Edgequake's
 %%     native `depth` query param (server-clamped [1,3]) instead of the
 %%     draft's "iterate for Hops > 1" — the endpoint already does
 %%     multi-hop in one call, so manual iteration would just be redundant
@@ -43,7 +43,7 @@
 %%     doc comment for the full finding). `bridge` instead intersects the
 %%     1-hop neighborhoods of each pair of seeds — entities appearing in
 %%     both are exactly "what joins the query's own entities", without
-%%     depending on a filter Edgequake doesn't have. `leannan_relationships/2`
+%%     depending on a filter Edgequake doesn't have. `leannan_relationships/3`
 %%     (label-only — the one filter that IS real) is still exported for
 %%     completeness/future operators, just not used by `bridge`.
 %%   - leannan_and_assert_citations/4 (SparkId, Query, Opts, Result) has
@@ -53,14 +53,50 @@
 %%     the_cow.pl's non-spark-scoped ruminate_and_assert_citations/3 has
 %%     no reason to track.
 
+%% Tier 3 addendum (2026-09-11): every predicate that reaches Edgequake
+%% gained a trailing WorkspaceId argument (`none` = no override, use the
+%% edgequake tool's configured default). Missing from the original Tier 2
+%% draft/commit — found while wiring up id_analyst.pl (Tier 3): the
+%% assistant's real knowledge lives in a specific Edgequake workspace
+%% resolved dynamically by lildaemon's runtime.py
+%% (`get_workspace_id`/`_WORKSPACE_SLUG`, the same workspace
+%% progressive_research.pl's `answer_step/9` and deliberative_analyst.pl's
+%% `reading_of_reports/4` already query via `ruminate_opts(Query,
+%% _{workspace: WorkspaceId, ...}, Result)`), not the tool's static
+%% env-configured default (`EDGEQUAKE_DEFAULT_WORKSPACE`) — confirmed live
+%% 2026-09-11 that those differ (the default points at an empty
+%% "Default Workspace"). Without this, every leannan_sidhe spark would
+%% silently search the wrong, empty workspace.
+
+%% Tier 3 addendum #2 (2026-09-11, while writing id_analyst.pl itself):
+%%   - leannan_sparks/5's `Sparks` list is now `spark_entry(SparkId,
+%%     Operator, spark_result(Sources, Sources))`, not a bare
+%%     `spark_result/2` — id_analyst.pl needs each spark's Operator (for
+%%     its one-line operator framing) and SparkId (to look up its
+%%     citations for a footnote) without re-deriving the profile-cycling
+%%     arithmetic (`(I-1) mod NumProfiles`) a second time outside this
+%%     module.
+%%   - leannan_spark_citations/2 exported: spark_cites/2 itself stays a
+%%     private thread_local fact (encapsulation — same reasoning
+%%     the_cow.pl's ruminate_citations/2 accessor exists instead of
+%%     exporting raw response dicts).
+%%   - leannan_sparks_/7 now catches a single spark's failure (confirmed
+%%     live 2026-09-11: a real Edgequake request can time out) and
+%%     degrades that spark to `spark_result([], [])` instead of failing
+%%     the whole batch — matches id_analyst.pl's own existing "a member
+%%     that errors degrades to a placeholder, never sinks the batch"
+%%     discipline, now applied to the retrieval leg too, not just the
+%%     caws_offer/caws_await leg.
+
 :- module(the_leannan, [
-    leannan_entities/2,
-    leannan_neighborhood/3,
-    leannan_by_label/2,
-    leannan_relationships/2,
-    leannan_perturb/4,
-    leannan_spark/5,
-    leannan_sparks/4,
+    leannan_entities/3,
+    leannan_neighborhood/4,
+    leannan_by_label/3,
+    leannan_relationships/3,
+    leannan_perturb/5,
+    leannan_spark/6,
+    leannan_sparks/5,
+    leannan_spark_citations/2,
     leannan_and_assert_citations/4,
     leannan_profiles/1
 ]).
@@ -113,6 +149,14 @@ leannan_dispatch(Json, Dict) :-
         true
     ).
 
+%% leannan_workspace_opt/3 - merge a `workspace` key into an arguments/opts
+%%   dict when WorkspaceId is bound to a real id; `none` leaves the dict
+%%   untouched so the edgequake tool falls back to its own configured
+%%   default (see module doc comment's Tier 3 addendum).
+leannan_workspace_opt(none, Args, Args) :- !.
+leannan_workspace_opt(WorkspaceId, Args, Args2) :-
+    Args2 = Args.put(workspace, WorkspaceId).
+
 %% entity(Id, Name, Type) - canonical entity shape this module normalizes
 %%   every graph endpoint's response into, so callers never need to know
 %%   whether an entity came from a search result (`entity_name`) or a
@@ -120,7 +164,7 @@ leannan_dispatch(Json, Dict) :-
 %%   names for the same presentation-name concept. Id is the graph
 %%   identity (stable across endpoints, what path-based lookups expect);
 %%   Type is Edgequake's `entity_type` (the plan's "label" — see
-%%   leannan_by_label/2's doc comment for why).
+%%   leannan_by_label/3's doc comment for why).
 entity_from_search_item(Item, entity(Id, Name, Type)) :-
     Id = Item.get(id, ''),
     Name = Item.get(entity_name, Id),
@@ -131,63 +175,65 @@ entity_from_neighborhood_node(Node, entity(Id, Name, Type)) :-
     Name = Node.get(label, Id),
     Type = Node.get(entity_type, none).
 
-%% leannan_entities(+Query, -Entities) - entities whose name/description
-%%   match Query (substring search), as entity/3. The seed set for
-%%   leannan_perturb/4. Edgequake's entity search is a plain substring
-%%   match, not NER — a multi-word natural-language Query may match few or
-%%   no entities; leannan_spark/5 falls back to the raw query text as its
-%%   sole ll_keyword when Seeds comes back empty, so this degrading
-%%   gracefully (not failing the whole spark) is by design.
-leannan_entities(Query, Entities) :-
-    dict_to_json(_{tool: edgequake,
-                   arguments: _{operation: graph_search_entities,
-                                search: Query}}, Json),
+%% leannan_entities(+Query, +WorkspaceId, -Entities) - entities whose
+%%   name/description match Query (substring search), as entity/3. The
+%%   seed set for leannan_perturb/5. Edgequake's entity search is a plain
+%%   substring match, not NER — a multi-word natural-language Query may
+%%   match few or no entities; leannan_spark/6 falls back to the raw
+%%   query text as its sole ll_keyword when Seeds comes back empty, so
+%%   this degrading gracefully (not failing the whole spark) is by
+%%   design. WorkspaceId: see leannan_workspace_opt/3.
+leannan_entities(Query, WorkspaceId, Entities) :-
+    leannan_workspace_opt(WorkspaceId,
+        _{operation: graph_search_entities, search: Query}, Args),
+    dict_to_json(_{tool: edgequake, arguments: Args}, Json),
     leannan_dispatch(Json, Dict),
     Items = Dict.get(items, []),
     maplist(entity_from_search_item, Items, Entities).
 
-%% leannan_neighborhood(+EntityId, +Hops, -Neighbors) - the Hops-hop
-%%   neighborhood of one entity, as entity/3. Hops is Edgequake's native
-%%   `depth` param (server-clamped to [1,3] — see module doc comment for
-%%   why this replaced the draft's manual multi-call iteration).
-leannan_neighborhood(EntityId, Hops, Neighbors) :-
-    dict_to_json(_{tool: edgequake,
-                   arguments: _{operation: graph_entity_neighborhood,
-                                entity_name: EntityId,
-                                depth: Hops}}, Json),
+%% leannan_neighborhood(+EntityId, +Hops, +WorkspaceId, -Neighbors) - the
+%%   Hops-hop neighborhood of one entity, as entity/3. Hops is Edgequake's
+%%   native `depth` param (server-clamped to [1,3] — see module doc
+%%   comment for why this replaced the draft's manual multi-call
+%%   iteration).
+leannan_neighborhood(EntityId, Hops, WorkspaceId, Neighbors) :-
+    leannan_workspace_opt(WorkspaceId,
+        _{operation: graph_entity_neighborhood, entity_name: EntityId,
+          depth: Hops}, Args),
+    dict_to_json(_{tool: edgequake, arguments: Args}, Json),
     leannan_dispatch(Json, Dict),
     Nodes = Dict.get(nodes, []),
     maplist(entity_from_neighborhood_node, Nodes, Neighbors).
 
-%% leannan_by_label(+Label, -Entities) - entities of a given Edgequake
-%%   `entity_type` (e.g. "PERSON", "ORGANIZATION"). Named `by_label` (not
-%%   `by_type`) to match the design doc's operator-table terminology,
-%%   where "label" means "the seed's category", i.e. Edgequake's
-%%   `entity_type` field — not `NeighborhoodNode.label` (a *different*
-%%   field on a *different* endpoint that means "presentation name").
-%%   Confirmed live 2026-09-11 that the wire query param is `entity_type`;
-%%   see clara-toolbox/src/tools/edgequake.rs's fix.
-leannan_by_label(Label, Entities) :-
-    dict_to_json(_{tool: edgequake,
-                   arguments: _{operation: graph_search_entities,
-                                label: Label}}, Json),
+%% leannan_by_label(+Label, +WorkspaceId, -Entities) - entities of a given
+%%   Edgequake `entity_type` (e.g. "PERSON", "ORGANIZATION"). Named
+%%   `by_label` (not `by_type`) to match the design doc's operator-table
+%%   terminology, where "label" means "the seed's category", i.e.
+%%   Edgequake's `entity_type` field — not `NeighborhoodNode.label` (a
+%%   *different* field on a *different* endpoint that means "presentation
+%%   name"). Confirmed live 2026-09-11 that the wire query param is
+%%   `entity_type`; see clara-toolbox/src/tools/edgequake.rs's fix.
+leannan_by_label(Label, WorkspaceId, Entities) :-
+    leannan_workspace_opt(WorkspaceId,
+        _{operation: graph_search_entities, label: Label}, Args),
+    dict_to_json(_{tool: edgequake, arguments: Args}, Json),
     leannan_dispatch(Json, Dict),
     Items = Dict.get(items, []),
     maplist(entity_from_search_item, Items, Entities).
 
-%% leannan_relationships(+Label, -Rels) - relationships of a given
-%%   Edgequake `relationship_type`, as raw dicts (source/target/
+%% leannan_relationships(+Label, +WorkspaceId, -Rels) - relationships of a
+%%   given Edgequake `relationship_type`, as raw dicts (source/target/
 %%   relationship_type/weight per NeighborhoodEdge/RelationshipSummary
 %%   shape). Label-only: Edgequake's `/graph/relationships` list endpoint
 %%   has no source/target filter (confirmed live 2026-09-11 — see module
-%%   doc comment), so this predicate does not claim arity/2 filtering it
-%%   cannot perform. Not used by any v1 divergence operator (`bridge` uses
+%%   doc comment), so this predicate does not claim filtering it cannot
+%%   perform. Not used by any v1 divergence operator (`bridge` uses
 %%   neighborhood intersection instead); exported for future operators
 %%   (`relation_hop`, deferred) that only need type filtering.
-leannan_relationships(Label, Rels) :-
-    dict_to_json(_{tool: edgequake,
-                   arguments: _{operation: graph_search_relationships,
-                                label: Label}}, Json),
+leannan_relationships(Label, WorkspaceId, Rels) :-
+    leannan_workspace_opt(WorkspaceId,
+        _{operation: graph_search_relationships, label: Label}, Args),
+    dict_to_json(_{tool: edgequake, arguments: Args}, Json),
     leannan_dispatch(Json, Dict),
     Rels = Dict.get(items, []).
 
@@ -215,26 +261,27 @@ dedup_entities_([entity(Id, Name, Type) | T], Seen, Out) :-
        dedup_entities_(T, [Id | Seen], Out1)
     ).
 
-%% leannan_perturb(+Seeds, +Operator, -Perturbed, -Prov) - the graph walk
-%%   itself. Perturbed is a deduped entity/3 list; Prov records the
-%%   operator and seeds for the audit trail (Tier 2 design doc §2b).
-leannan_perturb(Seeds, neighbor(Hops), Perturbed, Prov) :-
+%% leannan_perturb(+Seeds, +Operator, +WorkspaceId, -Perturbed, -Prov) -
+%%   the graph walk itself. Perturbed is a deduped entity/3 list; Prov
+%%   records the operator and seeds for the audit trail (Tier 2 design
+%%   doc §2b).
+leannan_perturb(Seeds, neighbor(Hops), WorkspaceId, Perturbed, Prov) :-
     !,
     findall(N,
             ( member(entity(Id, _, _), Seeds),
-              leannan_neighborhood(Id, Hops, Ns),
+              leannan_neighborhood(Id, Hops, WorkspaceId, Ns),
               member(N, Ns)
             ),
             All),
     dedup_entities(All, Perturbed),
     Prov = perturb(neighbor(Hops), Seeds, Perturbed).
-leannan_perturb(Seeds, sibling, Perturbed, Prov) :-
+leannan_perturb(Seeds, sibling, WorkspaceId, Perturbed, Prov) :-
     !,
     seed_ids(Seeds, SeedIds),
     findall(N,
             ( member(entity(_, _, Type), Seeds),
               Type \== none,
-              leannan_by_label(Type, Ns),
+              leannan_by_label(Type, WorkspaceId, Ns),
               member(N, Ns),
               N = entity(NId, _, _),
               \+ memberchk(NId, SeedIds)
@@ -242,7 +289,7 @@ leannan_perturb(Seeds, sibling, Perturbed, Prov) :-
             All),
     dedup_entities(All, Perturbed),
     Prov = perturb(sibling, Seeds, Perturbed).
-leannan_perturb(Seeds, bridge, Perturbed, Prov) :-
+leannan_perturb(Seeds, bridge, WorkspaceId, Perturbed, Prov) :-
     Seeds = [_, _ | _],
     !,
     seed_ids(Seeds, SeedIds),
@@ -250,8 +297,8 @@ leannan_perturb(Seeds, bridge, Perturbed, Prov) :-
             ( select(entity(IdA, _, _), Seeds, Rest),
               member(entity(IdB, _, _), Rest),
               IdA @< IdB,
-              leannan_neighborhood(IdA, 1, NA),
-              leannan_neighborhood(IdB, 1, NB),
+              leannan_neighborhood(IdA, 1, WorkspaceId, NA),
+              leannan_neighborhood(IdB, 1, WorkspaceId, NB),
               member(B, NA),
               B = entity(BId, _, _),
               \+ memberchk(BId, SeedIds),
@@ -260,10 +307,10 @@ leannan_perturb(Seeds, bridge, Perturbed, Prov) :-
             All),
     dedup_entities(All, Perturbed),
     Prov = perturb(bridge, Seeds, Perturbed).
-leannan_perturb(Seeds, bridge, Perturbed, Prov) :-
+leannan_perturb(Seeds, bridge, WorkspaceId, Perturbed, Prov) :-
     % Fewer than 2 seeds: degrades to neighbor(1) per the design doc.
     !,
-    leannan_perturb(Seeds, neighbor(1), Perturbed, NProv),
+    leannan_perturb(Seeds, neighbor(1), WorkspaceId, Perturbed, NProv),
     Prov = perturb(bridge_degraded(neighbor(1)), Seeds, Perturbed, NProv).
 
 %% ---------------------------------------------------------------------
@@ -285,45 +332,54 @@ leannan_and_assert_citations(SparkId, Query, Opts, Result) :-
         )
     ).
 
-%% leannan_spark(+SparkId, +Query, +Profile, -Spark, -Prov) is det.
-%%   Profile = spark(Operator, weights(Local,Global,Naive), K, Fusion).
-%%   Builds ONE divergent retrieval spark: seed entities -> graph
+%% leannan_spark_citations(+SparkId, -CitationIds) - the citation ids a
+%%   given spark actually used. Accessor over spark_cites/2 (kept private
+%%   to this module) so a caller (id_analyst.pl) can build a per-impulse
+%%   footnote without importing this module's internal fact store.
+leannan_spark_citations(SparkId, CitationIds) :-
+    findall(Id, spark_cites(SparkId, Id), CitationIds).
+
+%% leannan_spark(+SparkId, +Query, +Profile, +WorkspaceId, -Spark, -Prov)
+%%   is det. Profile = spark(Operator, weights(Local,Global,Naive), K,
+%%   Fusion). Builds ONE divergent retrieval spark: seed entities -> graph
 %%   perturbation -> Edgequake Mix-mode context_only query (skewed
 %%   weights/rrf_k/fusion) -> citations asserted. Spark =
 %%   spark_result(Sources, Sources) — context_only mode's only payload is
 %%   `sources`, serving both as the evidence text for id_analyst.pl's
 %%   impulse prompt and as the citation list; there is nothing else to
-%%   split it into.
+%%   split it into. WorkspaceId: see leannan_workspace_opt/3 — threaded
+%%   into both the seed/perturbation graph calls and the query's Opts.
 %%
-%%   Memoized: asserts spark(SparkId, Query-Profile, Spark-Prov) on first
-%%   computation. id_step/3's classify deduction is multi-cycle (it awaits
-%%   caws legs — pending means the goal clause fails and is retried next
-%%   engine cycle); without this memo a bare Edgequake call here would
-%%   re-run on every retry (rituals_101.md's ponder_text anti-pattern).
-%%   Same assert-once-with-cut pattern as deliberative_analyst.pl's
-%%   committee_deadline_for/3.
-leannan_spark(SparkId, Query, Profile, Spark, Prov) :-
-    spark(SparkId, Query-Profile, Spark-Prov), !.
-leannan_spark(SparkId, Query, Profile, Spark, Prov) :-
+%%   Memoized: asserts spark(SparkId, Query-Profile-WorkspaceId,
+%%   Spark-Prov) on first computation. id_step/3's classify deduction is
+%%   multi-cycle (it awaits caws legs — pending means the goal clause
+%%   fails and is retried next engine cycle); without this memo a bare
+%%   Edgequake call here would re-run on every retry (rituals_101.md's
+%%   ponder_text anti-pattern). Same assert-once-with-cut pattern as
+%%   deliberative_analyst.pl's committee_deadline_for/3.
+leannan_spark(SparkId, Query, Profile, WorkspaceId, Spark, Prov) :-
+    spark(SparkId, Query-Profile-WorkspaceId, Spark-Prov), !.
+leannan_spark(SparkId, Query, Profile, WorkspaceId, Spark, Prov) :-
     Profile = spark(Operator, weights(WL, WG, WN), K, Fusion),
-    leannan_entities(Query, Seeds),
-    leannan_perturb(Seeds, Operator, Perturbed, PProv),
+    leannan_entities(Query, WorkspaceId, Seeds),
+    leannan_perturb(Seeds, Operator, WorkspaceId, Perturbed, PProv),
     entity_names(Perturbed, Keywords0),
     ( Keywords0 == []
-    -> Keywords = [Query]  % no recognized seeds — see leannan_entities/2 doc
+    -> Keywords = [Query]  % no recognized seeds — see leannan_entities/3 doc
     ;  Keywords = Keywords0
     ),
-    Opts = _{context_only: true, mode: mix, ll_keywords: Keywords,
-             mix_weights: _{local: WL, global: WG, naive: WN},
-             rrf_k: K, fusion: Fusion},
+    Opts0 = _{context_only: true, mode: mix, ll_keywords: Keywords,
+              mix_weights: _{local: WL, global: WG, naive: WN},
+              rrf_k: K, fusion: Fusion},
+    leannan_workspace_opt(WorkspaceId, Opts0, Opts),
     leannan_and_assert_citations(SparkId, Query, Opts, Result),
     ruminate_citations(Result, Sources),
     Spark = spark_result(Sources, Sources),
     Prov = spark_prov(SparkId, Operator, Seeds, PProv, weights(WL, WG, WN), K, Fusion),
-    assertz(spark(SparkId, Query-Profile, Spark-Prov)).
+    assertz(spark(SparkId, Query-Profile-WorkspaceId, Spark-Prov)).
 
 %% leannan_profiles/1 - the fixed, deterministic set of 6 divergence
-%%   profiles (design doc §2b table). Order matters: leannan_sparks/4
+%%   profiles (design doc §2b table). Order matters: leannan_sparks/5
 %%   takes the first N or cycles through all 6.
 leannan_profiles([
     spark(neighbor(2), weights(3.0, 1.0, 0.2), 60,  rrf),
@@ -334,29 +390,43 @@ leannan_profiles([
     spark(bridge,      weights(1.0, 1.0, 0.5), 500, fringe)
 ]).
 
-%% leannan_sparks(+Query, +Count, -Sparks, -AllCitations) - fan out Count
-%%   sparks, cycling leannan_profiles/1 when Count > 6. Explicit recursion
-%%   over the profile list (codebase style, not maplist — matches the
-%%   design doc's instruction for this specific loop). AllCitations is the
-%%   union of every spark's citations, deduped by id.
-leannan_sparks(Query, Count, Sparks, AllCitations) :-
+%% leannan_sparks(+Query, +Count, +WorkspaceId, -Sparks, -AllCitations) -
+%%   fan out Count sparks, cycling leannan_profiles/1 when Count > 6.
+%%   Explicit recursion over the profile list (codebase style, not
+%%   maplist — matches the design doc's instruction for this specific
+%%   loop). Sparks is a list of `spark_entry(SparkId, Operator,
+%%   spark_result(Sources, Sources))` — Operator and SparkId included so
+%%   a caller doesn't need to re-derive the profile-cycling arithmetic
+%%   itself (Tier 3 addendum #2). AllCitations is the union of every
+%%   spark's citations, deduped by id. WorkspaceId: see
+%%   leannan_workspace_opt/3.
+leannan_sparks(Query, Count, WorkspaceId, Sparks, AllCitations) :-
     Count > 0,
     leannan_profiles(Profiles),
     length(Profiles, NumProfiles),
-    leannan_sparks_(1, Count, Query, Profiles, NumProfiles, Sparks),
-    findall(Sources, member(spark_result(Sources, _), Sparks), CitationLists),
+    leannan_sparks_(1, Count, Query, WorkspaceId, Profiles, NumProfiles, Sparks),
+    findall(Sources, member(spark_entry(_, _, spark_result(Sources, _)), Sparks), CitationLists),
     append(CitationLists, AllCitationsDup),
     dedup_citations(AllCitationsDup, AllCitations).
 
-leannan_sparks_(I, Count, _Query, _Profiles, _NumProfiles, []) :-
+leannan_sparks_(I, Count, _Query, _WorkspaceId, _Profiles, _NumProfiles, []) :-
     I > Count, !.
-leannan_sparks_(I, Count, Query, Profiles, NumProfiles, [Spark | Rest]) :-
+leannan_sparks_(I, Count, Query, WorkspaceId, Profiles, NumProfiles,
+                [spark_entry(I, Operator, Spark) | Rest]) :-
     I =< Count,
     ProfileIdx is ((I - 1) mod NumProfiles) + 1,
     nth1(ProfileIdx, Profiles, Profile),
-    leannan_spark(I, Query, Profile, Spark, _Prov),
+    Profile = spark(Operator, _, _, _),
+    % Degrade a single spark's failure (e.g. a real Edgequake request
+    % timeout, confirmed live 2026-09-11) to an empty result instead of
+    % failing the whole batch — same discipline id_analyst.pl's own
+    % caws_offer/caws_await leg already applies per-member.
+    ( catch(leannan_spark(I, Query, Profile, WorkspaceId, Spark0, _Prov), _SparkErr, fail)
+    -> Spark = Spark0
+    ;  Spark = spark_result([], [])
+    ),
     I1 is I + 1,
-    leannan_sparks_(I1, Count, Query, Profiles, NumProfiles, Rest).
+    leannan_sparks_(I1, Count, Query, WorkspaceId, Profiles, NumProfiles, Rest).
 
 %% dedup_citations/2 - dedup a list of Edgequake source dicts by `.id`,
 %%   first occurrence wins.
