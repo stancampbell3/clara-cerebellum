@@ -357,6 +357,16 @@ leannan_spark_citations(SparkId, CitationIds) :-
 %%   Edgequake call here would re-run on every retry (rituals_101.md's
 %%   ponder_text anti-pattern). Same assert-once-with-cut pattern as
 %%   deliberative_analyst.pl's committee_deadline_for/3.
+%%
+%%   max_results capped (leannan_spark_max_results/1): confirmed live
+%%   2026-09-12 that an uncapped Mix-mode query against a populated
+%%   workspace can return 50+ sources for a single spark — every one of
+%%   them rendered into id_analyst.pl's prompt body, ballooning it far
+%%   past what a "keep it to a few sentences" impulse persona needs and
+%%   contributing to a real end-to-end turn failing to converge within
+%%   its classify cycle budget.
+leannan_spark_max_results(8).
+
 leannan_spark(SparkId, Query, Profile, WorkspaceId, Spark, Prov) :-
     spark(SparkId, Query-Profile-WorkspaceId, Spark-Prov), !.
 leannan_spark(SparkId, Query, Profile, WorkspaceId, Spark, Prov) :-
@@ -368,9 +378,10 @@ leannan_spark(SparkId, Query, Profile, WorkspaceId, Spark, Prov) :-
     -> Keywords = [Query]  % no recognized seeds — see leannan_entities/3 doc
     ;  Keywords = Keywords0
     ),
+    leannan_spark_max_results(MaxResults),
     Opts0 = _{context_only: true, mode: mix, ll_keywords: Keywords,
               mix_weights: _{local: WL, global: WG, naive: WN},
-              rrf_k: K, fusion: Fusion},
+              rrf_k: K, fusion: Fusion, max_results: MaxResults},
     leannan_workspace_opt(WorkspaceId, Opts0, Opts),
     leannan_and_assert_citations(SparkId, Query, Opts, Result),
     ruminate_citations(Result, Sources),
