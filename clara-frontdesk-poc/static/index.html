@@ -170,6 +170,43 @@
   }
   .bubble.research-update::before { background: #7a6a2a; }
 
+  /* ── In-progress indicator strip ─────────────────────────────────────── */
+  /* Persistent (sessionStorage-backed, survives a reload) per-request
+     chips for background work still running — distinct from the
+     disposable .thinking pulse above, which only covers this turn's own
+     synchronous classify/ack round trip. */
+
+  #in-progress-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.4rem 1rem 0;
+  }
+  #in-progress-strip[hidden] { display: none; }
+
+  .in-progress-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.25rem 0.65rem;
+    font-size: 0.72rem;
+    color: var(--ash);
+  }
+  .in-progress-chip .icon { animation: pulse 1.2s infinite; }
+  .in-progress-chip .q {
+    max-width: 220px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--bone);
+  }
+  .in-progress-chip.kind-brainstorm { border-color: #7a5a2a; }
+  .in-progress-chip.kind-deliberation { border-color: #2a5a7a; }
+  .in-progress-chip.kind-research { border-color: var(--border); }
+
   /* ── Messages container — holds Minos bg + scrollable messages ──────── */
 
   #messages-container {
@@ -718,6 +755,8 @@
   <div id="messages"></div>
 </div>
 
+<div id="in-progress-strip" hidden></div>
+
 <footer>
   <textarea id="input" rows="1" placeholder="State your business…" disabled autocomplete="off"></textarea>
   <span id="send-hint">Ctrl+Enter to send</span>
@@ -745,9 +784,10 @@
   const researchBell  = document.getElementById('research-bell');
   const researchCount = document.getElementById('research-badge-count');
   const researchPanel = document.getElementById('research-panel');
+  const inProgressStrip = document.getElementById('in-progress-strip');
 
   let ws;
-  let pendingResearch = []; // [{query, reply, citation_count}], undelivered alerts
+  let pendingResearch = loadPendingResearch(); // [{request_id, kind, query, reply, citation_count}], undelivered alerts
   let thinkingEl       = null;
   let agentName        = 'Clara';
   let currentMinosState = 'rest';
@@ -923,6 +963,9 @@
         appendBubble('agent', data.text, agentName);
         setStatus('active');
         setMinosImage(pickMinosState(data.status, data.text));
+        if (ASYNC_ACTIONS[data.action_taken]) {
+          addInProgressPlaceholder(data.action_taken, lastSentText);
+        }
       } else if (data.type === 'terminal') {
         setStatus(data.status);
         disableInput();
@@ -938,6 +981,8 @@
         appendNote(`Switched to the "${labelFor(data.ruleset_key)}" ruleset.`);
       } else if (data.type === 'research_update') {
         addPendingResearch(data);
+      } else if (data.type === 'research_status') {
+        upsertInProgressFromServer(data);
       }
     };
 
@@ -965,6 +1010,8 @@
     input.style.height = `${input.scrollHeight}px`;
   }
 
+  let lastSentText = '';
+
   function send() {
     const text = input.value.trim();
     if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -972,6 +1019,7 @@
     input.value = '';
     autoGrowInput();
     showThinking();
+    lastSentText = text;
     ws.send(JSON.stringify({ type: 'chat', text }));
   }
 
@@ -1003,15 +1051,43 @@
 
   // ── Research-update notification queue ──────────────────────────────────────
   //
-  // A deferred_query reply already answered the question (a qualified
-  // "best answer so far"); this is the FOLLOW-UP once background research
-  // finishes. Deliberately NOT auto-injected into the live transcript —
-  // arriving mid-conversation would interrupt whatever the visitor is
-  // doing. It waits in this queue until they open it.
+  // A deferred_query/deliberate/brainstorm reply already answered the
+  // question (an immediate ack, or a qualified "best answer so far"); this
+  // is the FOLLOW-UP once the background work finishes. Deliberately NOT
+  // auto-injected into the live transcript — arriving mid-conversation
+  // would interrupt whatever the visitor is doing. It waits in this queue
+  // until they open it.
+  //
+  // Persisted to sessionStorage (2026-09-13, id_ritual_of_rituals_planning.md
+  // Part 2) so a reload doesn't lose a result: the server now sends a
+  // 'ready' item on every tick until explicitly acked (see ws.rs), and
+  // this client acks as soon as the item is written here — i.e. durability
+  // comes first, viewing (the click-to-open bell) is a separate, later
+  // step, same as it always was.
+
+  function loadPendingResearch() {
+    try {
+      return JSON.parse(sessionStorage.getItem('clara_pending_research') || '[]');
+    } catch { return []; }
+  }
+
+  function savePendingResearch() {
+    try {
+      sessionStorage.setItem('clara_pending_research', JSON.stringify(pendingResearch));
+    } catch { /* private window / storage disabled — in-memory only, best effort */ }
+  }
 
   function addPendingResearch(item) {
+    // The server resends a 'ready' item on every tick until acked — dedupe
+    // by request_id rather than accumulating duplicates.
+    if (item.request_id && pendingResearch.some(p => p.request_id === item.request_id)) return;
     pendingResearch.push(item);
+    savePendingResearch();
     renderResearchQueue();
+    resolveInProgress(item.request_id, item.query);
+    if (item.request_id && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'research_ack', request_id: item.request_id }));
+    }
   }
 
   function renderResearchQueue() {
@@ -1047,6 +1123,7 @@
     const item = pendingResearch[idx];
     if (!item) return;
     pendingResearch.splice(idx, 1);
+    savePendingResearch();
     researchPanel.hidden = true;
     renderResearchQueue();
     appendBubble('agent', item.reply || '(no answer)', agentName, 'research-update');
@@ -1055,6 +1132,116 @@
   researchBell.addEventListener('click', () => {
     researchPanel.hidden = !researchPanel.hidden;
   });
+
+  // ── In-progress indicator ────────────────────────────────────────────────
+  //
+  // Persistent (sessionStorage-backed) chips for background work still
+  // running — deferred_query/deliberate/brainstorm turns. Distinct from
+  // the disposable .thinking pulse (showThinking/removeThinking), which
+  // only spans this turn's own synchronous classify+ack round trip; this
+  // spans the background deduction that continues after that ack, which
+  // is now the common case for every "id" ruleset turn (always-on
+  // brainstorm rollout).
+  //
+  // Keyed by request_id once known (from a research_status/research_update
+  // frame). Before that — the moment a chat reply's own action_taken names
+  // an async action — there is no request_id yet, so a placeholder keyed
+  // by "q:<query text>" stands in; it's upgraded (deleted) once a real
+  // request_id for that same query shows up, so only one chip is ever
+  // shown for a given turn.
+
+  // A stale entry can only happen if the browser was closed for the ENTIRE
+  // lifetime of a background request (never saw its research_update, so
+  // never acked, AND the row later failed server-side instead of staying
+  // 'ready' forever) — the actor's own gone-row detection (ws.rs) can't
+  // catch this because a fresh WS connection starts with no memory of
+  // what a PRIOR connection was tracking. Rare; a wall-clock TTL prune on
+  // load is a simple, sufficient backstop rather than a real protocol fix.
+  const IN_PROGRESS_STALE_MS = 30 * 60 * 1000;
+
+  let inProgress = loadInProgress(); // key -> {key, kind, query, status, request_id, startedAt}
+
+  function loadInProgress() {
+    try {
+      const loaded = JSON.parse(sessionStorage.getItem('clara_in_progress') || '{}');
+      const now = Date.now();
+      for (const key of Object.keys(loaded)) {
+        if (now - (loaded[key].startedAt || 0) > IN_PROGRESS_STALE_MS) delete loaded[key];
+      }
+      return loaded;
+    } catch { return {}; }
+  }
+
+  function saveInProgress() {
+    try {
+      sessionStorage.setItem('clara_in_progress', JSON.stringify(inProgress));
+    } catch { /* best effort */ }
+  }
+
+  const ASYNC_ACTIONS = { deferred_query: true, deliberate: true, brainstorm: true };
+
+  const ASYNC_ACTION_LABELS = {
+    deferred_query: 'Researching',
+    deliberate: 'Deliberating',
+    brainstorm: 'Sparking impulses',
+  };
+
+  function addInProgressPlaceholder(actionTaken, query) {
+    const key = `q:${query}`;
+    inProgress[key] = { key, kind: actionTaken, query, status: 'starting', startedAt: Date.now() };
+    saveInProgress();
+    renderInProgress();
+  }
+
+  function upsertInProgressFromServer(item) {
+    // Drop any not-yet-upgraded placeholder for this same query — the
+    // real request_id-keyed entry below replaces it.
+    const placeholderKey = `q:${item.query}`;
+    const startedAt = (inProgress[placeholderKey] && inProgress[placeholderKey].startedAt)
+      || (inProgress[item.request_id] && inProgress[item.request_id].startedAt)
+      || Date.now();
+    if (inProgress[placeholderKey]) delete inProgress[placeholderKey];
+
+    if (item.status === 'failed') {
+      delete inProgress[item.request_id];
+    } else {
+      inProgress[item.request_id] = {
+        key: item.request_id, kind: item.kind, query: item.query,
+        status: item.status, request_id: item.request_id, startedAt,
+      };
+    }
+    saveInProgress();
+    renderInProgress();
+  }
+
+  function resolveInProgress(requestId, query) {
+    if (requestId && inProgress[requestId]) delete inProgress[requestId];
+    if (query && inProgress[`q:${query}`]) delete inProgress[`q:${query}`];
+    saveInProgress();
+    renderInProgress();
+  }
+
+  function renderInProgress() {
+    const entries = Object.values(inProgress);
+    inProgressStrip.hidden = entries.length === 0;
+    inProgressStrip.innerHTML = '';
+    entries.forEach(entry => {
+      const chip = document.createElement('div');
+      chip.className = `in-progress-chip kind-${entry.kind || 'research'}`;
+      const icon = document.createElement('span');
+      icon.className = 'icon';
+      icon.textContent = '⏳';
+      const label = document.createElement('span');
+      label.textContent = ASYNC_ACTION_LABELS[entry.kind] || 'Working';
+      const q = document.createElement('span');
+      q.className = 'q';
+      q.textContent = entry.query;
+      chip.appendChild(icon);
+      chip.appendChild(label);
+      chip.appendChild(q);
+      inProgressStrip.appendChild(chip);
+    });
+  }
 
   // ── Message rendering: fenced code blocks + inline code ─────────────────────
   //
@@ -1291,7 +1478,13 @@
         throw new Error(body.error || `login failed (${resp.status})`);
       }
       const { token } = await resp.json();
-      sessionStorage.removeItem('clara_session_id'); // fresh login, fresh session
+      // Fresh login, fresh session — also drop any research state left
+      // over from whatever session used this tab before.
+      sessionStorage.removeItem('clara_session_id');
+      sessionStorage.removeItem('clara_pending_research');
+      sessionStorage.removeItem('clara_in_progress');
+      pendingResearch = [];
+      inProgress = {};
       sessionStorage.setItem('clara_token', token);
       sessionStorage.setItem('clara_username', username);
       loginScreen.classList.add('hidden');
@@ -1307,6 +1500,13 @@
     const username = loginUsername.value.trim();
     if (username) doLogin(username);
   });
+
+  // Restore any persisted pending-research/in-progress state immediately —
+  // before the WS even connects — so a reload shows the visitor what was
+  // already there rather than a blank strip/bell until the next 5s tick
+  // reconciles with the server.
+  renderResearchQueue();
+  renderInProgress();
 
   // A per-tab token already in sessionStorage (e.g. a same-tab reload)
   // skips straight to the chat UI — a brand-new tab has no sessionStorage

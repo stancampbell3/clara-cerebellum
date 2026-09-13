@@ -96,6 +96,7 @@
     leannan_perturb/5,
     leannan_spark/6,
     leannan_sparks/5,
+    leannan_sparks/6,
     leannan_spark_citations/2,
     leannan_and_assert_citations/4,
     leannan_profiles/1
@@ -410,22 +411,46 @@ leannan_profiles([
 %%   a caller doesn't need to re-derive the profile-cycling arithmetic
 %%   itself (Tier 3 addendum #2). AllCitations is the union of every
 %%   spark's citations, deduped by id. WorkspaceId: see
-%%   leannan_workspace_opt/3.
+%%   leannan_workspace_opt/3. Wraps leannan_sparks/6 with StartId=1.
 leannan_sparks(Query, Count, WorkspaceId, Sparks, AllCitations) :-
+    leannan_sparks(Query, Count, 1, WorkspaceId, Sparks, AllCitations).
+
+%% leannan_sparks(+Query, +Count, +StartId, +WorkspaceId, -Sparks,
+%%   -AllCitations) - like leannan_sparks/5, but SparkIds start at StartId
+%%   instead of 1 (still Count of them: StartId..StartId+Count-1). Added
+%%   for id_analyst.pl's brainstorm Round 2 (id_ritual_of_rituals_planning.md):
+%%   leannan_spark/6 memoizes by (SparkId, Query-Profile-WorkspaceId), so
+%%   reusing Round 1's SparkIds for a post-committee-referral Round 2 would
+%%   silently serve stale, pre-crawl cached results instead of re-querying
+%%   the now-enriched graph. Profile cycling still starts at profile 1 for
+%%   StartId (i.e. cycling is by position-within-this-call, not by SparkId
+%%   value) — Round 2 gets its own fresh pass over all 6 profiles, exactly
+%%   like Round 1 did, just under different SparkIds.
+leannan_sparks(Query, Count, StartId, WorkspaceId, Sparks, AllCitations) :-
     Count > 0,
     leannan_profiles(Profiles),
     length(Profiles, NumProfiles),
-    leannan_sparks_(1, Count, Query, WorkspaceId, Profiles, NumProfiles, Sparks),
+    EndId is StartId + Count - 1,
+    leannan_sparks_(StartId, EndId, Query, WorkspaceId, Profiles, NumProfiles, Sparks),
     findall(Sources, member(spark_entry(_, _, spark_result(Sources, _)), Sparks), CitationLists),
     append(CitationLists, AllCitationsDup),
     dedup_citations(AllCitationsDup, AllCitations).
 
-leannan_sparks_(I, Count, _Query, _WorkspaceId, _Profiles, _NumProfiles, []) :-
-    I > Count, !.
-leannan_sparks_(I, Count, Query, WorkspaceId, Profiles, NumProfiles,
-                [spark_entry(I, Operator, Spark) | Rest]) :-
-    I =< Count,
-    ProfileIdx is ((I - 1) mod NumProfiles) + 1,
+leannan_sparks_(StartId, EndId, Query, WorkspaceId, Profiles, NumProfiles, Sparks) :-
+    leannan_sparks__(StartId, StartId, EndId, Query, WorkspaceId, Profiles, NumProfiles, Sparks).
+
+% leannan_sparks__/8 carries both I (the SparkId, used for memoization
+% keying and citation footnoting) and Pos (I's position within THIS call,
+% 1-based, used for profile cycling) separately — so a Round-2 call with
+% StartId > 1 still cycles the profile list starting at profile 1, the
+% same as Round 1 did, rather than picking up wherever SparkId's own
+% arithmetic would land.
+leannan_sparks__(I, _Pos, EndId, _Query, _WorkspaceId, _Profiles, _NumProfiles, []) :-
+    I > EndId, !.
+leannan_sparks__(I, Pos, EndId, Query, WorkspaceId, Profiles, NumProfiles,
+                 [spark_entry(I, Operator, Spark) | Rest]) :-
+    I =< EndId,
+    ProfileIdx is ((Pos - 1) mod NumProfiles) + 1,
     nth1(ProfileIdx, Profiles, Profile),
     Profile = spark(Operator, _, _, _),
     % Degrade a single spark's failure (e.g. a real Edgequake request
@@ -437,7 +462,8 @@ leannan_sparks_(I, Count, Query, WorkspaceId, Profiles, NumProfiles,
     ;  Spark = spark_result([], [])
     ),
     I1 is I + 1,
-    leannan_sparks_(I1, Count, Query, WorkspaceId, Profiles, NumProfiles, Rest).
+    Pos1 is Pos + 1,
+    leannan_sparks__(I1, Pos1, EndId, Query, WorkspaceId, Profiles, NumProfiles, Rest).
 
 %% dedup_citations/2 - dedup a list of Edgequake source dicts by `.id`,
 %%   first occurrence wins.

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,8 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::assistant_client::{
-    create_session, list_pending_research, list_rulesets, send, set_session_ruleset,
-    PendingResearchInfo, RulesetInfo, SendResponse,
+    ack_pending_research, create_session, list_pending_research, list_rulesets, send,
+    set_session_ruleset, PendingResearchInfo, RulesetInfo, SendResponse,
 };
 use crate::state::AppState;
 
@@ -39,6 +40,12 @@ pub struct WsQuery {
 enum IncomingMsg {
     Chat { text: String },
     SetRuleset { ruleset_key: String },
+    /// Sent by the client once it has durably persisted a delivered
+    /// `research_update` result (sessionStorage) — see
+    /// id_ritual_of_rituals_planning.md Part 2.2/2.3. Only once this
+    /// arrives does the server call POST .../ack, closing the delivery-
+    /// loss window a plain read-marks-delivered GET used to leave open.
+    ResearchAck { request_id: String },
 }
 
 // ─── Internal actor messages ───────────────────────────────────────────────
@@ -85,6 +92,26 @@ pub struct FrontDeskActor {
     /// From the WS query string, if the browser remembered a prior
     /// session — consumed once in started(), then cleared.
     resume_session_id: Option<String>,
+    /// Last-known state per still-outstanding request_id (researching/
+    /// answering) — PENDING_RESEARCH_TICK polls every 5s but a
+    /// research_status frame should only go out on an actual state
+    /// change, not every tick. Also lets a later tick detect a row that
+    /// silently DISAPPEARED from the outstanding set (server marked it
+    /// 'failed', e.g. a clara-api restart wiping its deduction — see
+    /// research_queue.py's DisRitualNotFound handling) and announce that
+    /// as a synthesized "failed" research_status frame, so the client can
+    /// retire its in-progress chip instead of it being stuck forever — a
+    /// normal completion always passes through 'ready' first (handled
+    /// separately below), so anything that vanishes without ever being
+    /// 'ready' is exactly the failure case.
+    pending_status: HashMap<String, TrackedResearch>,
+}
+
+#[derive(Clone)]
+struct TrackedResearch {
+    kind: String,
+    query: String,
+    status: String,
 }
 
 impl FrontDeskActor {
@@ -94,6 +121,7 @@ impl FrontDeskActor {
             state,
             token,
             resume_session_id,
+            pending_status: HashMap::new(),
         }
     }
 }
@@ -172,6 +200,9 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
                     IncomingMsg::Chat { text } => self.handle_chat(text, ctx),
                     IncomingMsg::SetRuleset { ruleset_key } => {
                         self.handle_set_ruleset(ruleset_key, ctx)
+                    }
+                    IncomingMsg::ResearchAck { request_id } => {
+                        self.handle_research_ack(request_id, ctx)
                     }
                 }
             }
@@ -252,6 +283,32 @@ impl FrontDeskActor {
             addr.do_send(RulesetSetResult { outcome });
         });
     }
+
+    /// Fire-and-forget ack: the client has already durably persisted the
+    /// result (sessionStorage) by the time this arrives, so there is
+    /// nothing to send back to it either way — a failed ack just means
+    /// the server-side row stays 'ready' and gets acked again on a later
+    /// retry (POST .../ack is idempotent), not a user-visible problem.
+    fn handle_research_ack(&mut self, request_id: String, _ctx: &mut ws::WebsocketContext<Self>) {
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        self.pending_status.remove(&request_id);
+
+        let http: Client = self.state.http.clone();
+        let base_url = self.state.fiery_pit_url.clone();
+        let token = self.token.clone();
+
+        actix::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                ack_pending_research(&http, &base_url, &token, &session_id, &request_id)
+            })
+            .await;
+            if let Ok(Err(e)) = result {
+                log::warn!("pending-research ack failed (will retry on next ack attempt): {}", e);
+            }
+        });
+    }
 }
 
 // ─── Message handlers — update state, send WS frames ──────────────────────────
@@ -296,16 +353,91 @@ impl Handler<PendingResearchTick> for FrontDeskActor {
     fn handle(&mut self, tick: PendingResearchTick, ctx: &mut Self::Context) {
         match tick.outcome {
             Ok(items) => {
+                let mut seen = std::collections::HashSet::new();
                 for item in items {
-                    ctx.text(
-                        json!({
-                            "type": "research_update",
-                            "query": item.query,
-                            "reply": item.reply,
-                            "citation_count": item.citation_count,
-                        })
-                        .to_string(),
+                    seen.insert(item.request_id.clone());
+
+                    if item.status == "ready" {
+                        // A 'ready' row is delivered every tick until the
+                        // client acks it (see handle_research_ack) — the
+                        // GET is now a safe, repeatable peek (2026-09-13),
+                        // not a drain, so re-sending here is the correct
+                        // "at least once until acked" behavior, not a
+                        // duplicate-delivery bug. The client is
+                        // responsible for de-duping by request_id if a
+                        // tick lands again before its own ack round trip
+                        // completes.
+                        ctx.text(
+                            json!({
+                                "type": "research_update",
+                                "request_id": item.request_id,
+                                "kind": item.kind,
+                                "query": item.query,
+                                "reply": item.reply,
+                                "citation_count": item.citation_count,
+                            })
+                            .to_string(),
+                        );
+                        self.pending_status.remove(&item.request_id);
+                        continue;
+                    }
+
+                    // Still running (researching/answering) — only push a
+                    // research_status frame on an actual state change, not
+                    // every 5s tick, so the in-progress indicator doesn't
+                    // thrash.
+                    let changed = self
+                        .pending_status
+                        .get(&item.request_id)
+                        .map(|prev| prev.status != item.status)
+                        .unwrap_or(true);
+                    if changed {
+                        ctx.text(
+                            json!({
+                                "type": "research_status",
+                                "request_id": item.request_id,
+                                "kind": item.kind,
+                                "query": item.query,
+                                "status": item.status,
+                            })
+                            .to_string(),
+                        );
+                    }
+                    self.pending_status.insert(
+                        item.request_id.clone(),
+                        TrackedResearch {
+                            kind: item.kind,
+                            query: item.query,
+                            status: item.status,
+                        },
                     );
+                }
+
+                // Anything tracked from a prior tick but absent from this
+                // one (and not just resolved via 'ready' above, already
+                // removed) vanished from the outstanding set without ever
+                // completing — synthesize a "failed" status so the client
+                // can retire its in-progress chip instead of it sticking
+                // around forever.
+                let gone: Vec<String> = self
+                    .pending_status
+                    .keys()
+                    .filter(|k| !seen.contains(*k))
+                    .cloned()
+                    .collect();
+                for request_id in gone {
+                    if let Some(tracked) = self.pending_status.remove(&request_id) {
+                        ctx.text(
+                            json!({
+                                "type": "research_status",
+                                "request_id": request_id,
+                                "kind": tracked.kind,
+                                "query": tracked.query,
+                                "status": "failed",
+                            })
+                            .to_string(),
+                        );
+                    }
                 }
             }
             Err(e) => {

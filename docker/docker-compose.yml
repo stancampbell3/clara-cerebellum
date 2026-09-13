@@ -102,6 +102,17 @@ services:
       - EDGEQUAKE_DEFAULT_WORKSPACE=${EDGEQUAKE_DEFAULT_WORKSPACE:-}
       # Dagda model (fasttext) supporting the "classify" tool
       - DAGDA_MODEL_PATH=${DAGDA_MODEL_PATH:-/etc/clara/models/dagda-0.2.bin}
+      # id_analyst.pl's leannan_sidhe brainstorm tuning
+      # (id_ritual_of_rituals_planning.md). These MUST live here, on
+      # clara-api, not on lildaemon — the Prolog engine that evaluates
+      # id_analyst.pl's getenv/2 calls (id_spark_count/1,
+      # id_committee_threshold/1, id_seat_pool/1) is embedded in clara-api
+      # (the Dis domain); lildaemon only submits goals to it over REST, it
+      # never runs the ruleset itself. Confirmed live 2026-09-13: setting
+      # these on lildaemon alone had zero effect on ruleset behavior.
+      - LEANNAN_SPARK_COUNT=${LEANNAN_SPARK_COUNT:-6}
+      - LEANNAN_LOCAL_ONLY=${LEANNAN_LOCAL_ONLY:-}
+      - LEANNAN_COMMITTEE_THRESHOLD=${LEANNAN_COMMITTEE_THRESHOLD:-3}
     depends_on:
       kafka:
         condition: service_healthy

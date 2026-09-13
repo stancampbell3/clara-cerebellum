@@ -146,10 +146,33 @@ pub struct PendingResearchInfo {
     pub reply: Option<String>,
     #[serde(default)]
     pub citation_count: u32,
+    /// "research" (deferred_query) | "deliberation" | "brainstorm" — was
+    /// silently dropped here before 2026-09-13 (the backend already
+    /// returned it), leaving the client with no way to style/label
+    /// different background-work kinds differently.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// "researching" | "answering" | "ready" | "delivered" | "failed" —
+    /// new 2026-09-13 (id_ritual_of_rituals_planning.md Part 2): the GET
+    /// endpoint now returns non-terminal rows too (a safe, repeatable
+    /// peek — see router.py's list_pending_research docstring), so the
+    /// client can render an in-progress indicator, not just delivered
+    /// results.
+    pub status: String,
 }
 
-/// GET /assistant/sessions/{id}/pending-research — ready deferred_query
-/// background-research results (drains and marks them delivered).
+fn default_kind() -> String {
+    "research".to_string()
+}
+
+/// GET /assistant/sessions/{id}/pending-research — every outstanding
+/// background turn for this session (researching/answering/ready),
+/// WITHOUT marking anything delivered. Safe to call repeatedly — see
+/// ack_pending_research below for the step that actually retires a
+/// 'ready' row. Renamed in spirit (not in name, to keep this a minimal
+/// diff) from a destructive drain to a non-destructive peek 2026-09-13 —
+/// see router.py's list_pending_research docstring for the full
+/// rationale (a real delivery-loss window this fixes).
 pub fn list_pending_research(
     http: &Client,
     base_url: &str,
@@ -168,4 +191,32 @@ pub fn list_pending_research(
         )));
     }
     Ok(resp.json()?)
+}
+
+/// POST /assistant/sessions/{id}/pending-research/{request_id}/ack —
+/// acknowledge one 'ready' row as delivered. Called only once the client
+/// has durably persisted the result (see ws.rs's ResearchAck handling) —
+/// this is the step that closes the delivery-loss window a plain GET used
+/// to leave open by marking delivered on read instead of on ack.
+pub fn ack_pending_research(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    session_id: &str,
+    request_id: &str,
+) -> Result<(), AssistantError> {
+    let resp = http
+        .post(format!(
+            "{base_url}/assistant/sessions/{session_id}/pending-research/{request_id}/ack"
+        ))
+        .bearer_auth(token)
+        .send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(AssistantError::Api(format!(
+            "ack_pending_research failed ({status}): {body}"
+        )));
+    }
+    Ok(())
 }
