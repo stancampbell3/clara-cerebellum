@@ -10,7 +10,9 @@
 %% skewed arm weights, a varied `rrf_k`, and — for half the profiles — the
 %% new `fringe` fusion mode (SPEC-084), which rewards chunks present across
 %% arms but ranked poorly in each ("fringe consensus") instead of chunks
-%% ranked well. Six fixed profiles, no LLM/think loop anywhere in the
+%% ranked well. Six profiles cycling two pools (4 "likely"/precision-rrf, 2
+%% "lateral"/fringe — see leannan_profiles/1's doc comment for the
+%% majority-likely rebalance addendum), no LLM/think loop anywhere in the
 %% perturbation itself — the divergence is entirely graph-mechanical.
 %%
 %% Structure: graph-walk primitives (leannan_entities/3,
@@ -239,8 +241,17 @@ leannan_relationships(Label, WorkspaceId, Rels) :-
     Rels = Dict.get(items, []).
 
 %% ---------------------------------------------------------------------
-%% Divergence operators (v1: neighbor/1, sibling, bridge — relation_hop
-%% and contrast deferred, tracked in the design doc, not dropped)
+%% Divergence operators (v1: neighbor/1, sibling, bridge, direct —
+%% relation_hop and contrast deferred, tracked in the design doc, not
+%% dropped)
+%%
+%% `direct` addendum (majority-likely rebalance, see leannan_sidhe_planning.md
+%% addendum): a 4th, degenerate operator with NO graph walk — Perturbed =
+%% Seeds unchanged. This is the "most relevant evidence" control case used
+%% by leannan_likely_profiles/1 below: unlike neighbor/sibling/bridge (which
+%% all deliberately walk AWAY from the query's own entities), `direct` keeps
+%% retrieval anchored on the query's own seed entities, for the impulses
+%% meant to read as likely/grounded rather than lateral.
 %% ---------------------------------------------------------------------
 
 seed_ids(Seeds, Ids) :-
@@ -266,6 +277,9 @@ dedup_entities_([entity(Id, Name, Type) | T], Seen, Out) :-
 %%   the graph walk itself. Perturbed is a deduped entity/3 list; Prov
 %%   records the operator and seeds for the audit trail (Tier 2 design
 %%   doc §2b).
+leannan_perturb(Seeds, direct, _WorkspaceId, Seeds, Prov) :-
+    !,
+    Prov = perturb(direct, Seeds, Seeds).
 leannan_perturb(Seeds, neighbor(Hops), WorkspaceId, Perturbed, Prov) :-
     !,
     findall(N,
@@ -390,17 +404,70 @@ leannan_spark(SparkId, Query, Profile, WorkspaceId, Spark, Prov) :-
     Prov = spark_prov(SparkId, Operator, Seeds, PProv, weights(WL, WG, WN), K, Fusion),
     assertz(spark(SparkId, Query-Profile-WorkspaceId, Spark-Prov)).
 
-%% leannan_profiles/1 - the fixed, deterministic set of 6 divergence
-%%   profiles (design doc §2b table). Order matters: leannan_sparks/5
-%%   takes the first N or cycles through all 6.
-leannan_profiles([
-    spark(neighbor(2), weights(3.0, 1.0, 0.2), 60,  rrf),
-    spark(neighbor(1), weights(1.0, 1.0, 1.0), 500, rrf),
-    spark(sibling,     weights(1.0, 3.0, 0.5), 60,  rrf),
-    spark(sibling,     weights(1.0, 1.0, 1.0), 200, fringe),
-    spark(bridge,      weights(2.0, 2.0, 0.3), 60,  rrf),
-    spark(bridge,      weights(1.0, 1.0, 0.5), 500, fringe)
+%% leannan_profiles/1 - the deterministic set of 6 divergence profiles
+%%   (design doc §2b table; majority-likely rebalance addendum in
+%%   leannan_sidhe_planning.md). Order matters: leannan_sparks/5 takes the
+%%   first N or cycles through all 6.
+%%
+%%   Rebalanced (was: 6 hardcoded profiles, 2 of them `fringe`) into two
+%%   pools plus a split point, so the mix of "grounded/relevant" vs
+%%   "lateral/fringe" retrieval can be tuned without touching the profile
+%%   values themselves:
+%%     - leannan_likely_profiles/1 (4 entries): plain `rrf` fusion, tight
+%%       rrf_k=60, weights favoring precision — the `direct` operator plus
+%%       mild neighbor/sibling/bridge walks. Evidence for impulses meant to
+%%       read as likely/grounded candidate answers.
+%%     - leannan_lateral_profiles/1 (2 entries): UNCHANGED from the
+%%       original design's two `fringe`-fusion profiles — the actual
+%%       "Fringe Consensus" grounded-outlier mechanism, kept intact as the
+%%       lateral minority.
+%%   leannan_lateral_count/1 (LEANNAN_LATERAL_COUNT env override, default
+%%   2) picks how many of the 6 cycle positions draw from the lateral pool
+%%   (the rest draw from the likely pool); each pool cycles independently
+%%   via `mod` its own length, so any split 0..6 is valid even though each
+%%   pool only has 4/2 concrete entries. id_analyst.pl's
+%%   id_impulse_voice/2 mirrors this exact env var so both axes (retrieval
+%%   + persona) shift together by default, since both execute inside the
+%%   same clara-api Prolog engine.
+leannan_likely_profiles([
+    spark(direct,      weights(2.0, 1.0, 1.0), 60, rrf),
+    spark(neighbor(1), weights(1.5, 1.0, 0.5), 60, rrf),
+    spark(sibling,     weights(1.0, 2.0, 0.5), 60, rrf),
+    spark(bridge,      weights(1.5, 1.5, 0.3), 60, rrf)
 ]).
+
+leannan_lateral_profiles([
+    spark(sibling, weights(1.0, 1.0, 1.0), 200, fringe),
+    spark(bridge,  weights(1.0, 1.0, 0.5), 500, fringe)
+]).
+
+leannan_lateral_count(N) :-
+    (   getenv('LEANNAN_LATERAL_COUNT', S),
+        atom_number(S, N0),
+        N0 >= 0, N0 =< 6
+    ->  N = N0
+    ;   N = 2
+    ).
+
+leannan_profiles(Profiles) :-
+    leannan_lateral_count(LateralCount),
+    LikelyCount is 6 - LateralCount,
+    leannan_likely_profiles(LikelyPool), length(LikelyPool, NL),
+    leannan_lateral_profiles(LateralPool), length(LateralPool, NLat),
+    leannan_profiles_(0, LikelyCount, LikelyPool, NL, LateralPool, NLat, Profiles).
+
+leannan_profiles_(Slot, _LikelyCount, _LikelyPool, _NL, _LateralPool, _NLat, []) :-
+    Slot >= 6, !.
+leannan_profiles_(Slot, LikelyCount, LikelyPool, NL, LateralPool, NLat, [Profile | Rest]) :-
+    Slot < 6,
+    (   Slot < LikelyCount
+    ->  Idx is Slot mod NL,
+        nth0(Idx, LikelyPool, Profile)
+    ;   Idx is (Slot - LikelyCount) mod NLat,
+        nth0(Idx, LateralPool, Profile)
+    ),
+    Slot1 is Slot + 1,
+    leannan_profiles_(Slot1, LikelyCount, LikelyPool, NL, LateralPool, NLat, Rest).
 
 %% leannan_sparks(+Query, +Count, +WorkspaceId, -Sparks, -AllCitations) -
 %%   fan out Count sparks, cycling leannan_profiles/1 when Count > 6.

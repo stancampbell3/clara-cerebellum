@@ -800,3 +800,43 @@ divergence, just without `rrf_k` / `fringe`, until Tier 1 ships.
 
 **Round 2 closed. Plan fully approved.** Next: write `specs/084-*` (§0),
 then Tier 1 implementation.
+
+## Addendum (2026-09-15): majority-likely rebalance
+
+Tiers 1-3 plus the brainstorm/committee-referral work
+([[id_ritual_of_rituals_planning]]) all shipped abundance-of-tangents as
+designed. The immediate operator need has since shifted: the Id should
+surface **mostly likely/relevant candidate solutions, with a genuine
+minority kept for lateral thinking** — not maximal divergence by default.
+
+Both of the Id's two independent divergence axes were rebalanced together
+(user-confirmed 2026-09-15), 4:2 majority:minority, one shared env knob:
+
+- **Retrieval** (`the_leannan.pl`): `leannan_profiles/1`'s fixed 6-entry
+  list is now built from two pools — `leannan_likely_profiles/1` (4
+  entries: a new `direct` operator — no graph walk, evidence anchored on
+  the query's own seed entities — plus mild `neighbor(1)`/`sibling`/
+  `bridge` walks, all plain `rrf` fusion, tight `rrf_k=60`) and
+  `leannan_lateral_profiles/1` (2 entries, **values unchanged** — the
+  original two `fringe`-fusion profiles, i.e. the actual Fringe Consensus
+  mechanism, kept intact as the lateral minority).
+- **Persona** (`id_analyst.pl`): `id_impulse_voice/2`'s fixed 6 personas
+  similarly split into `id_likely_impulse_voices/1` (4 entries, rewritten
+  from the old blunt/provocative/contrarian/skeptical texts into voices
+  that all commit to their single best answer in a different register) and
+  `id_lateral_impulse_voices/1` (2 entries, **verbatim unchanged**: the
+  associative and sideways-reframe personas).
+- **Shared knob**: `LEANNAN_LATERAL_COUNT` (default 2, clamped 0-6),
+  read independently by `leannan_lateral_count/1` and `id_lateral_count/1`
+  but naming the same split so retrieval and persona move together by
+  default — both execute inside the same clara-api Prolog engine (per
+  [[prolog_env_vars_live_on_clara_api]], set on clara-api, not lildaemon).
+  Each of the 6 impulse slots draws from the same pool tier on both axes
+  (slot *i* is "likely" on both, or "lateral" on both), so each rendered
+  impulse reads as a coherent candidate rather than a mixed signal.
+
+No selection/ranking added — still "abundance only" (this doc's original
+scope statement): all 6 impulses are still always rendered, this only
+reshapes the mix that gets generated. `leannan_profiles/1`'s external
+contract (arity-1, 6-entry list) is unchanged, so `leannan_sparks/6` and
+everything downstream needed zero changes.

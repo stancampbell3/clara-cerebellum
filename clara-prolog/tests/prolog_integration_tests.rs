@@ -664,9 +664,12 @@ fn test_the_leannan_library_loads() {
     println!("=== library(the_leannan) auto-load Test PASSED ===");
 }
 
-/// Test the fixed 6-profile list's structure (design doc §2b table) —
-/// pure data, no mocking needed. Catches transcription mistakes (wrong
-/// operator, wrong weight order, wrong fusion mode) directly.
+/// Test the 6-profile list's structure (design doc §2b table + the
+/// 2026-09-15 majority-likely rebalance addendum) — pure data, no mocking
+/// needed. Catches transcription mistakes (wrong operator, wrong weight
+/// order, wrong fusion mode) directly. Default LEANNAN_LATERAL_COUNT=2
+/// puts the 4-entry "likely" pool at positions 1-4 and the 2-entry
+/// "lateral"/fringe pool at positions 5-6.
 #[test]
 fn test_leannan_profiles_structure() {
     println!("=== Testing leannan_profiles/1 structure ===");
@@ -678,14 +681,23 @@ fn test_leannan_profiles_structure() {
     println!("    Result: {}", result);
     assert!(result.contains("N = 6") || result.contains("6"), "expected 6 profiles: {}", result);
 
-    // Spot-check profile 4 (the first `fringe` mode profile, sibling operator).
+    // Spot-check profile 1 (the new `direct` operator, likely pool).
     let result = env
         .query_with_bindings(concat!(
             "the_leannan:leannan_profiles(Profiles), ",
-            "nth1(4, Profiles, spark(sibling, weights(1.0,1.0,1.0), 200, fringe))"
+            "nth1(1, Profiles, spark(direct, weights(2.0,1.0,1.0), 60, rrf))"
         ))
-        .expect("profile 4 should be spark(sibling, weights(1.0,1.0,1.0), 200, fringe)");
-    println!("    Profile 4 match: {}", result);
+        .expect("profile 1 should be spark(direct, weights(2.0,1.0,1.0), 60, rrf)");
+    println!("    Profile 1 match: {}", result);
+
+    // Spot-check profile 5 (the first `fringe` mode profile, sibling operator).
+    let result = env
+        .query_with_bindings(concat!(
+            "the_leannan:leannan_profiles(Profiles), ",
+            "nth1(5, Profiles, spark(sibling, weights(1.0,1.0,1.0), 200, fringe))"
+        ))
+        .expect("profile 5 should be spark(sibling, weights(1.0,1.0,1.0), 200, fringe)");
+    println!("    Profile 5 match: {}", result);
 
     // Spot-check profile 6 (the last profile, bridge operator, fringe mode).
     let result = env
