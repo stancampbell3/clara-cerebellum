@@ -1,3 +1,4 @@
+[STAN]  We've done the MR and merged this to main.  This document is not current.
 # Reasoning-model upgrade: status & open issues
 
 > **Handoff doc, 2026-09-10 — paused here for team review.** Companion

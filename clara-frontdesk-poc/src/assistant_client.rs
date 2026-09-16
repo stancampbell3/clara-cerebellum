@@ -5,7 +5,7 @@
 //! whole per-turn deduction/LLM orchestration, so this frontend only needs
 //! auth + three simple REST calls.
 
-use reqwest::blocking::Client;
+use reqwest::blocking::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -134,6 +134,59 @@ pub fn send(
         let body = resp.text().unwrap_or_default();
         return Err(AssistantError::Api(format!(
             "send failed ({status}): {body}"
+        )));
+    }
+    Ok(resp.json()?)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AttachmentResponse {
+    pub filename: String,
+    pub size: u64,
+    pub content_type: Option<String>,
+    pub inlined: bool,
+}
+
+/// POST /assistant/sessions/{id}/attachments — upload a chat file, dropped
+/// into the browser, into this session's analyst workspace (see lildaemon's
+/// goat/app/assistant/runtime.py::save_attachment). Validates `content_type`
+/// as a real MIME string on a throwaway empty Part first, since
+/// `Part::mime_str` consumes the Part it's called on — this lets us fall
+/// back to no explicit Content-Type on the real (already-moved-in) `bytes`
+/// without losing them if the browser ever sends something malformed.
+pub fn upload_attachment(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    session_id: &str,
+    filename: &str,
+    content_type: Option<&str>,
+    bytes: Vec<u8>,
+) -> Result<AttachmentResponse, AssistantError> {
+    let valid_mime = content_type
+        .map(|ct| multipart::Part::bytes(Vec::new()).mime_str(ct).is_ok())
+        .unwrap_or(false);
+
+    let mut part = multipart::Part::bytes(bytes).file_name(filename.to_string());
+    if valid_mime {
+        part = part
+            .mime_str(content_type.expect("checked above"))
+            .expect("validated above");
+    }
+    let form = multipart::Form::new().part("file", part);
+
+    let resp = http
+        .post(format!(
+            "{base_url}/assistant/sessions/{session_id}/attachments"
+        ))
+        .bearer_auth(token)
+        .multipart(form)
+        .send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().unwrap_or_default();
+        return Err(AssistantError::Api(format!(
+            "upload_attachment failed ({status}): {body}"
         )));
     }
     Ok(resp.json()?)

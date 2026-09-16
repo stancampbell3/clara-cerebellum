@@ -1,0 +1,117 @@
+<svg viewBox="0 0 1000 620" xmlns="http://www.w3.org/2000/svg" role="img"
+     aria-label="A Ritual connects Dis's deduction cycle to one or more FieryPit evaluators through a shared Kafka topic: the evaluator pass publishes Offering envelopes, FieryPit evaluates them via wrangler.eval_slot and publishes Hohi or Tabu back, and the cycle blocks until pending_evaluator_responses reaches zero. A planned second flow lets Cobbler manage Ritual configs through FieryPit, which activates them on Dis on the user's behalf.">
+  <style>
+    text { font-family: ui-sans-serif, system-ui, sans-serif; fill: currentColor; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .title { font-size: 15px; font-weight: 600; }
+    .sub { font-size: 11px; opacity: 0.75; }
+    .label { font-size: 11.5px; }
+    .small { font-size: 10.5px; opacity: 0.8; }
+    .box { fill: none; stroke: currentColor; stroke-width: 1.5; }
+    .inner { fill: none; stroke: currentColor; stroke-width: 1; opacity: 0.6; }
+    .flow { stroke: currentColor; stroke-width: 1.5; fill: none; }
+    .flow-dashed { stroke: currentColor; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; opacity: 0.85; }
+    .accent { stroke: #d97757; fill: #d97757; }
+  </style>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="accent"/>
+    </marker>
+  </defs>
+
+  <!-- ============ TOP PANEL: live runtime message flow ============ -->
+  <text x="30" y="26" class="title">Ritual runtime: Offering / Hohi / Tabu over a shared Kafka topic</text>
+  <text x="30" y="44" class="sub">one Kafka topic per Ritual — dis.local.ritual.&lt;uuid&gt; — read and written by both sides</text>
+
+  <!-- Dis box -->
+  <rect x="40" y="80" width="270" height="250" rx="6" class="box"/>
+  <text x="55" y="104" class="label" font-weight="600">Dis (clara-api, :8080)</text>
+  <text x="55" y="120" class="small">creates / terminates the Ritual</text>
+
+  <rect x="58" y="170" width="105" height="46" rx="4" class="inner"/>
+  <text x="110" y="192" class="label" text-anchor="middle">Prolog pass</text>
+  <text x="110" y="206" class="small" text-anchor="middle">Coire mailbox</text>
+
+  <rect x="197" y="170" width="95" height="46" rx="4" class="inner"/>
+  <text x="244" y="192" class="label" text-anchor="middle">Evaluator</text>
+  <text x="244" y="206" class="small" text-anchor="middle">pass</text>
+
+  <path d="M163,193 L197,193" class="flow" marker-end="url(#arrow)"/>
+
+  <path d="M244,216 C 205,254 205,254 168,216" class="flow" marker-end="url(#arrow)"/>
+  <text x="188" y="266" class="small" text-anchor="middle">repeats until pending_evaluator_responses == 0</text>
+
+  <text x="55" y="292" class="small">CycleController.evaluator_pass_ritual()</text>
+  <text x="55" y="306" class="small">/ ingest_tephra()</text>
+  <text x="55" y="320" class="mono small">clara-cycle/src/controller.rs</text>
+
+  <!-- Kafka topic -->
+  <rect x="405" y="150" width="190" height="110" rx="6" class="box"/>
+  <text x="500" y="185" class="label" text-anchor="middle" font-weight="600">Kafka topic</text>
+  <text x="500" y="203" class="mono small" text-anchor="middle">dis.local.ritual.&lt;uuid&gt;</text>
+
+  <text x="500" y="284" class="small" text-anchor="middle">carries TephraEnvelope</text>
+  <text x="500" y="298" class="small" text-anchor="middle">{tephra_id, ritual_id, performance_id,</text>
+  <text x="500" y="312" class="small" text-anchor="middle">label, producer_node, payload}</text>
+
+  <!-- FieryPit box -->
+  <rect x="690" y="80" width="270" height="250" rx="6" class="box"/>
+  <text x="705" y="104" class="label" font-weight="600">FieryPit (lildaemon, :6666)</text>
+  <text x="705" y="120" class="small">joins Ritual, starts a Kafka consumer</text>
+
+  <rect x="708" y="170" width="240" height="90" rx="4" class="inner"/>
+  <text x="828" y="190" class="label" text-anchor="middle">RitualParticipant._run_loop()</text>
+  <text x="828" y="208" class="small" text-anchor="middle">poll → skip echo / dup → evaluate</text>
+  <text x="828" y="222" class="small" text-anchor="middle">via wrangler.eval_slot(node_id, ·)</text>
+  <text x="828" y="240" class="small" text-anchor="middle">timeout/error → publish "tabu" instead</text>
+
+  <text x="705" y="292" class="small">producer_node = own dis_domain (e.g.</text>
+  <text x="705" y="306" class="small">"fierypit.local") — must differ from Dis's,</text>
+  <text x="705" y="320" class="small">or echo suppression drops every Offering</text>
+
+  <!-- Offering: Dis -> Kafka -> FieryPit -->
+  <path d="M310,160 L405,160" class="flow" marker-end="url(#arrow)"/>
+  <path d="M595,160 L690,160" class="flow" marker-end="url(#arrow)"/>
+  <text x="500" y="145" class="label" text-anchor="middle" font-weight="600">offering →</text>
+
+  <!-- Hohi/Tabu: FieryPit -> Kafka -> Dis -->
+  <path d="M690,245 L595,245" class="flow" marker-end="url(#arrow)"/>
+  <path d="M405,245 L310,245" class="flow" marker-end="url(#arrow)"/>
+  <text x="500" y="265" class="label" text-anchor="middle" font-weight="600">← hohi / tabu</text>
+
+  <line x1="30" y1="352" x2="970" y2="352" class="inner"/>
+
+  <!-- ============ BOTTOM PANEL: planned Ritual-config CRUD ============ -->
+  <text x="30" y="378" class="title">Planned: Ritual config CRUD (lildaemon.duc) — not yet built</text>
+  <text x="30" y="396" class="sub">a draft config only touches Dis once it is activated; drafts never provision a Kafka topic</text>
+
+  <rect x="60" y="426" width="230" height="95" rx="6" class="box"/>
+  <text x="175" y="456" class="label" text-anchor="middle" font-weight="600">Cobbler</text>
+  <text x="175" y="472" class="small" text-anchor="middle">Ritual editor page</text>
+  <text x="175" y="488" class="small" text-anchor="middle">(Dagda's browser front end)</text>
+
+  <rect x="385" y="426" width="230" height="95" rx="6" class="box"/>
+  <text x="500" y="456" class="label" text-anchor="middle" font-weight="600">FieryPit</text>
+  <text x="500" y="472" class="small" text-anchor="middle">facade — clients never call Dis directly</text>
+  <text x="500" y="488" class="mono small" text-anchor="middle">ritual_configs (lildaemon.duc)</text>
+
+  <rect x="710" y="426" width="230" height="95" rx="6" class="box"/>
+  <text x="825" y="456" class="label" text-anchor="middle" font-weight="600">Dis</text>
+  <text x="825" y="472" class="small" text-anchor="middle">only contacted on activation</text>
+  <text x="825" y="488" class="small" text-anchor="middle">provisions the Kafka topic</text>
+
+  <path d="M290,473 L385,473" class="flow-dashed" marker-end="url(#arrow-accent)"/>
+  <text x="337" y="464" class="small mono" text-anchor="middle">POST /ritual-configs</text>
+
+  <path d="M615,473 L710,473" class="flow-dashed" marker-end="url(#arrow-accent)"/>
+  <text x="662" y="464" class="small mono" text-anchor="middle">POST /ritual</text>
+  <text x="662" y="500" class="small" text-anchor="middle">(activate only)</text>
+
+  <text x="60" y="552" class="small">ritual_config_id (FieryPit's own UUID, always present) vs. ritual_id (Dis's UUID, null until activated) —</text>
+  <text x="60" y="568" class="small">draft ──activate──► active ──terminate──► terminated, with re-draft looping back to draft</text>
+
+</svg>

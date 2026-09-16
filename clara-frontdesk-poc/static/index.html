@@ -9,6 +9,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
 <script src="vendor/highlight.min.js" defer></script>
 <script src="vendor/marked.min.js" defer></script>
+<script src="vendor/purify.min.js" defer></script>
+<script src="vendor/viz.js" defer></script>
+<script src="vendor/full.render.js" defer></script>
 <style>
   :root {
     --bg:           #0d0d0d;
@@ -422,7 +425,8 @@
     color: var(--ash);
   }
 
-  .copy-code-btn {
+  .copy-code-btn,
+  .diagram-toggle-btn {
     background: none;
     border: none;
     color: var(--ash);
@@ -431,9 +435,11 @@
     line-height: 1;
     padding: 0.1rem 0.3rem;
   }
-  .copy-code-btn:hover { color: var(--bone); }
+  .copy-code-btn:hover,
+  .diagram-toggle-btn:hover { color: var(--bone); }
   .copy-code-btn.copied { color: #7effa0; }
   .copy-code-btn.copy-failed { color: var(--ember); }
+  .diagram-toggle-btn.active { color: var(--bone); }
 
   .bubble pre.code-block code {
     display: block;
@@ -451,6 +457,58 @@
     padding: 0.05rem 0.3rem;
     font-family: "Courier New", Courier, monospace;
     font-size: 0.88em;
+  }
+
+  /* ── Inline diagrams (SVG / DOT-graphviz code fences) ───────────────────── */
+
+  .diagram-block {
+    margin: 0.5rem 0;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .diagram-block:first-child { margin-top: 0; }
+  .diagram-block:last-child { margin-bottom: 0; }
+
+  .diagram-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.25rem 0.6rem;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-head);
+    font-size: 0.65rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ash);
+  }
+  .diagram-actions { display: flex; align-items: center; gap: 0.2rem; }
+
+  .diagram-render {
+    padding: 0.7rem;
+    overflow: auto;
+    text-align: center;
+  }
+  .diagram-render svg { max-width: 100%; height: auto; }
+  .diagram-status,
+  .diagram-error {
+    font-size: 0.82rem;
+    color: var(--ash);
+    font-style: italic;
+  }
+  .diagram-error { color: var(--ember); }
+
+  .diagram-source { margin: 0; border-top: 1px solid var(--border); }
+  .diagram-source code {
+    display: block;
+    padding: 0.6rem 0.8rem;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    white-space: pre;
+    overflow-x: auto;
   }
 
   /* ── Markdown block elements (headings, lists, quotes, tables) ──────────
@@ -586,6 +644,23 @@
   }
   #send-btn:hover { background: var(--ember); }
   #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #drop-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    border: 2px dashed var(--ember-lo);
+    color: var(--bone);
+    font-family: var(--font-head);
+    font-size: 1.1rem;
+    letter-spacing: 0.06em;
+    pointer-events: none;
+  }
+  #drop-overlay.visible { display: flex; }
 
   #conn-indicator {
     width: 8px; height: 8px;
@@ -756,6 +831,8 @@
 </div>
 
 <div id="in-progress-strip" hidden></div>
+
+<div id="drop-overlay">📎 Drop file to attach</div>
 
 <footer>
   <textarea id="input" rows="1" placeholder="State your business…" disabled autocomplete="off"></textarea>
@@ -1023,6 +1100,86 @@
     ws.send(JSON.stringify({ type: 'chat', text }));
   }
 
+  // ── File attachment (drag & drop) ───────────────────────────────────────────
+  //
+  // Upload happens on drop, not on text-submit — async, out-of-band from the
+  // WS chat channel. The uploaded file lands in the analyst's own workspace
+  // and a system note referencing it (inlined, for small text files) is
+  // injected into session history server-side, so the very next /send call
+  // already carries it — no attachment field needed in the chat payload
+  // itself (see lildaemon's POST /assistant/sessions/{id}/attachments).
+
+  const dropOverlay = document.getElementById('drop-overlay');
+  let dragDepth = 0;
+
+  function chatIsActive() {
+    return !!ws && ws.readyState === WebSocket.OPEN;
+  }
+
+  function hasFiles(e) {
+    return !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  }
+
+  window.addEventListener('dragover', (e) => {
+    // preventDefault unconditionally (login screen included) so the browser
+    // never navigates away to display the dropped file in place of the app.
+    if (hasFiles(e)) e.preventDefault();
+  });
+
+  window.addEventListener('dragenter', (e) => {
+    if (!chatIsActive() || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    dropOverlay.classList.add('visible');
+  });
+
+  window.addEventListener('dragleave', () => {
+    if (dragDepth === 0) return;
+    dragDepth--;
+    if (dragDepth === 0) dropOverlay.classList.remove('visible');
+  });
+
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dropOverlay.classList.remove('visible');
+    if (!chatIsActive()) return;
+    Array.from(e.dataTransfer.files || []).forEach(uploadAttachment);
+  });
+
+  function formatBytes(n) {
+    return n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`;
+  }
+
+  async function uploadAttachment(file) {
+    const note = appendNote(`📎 Attaching "${file.name}" (${formatBytes(file.size)})…`);
+    try {
+      const sessionId = sessionStorage.getItem('clara_session_id');
+      const token = sessionStorage.getItem('clara_token');
+      if (!sessionId || !token) throw new Error('not connected yet');
+
+      const form = new FormData();
+      form.append('file', file, file.name);
+
+      const resp = await fetch(`/upload?session_id=${encodeURIComponent(sessionId)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        throw new Error(body.error || `upload failed (${resp.status})`);
+      }
+      const result = await resp.json();
+      note.textContent = result.inlined
+        ? `📎 Attached "${result.filename}" (${formatBytes(result.size)}) — its contents are visible now.`
+        : `📎 Attached "${result.filename}" (${formatBytes(result.size)}) — available for lookup if relevant.`;
+    } catch (e) {
+      note.textContent = `📎 Failed to attach "${file.name}": ${e.message || e}`;
+    }
+  }
+
   // ── Ruleset selection ───────────────────────────────────────────────────────
 
   let rulesetLabels = {};
@@ -1252,6 +1409,28 @@
 
   const bubbleRawText = new WeakMap(); // bubble element -> original unescaped text
 
+  // ```svg and ```dot/```graphviz fences get diagrammed inline instead of
+  // shown as code. The renderer can only return a markup string synchronously,
+  // but Viz.js's DOT->SVG render is async — so `renderer.code` below emits a
+  // placeholder div and stashes the source here, keyed by a per-render id;
+  // appendBubble() resolves each placeholder once the bubble is in the DOM.
+  let diagramCounter = 0;
+  const pendingDiagrams = new Map(); // id -> { kind: 'svg'|'dot', source: string }
+
+  function renderDiagramBlock(kind, source) {
+    const id = `diagram-${++diagramCounter}`;
+    pendingDiagrams.set(id, { kind, source });
+    return `<div class="diagram-block" data-diagram-id="${id}">` +
+      `<div class="diagram-bar"><span class="diagram-kind">${escapeHtml(kind)}</span>` +
+      `<div class="diagram-actions">` +
+      `<button type="button" class="diagram-toggle-btn" title="Toggle source">&lt;/&gt;</button>` +
+      `<button type="button" class="copy-code-btn" title="Copy source">⧉ copy</button>` +
+      `</div></div>` +
+      `<div class="diagram-render"><span class="diagram-status">Rendering…</span></div>` +
+      `<pre class="diagram-source" hidden><code class="language-${escapeHtml(kind)}">${escapeHtml(source)}</code></pre>` +
+      `</div>`;
+  }
+
   function escapeHtml(s) {
     return s
       .replace(/&/g, '&amp;')
@@ -1276,13 +1455,19 @@
   // in the markdown source (rendered as visible text, never executed);
   // `link()` restricts hrefs to http/https/mailto and adds
   // rel="noopener noreferrer" on the target="_blank" this app already
-  // uses for other outbound links.
+  // uses for other outbound links. ```svg fences and Viz.js's rendered
+  // ```dot/```graphviz output are run through DOMPurify's SVG profile
+  // (see sanitizeSvg) before ever touching innerHTML, since both are
+  // otherwise live markup from the same untrusted source.
   let mdRenderer = null;
   function getMarkdownRenderer() {
     if (mdRenderer || !window.marked) return mdRenderer;
     const renderer = new window.marked.Renderer();
     renderer.code = (code, infostring) => {
       const lang = String(infostring || 'text').trim().split(/\s+/)[0].toLowerCase() || 'text';
+      if (lang === 'svg' || lang === 'dot' || lang === 'graphviz') {
+        return renderDiagramBlock(lang === 'graphviz' ? 'dot' : lang, code);
+      }
       return `<pre class="code-block"><div class="code-block-bar"><span class="code-lang">${escapeHtml(lang)}</span><button type="button" class="copy-code-btn" title="Copy code">⧉ copy</button></div><code class="language-${escapeHtml(lang)}">${escapeHtml(code)}</code></pre>`;
     };
     renderer.codespan = (code) => `<code class="inline-code">${escapeHtml(code)}</code>`;
@@ -1371,6 +1556,59 @@
     }, 1200);
   }
 
+  // Both ```svg source and Viz.js's rendered ```dot output are live markup
+  // from the same untrusted (LLM/visitor) source as the rest of the bubble —
+  // sanitize before it ever reaches innerHTML. foreignObject is stripped on
+  // top of DOMPurify's own script/event-handler/javascript:-URI stripping
+  // since it can carry arbitrary HTML/CSS (e.g. a spoofed form) without
+  // needing script execution to be dangerous.
+  function sanitizeSvg(svgText) {
+    if (!window.DOMPurify) {
+      console.warn('DOMPurify unavailable — refusing to render untrusted SVG/DOT markup');
+      return null;
+    }
+    const clean = window.DOMPurify.sanitize(svgText, {
+      USE_PROFILES: { svg: true, svgFilters: true },
+      FORBID_TAGS: ['script', 'foreignObject'],
+    });
+    return clean && clean.trim() ? clean : null;
+  }
+
+  let vizInstance = null;
+  async function renderDotToSvg(source) {
+    if (!window.Viz) throw new Error('Graphviz renderer unavailable');
+    // A Viz instance is single-use per the library's own docs (its
+    // underlying emscripten module can't be reliably reused after a
+    // parse error) — replace it whenever one fails.
+    if (!vizInstance) vizInstance = new window.Viz();
+    try {
+      return await vizInstance.renderString(source, { format: 'svg', engine: 'dot' });
+    } catch (err) {
+      vizInstance = new window.Viz();
+      throw err;
+    }
+  }
+
+  async function resolveDiagram(container, kind, source) {
+    const target = container.querySelector('.diagram-render');
+    try {
+      const svgText = kind === 'dot' ? await renderDotToSvg(source) : source;
+      const clean = sanitizeSvg(svgText);
+      if (!clean) throw new Error('sanitized SVG was empty');
+      target.innerHTML = clean;
+      const svgEl = target.querySelector('svg');
+      if (svgEl) {
+        svgEl.removeAttribute('width');
+        svgEl.removeAttribute('height');
+      }
+    } catch (err) {
+      console.warn(`Failed to render ${kind} diagram:`, err);
+      target.innerHTML = `<span class="diagram-error">Couldn't render this ${escapeHtml(kind)} block — showing source instead.</span>`;
+      const src = container.querySelector('.diagram-source');
+      if (src) src.hidden = false;
+    }
+  }
+
   // ── DOM helpers ────────────────────────────────────────────────────────────
 
   function appendBubble(role, text, speaker, extraClass) {
@@ -1407,8 +1645,22 @@
       if (window.hljs) window.hljs.highlightElement(el);
     });
     bub.querySelectorAll('.copy-code-btn').forEach((btn) => {
-      const codeEl = btn.closest('pre.code-block').querySelector('code');
+      const codeEl = btn.closest('pre.code-block, .diagram-block').querySelector('code');
       btn.addEventListener('click', () => copyToClipboard(codeEl.textContent, btn));
+    });
+    bub.querySelectorAll('.diagram-block').forEach((el) => {
+      const id = el.dataset.diagramId;
+      const pending = pendingDiagrams.get(id);
+      if (pending) {
+        pendingDiagrams.delete(id);
+        resolveDiagram(el, pending.kind, pending.source);
+      }
+      const toggleBtn = el.querySelector('.diagram-toggle-btn');
+      const src = el.querySelector('.diagram-source');
+      toggleBtn.addEventListener('click', () => {
+        src.hidden = !src.hidden;
+        toggleBtn.classList.toggle('active', !src.hidden);
+      });
     });
 
     wrap.appendChild(lbl);

@@ -1,3 +1,5 @@
+[STAN] Preserved for history.  We've addressed the main issues here and pushed.
+
 # The thinking-model timeout problem
 
 > **Status: analysis only, no code changes yet.** Written 2026-09-09 for

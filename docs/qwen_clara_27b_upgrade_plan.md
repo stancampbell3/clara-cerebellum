@@ -1,3 +1,4 @@
+[STAN] Finished.  Should archive next docs run.
 # qwen-clara base-model upgrade: qwen3.8:27b evaluation & plan
 
 > **Status: evaluated, not promoted.** A candidate model
