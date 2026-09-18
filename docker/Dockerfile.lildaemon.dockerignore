@@ -1,0 +1,20 @@
+# Per-Dockerfile override (BuildKit convention: <Dockerfile>.dockerignore
+# next to the Dockerfile it applies to) for Dockerfile.lildaemon's
+# `COPY lildaemon/ .` step. Build context here is Development/ (this
+# file's grandparent), so paths below are relative to that root.
+#
+# data/, output/, and workspace/ are all bind-mounted at runtime
+# (docker-compose.yml: ../lildaemon/{data,output,workspace}:/app/...), so
+# baking their build-time contents into the image is pure waste — the
+# mount shadows them at container start regardless. Confirmed live on
+# pineal 2026-09-18: workspace/ had accumulated 1.6GB of unrelated
+# leftover data (stray dagda fastText model binaries) that got copied
+# into every rebuilt image and filled the host's disk.
+lildaemon/data/
+lildaemon/output/
+lildaemon/workspace/
+
+# Never needed in the image: dependencies come from pip install, not a
+# local venv; git history has no runtime purpose.
+lildaemon/.venv/
+lildaemon/.git/
