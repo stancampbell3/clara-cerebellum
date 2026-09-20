@@ -1,0 +1,13 @@
+# Hermes-agent variant of qwen-clara: identical to the promoted 27b build
+# (models/Modelfile.qwen-clara-27b) except for num_ctx.
+#
+# Why a separate tag instead of raising num_ctx on qwen-clara:latest itself:
+# Hermes Agent hard-requires num_ctx >= 64,000 ("Model ... has a context
+# window of 32,768 tokens, which is below the minimum 64,000 required by
+# Hermes Agent"). qwen-clara:latest's 32768 is a deliberate choice for the
+# lildaemon/Ritual evaluators (config/evaluators.yaml, fish.yaml) and is not
+# raised here, to avoid changing their KV-cache footprint. This tag exists
+# only for Hermes' model.default.
+FROM qwen-clara:latest
+
+PARAMETER num_ctx 65536
