@@ -1,0 +1,84 @@
+# The Ego FieryPit on a REMOTE host (pineal): the same `lildaemon-ego` as docker-compose.ego.yml, but with no
+# dependency on the main stack's docker network. Dis and Kafka are reached over the LAN by hostname (extra_hosts
+# maps `limbic`, which containers here cannot resolve), and this FieryPit is identified to Dis by the URL others
+# use to reach it (`http://<this host>:6667`), never by a docker network name.
+#
+# Run it on the remote host, from a directory holding a 0600 `.env` with LILDAEMON_JWT_SECRET,
+# LILDAEMON_SERVICE_SECRET and DIS_DOMAIN_PEER_TOKEN (the same peer token as the rest of the Dis domain), with the
+# image already loaded (`docker save lildaemon:ego | ssh <host> docker load`; it is built WITHOUT .env):
+#
+#   EGO_STATE_DIR=$HOME/ego/state SEAT_LAUNCHER_DIR=$HOME/ego/sl EGO_GATE_MODE=superego \
+#     docker compose -f docker-compose.ego-remote.yml up -d
+#
+# Host prerequisites (the runbook has the commands): a `clara-seats` bridge with the FIXED interface name
+# br-clara-seats, one firewall rule letting that interface reach the host's Ollama (11434), the Hermes image, the
+# `qwen-clara-hermes` 64K-context model, and the seat launcher running with its socket in $SEAT_LAUNCHER_DIR.
+# State lives on LOCAL disk (never NFS: flock over NFS is unverified). Snap docker can only bind-mount under $HOME.
+name: ego
+
+services:
+  lildaemon-ego:
+    image: lildaemon:ego
+    ports:
+      # Reachable from the rest of the LAN (limbic's assistant calls it here). Protected by the peer token.
+      - "0.0.0.0:6667:6666"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "limbic:${LIMBIC_IP:-10.0.0.192}"
+    environment:
+      - CEREBELLUM_URL=http://limbic:8080
+      - DIS_BASE_URL=http://limbic:8080
+      - LILDAEMON_JWT_SECRET=${LILDAEMON_JWT_SECRET}
+      - LILDAEMON_SERVICE_SECRET=${LILDAEMON_SERVICE_SECRET}
+      - DIS_DOMAIN_PEER_TOKEN=${DIS_DOMAIN_PEER_TOKEN}
+      - DIS_DOMAIN=${DIS_DOMAIN:-dis.local}
+      # How Dis (and the main FieryPit) reach THIS FieryPit.
+      - LILDAEMON_BASE_URL=${EGO_PUBLIC_URL:-http://pineal:6667}
+      - FIERYPIT_HEARTBEAT_INTERVAL_SECONDS=${FIERYPIT_HEARTBEAT_INTERVAL_SECONDS:-30}
+      - LILDAEMON_DB_PATH=/app/data/lildaemon.duc
+      - LILDAEMON_OUTPUT_DIR=/app/output
+      - PYTHON_TOOLS_WORKSPACE=/app/workspace
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # No third-party credentials and no shared-resource access on this FieryPit.
+      - EDGEQUAKE_BASE_URL=
+      - EDGEQUAKE_API_KEY=
+      - GROQ_API_KEY=
+      - GITHUB_TOKEN=
+      - GOOGLE_CUSTOM_SEARCH_API_KEY=
+      # Ego seats and the real gate (see docker-compose.ego.yml for what each does).
+      - EGO_GATE_ENABLED=1
+      - EGO_GATE_HOST=0.0.0.0
+      - EGO_GATE_PORT=8765
+      - EGO_GATE_ADVERTISE_URL=http://lildaemon-ego:8765/mcp
+      - SEAT_LAUNCHER_SOCKET=/run/seat-launcher/l.sock
+      - RITUAL_SPACE_ROOT=/app/ritual_spaces
+      - EGO_GATE_MODE=${EGO_GATE_MODE:-deny_all}
+      - EGO_GATE_SUPEREGO_NODE=${EGO_GATE_SUPEREGO_NODE:-superego}
+      - EGO_GATE_SUPEREGO_MODEL=${EGO_GATE_SUPEREGO_MODEL:-qwen-clara-hermes:latest}
+      # Let the reviewer reason before answering. Off suits a large model (1-5 s); a 9B needs it on to judge well.
+      - EGO_GATE_SUPEREGO_THINK=${EGO_GATE_SUPEREGO_THINK:-}
+      - EGO_OUTBOX_ROOT=/app/outbox
+      - EGO_SEAT_IDLE_SECONDS=${EGO_SEAT_IDLE_SECONDS:-900}
+    volumes:
+      - ${EGO_STATE_DIR:?set EGO_STATE_DIR to a directory under $HOME}/data:/app/data
+      - ${EGO_STATE_DIR}/output:/app/output
+      - ${EGO_STATE_DIR}/workspace:/app/workspace
+      - ${EGO_STATE_DIR}/ritual_spaces:/app/ritual_spaces
+      - ${EGO_STATE_DIR}/outbox:/app/outbox
+      - ${SEAT_LAUNCHER_DIR:?set SEAT_LAUNCHER_DIR to the launcher's socket directory}:/run/seat-launcher
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6666/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      clara-seats:
+        aliases:
+          - lildaemon-ego
+
+networks:
+  clara-seats:
+    external: true
+    name: clara-seats

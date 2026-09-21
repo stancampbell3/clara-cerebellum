@@ -536,3 +536,27 @@ resolver is the logged-in user's id. Deleting the session on the main FieryPit r
 
 ## Not verified
 - A real cross-host hop (pineal). Needs: rebuilt pineal image (drops baked secrets), Hermes image, a 64K-context `qwen-clara-hermes` tag on the 9B model, a seat launcher there, GPU headroom on 12 GB, and Kafka's external listener as the bootstrap.
+
+
+# Pineal: the first real cross-host Ego (2026-09-21)
+
+Frontdesk and main FieryPit (limbic) -> Ego FieryPit + Hermes seats + ledger + outbox on **pineal** (`http://pineal:6667`, RTX 5070 12 GB, 9B model), Kafka over limbic's external listener, reviewer hosted on limbic's 27B.
+
+**Result.** Five sequential runs of the publish-and-email task: 5/5 delivered both escalations in 36 to 48 s. Approve published `plan.md` under pineal's outbox; Deny did nothing; the ledger, outbox and seat are on pineal, the reviewer node was joined only on limbic (log evidence on both hosts);
+deleting a session released the remote seat; killing pineal's FieryPit with `SIGKILL` had the launcher remove the seat 230 s later (lease 300 s). Launcher runs as a persistent user service; the FieryPit restarts with docker. Model: 7.6 GB at 64K context, ~100 tokens/s, 9.1 GB of 12 GB in use.
+
+## Findings (nine things only a second host could show)
+1. **The renderer/parser of the model tag decides whether `think: false` works.** Pineal's `qwen-clara` had `qwen3-coder`; limbic's has `qwen3.8`/`qwen3.5`. On pineal every reviewer verdict spent ~1,300 hidden tokens (13 to 47 s). Overriding both lines in the derived tag fixed it (0.4 s).
+2. **A 9B is a poor reviewer, yet a workable Ego.** Thinking off: fast (0.4 s) but judged an email reversible and contained. Thinking on: correct on the email, 14 to 55 s, and approved a hostile-justified request. So the reviewer moved to limbic's 27B (`EGO_SUPEREGO_LOCAL`), which is also the better design.
+3. **Gate bug, not pineal-specific: `max_cycles` was 5** while waiting for the reviewer spends cycles, so any reviewer slower than ~1.5 s made the deduction die as "Max cycles exceeded" and the gate deny. Now `max_cycles = patience + 40` (patience 240).
+4. **A failed run stranded an escalation.** The run hit its 120 s time cap after `publish_document` was already escalated (the model stalled 106 s, see 1); the turn failed and the user never saw it. A failed turn now queues Approve/Deny rows for every open escalation of the ritual, once each.
+5. **A custom docker bridge cannot reach the host's Ollama** on pineal (host firewall allows only `docker0`); one `ufw` rule for a named bridge fixes it, and gives a base for later egress rules.
+6. **Pineal's docker refuses the Hermes entrypoint under `no-new-privileges`**; per-host `hardening` override in the launcher config (bounding set still the six caps). Limbic is unaffected.
+7. **Containers on pineal cannot resolve `limbic`** (and on limbic `limbic` resolves to 127.0.1.1); `extra_hosts limbic:10.0.0.192` in the remote compose.
+8. **Model behaviour still varies.** Earlier in the session Hermes once wrote the document but never called `request_action`; over the five measured runs it always did. Treat "does the agent actually ask" as a measured rate, not a given.
+9. My debugging note: `sudo` was needed exactly once (the ufw rule). The peer token was accidentally echoed once into this session's output by a labelled `curl` check; treat it as exposed if that matters.
+
+## Not verified / next
+- Real hostile workloads, larger tasks, or two Ego turns interleaved on pineal's single GPU alongside PitBoss loads (no contention test).
+- Where published files should go: they live on pineal (`~/ego/state/outbox`); a pickup story is still open.
+- Replacing pineal's existing lildaemon (baked secrets) is untouched; egress firewall beyond the one Ollama rule.

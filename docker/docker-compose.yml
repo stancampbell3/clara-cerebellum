@@ -242,6 +242,9 @@ services:
       # resolves it. Both empty = the ego ruleset answers "the Ego is not configured" and nothing else changes.
       - EGO_FIERYPIT_URL=${EGO_FIERYPIT_URL:-}
       - EGO_REMOTE_KAFKA_BOOTSTRAP=${EGO_REMOTE_KAFKA_BOOTSTRAP:-}
+      # 1 = host the Ego's reviewing Superego HERE (this FieryPit's model) instead of beside the Ego. A reviewer
+      # should not share a host with the agent it reviews, and a large model here can review a small one there.
+      - EGO_SUPEREGO_LOCAL=${EGO_SUPEREGO_LOCAL:-}
       - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
       - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
       # Ochecho TTS (goat.mcp.ochecho, used by the clara_mind_splinter evaluator's

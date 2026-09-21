@@ -76,6 +76,8 @@ services:
       - EGO_GATE_MODE=${EGO_GATE_MODE:-deny_all}
       - EGO_GATE_SUPEREGO_NODE=${EGO_GATE_SUPEREGO_NODE:-superego}
       - EGO_GATE_SUPEREGO_MODEL=${EGO_GATE_SUPEREGO_MODEL:-qwen-clara-hermes:latest}
+      # Let the reviewer reason before answering. Off suits a large model (1-5 s); a 9B needs it on to judge well.
+      - EGO_GATE_SUPEREGO_THINK=${EGO_GATE_SUPEREGO_THINK:-}
       - EGO_OUTBOX_ROOT=/app/outbox
       # Phase 3: how an ASSISTANT runtime (the `ego` ruleset; here this same FieryPit, or the main one) reaches
       # the FieryPit that hosts the Ego seats, by URL, and the Kafka listener that FieryPit's participants

@@ -82,6 +82,23 @@ To try it: run a frontdesk pointed at the FieryPit (`fiery_pit_url` in its TOML,
 publish a document (`publish_document {"name": ...}`) or do anything irreversible. It appears in the bell with Approve/Deny. The ledger and outbox are under `$EGO_STATE_DIR` as before.
 `EGO_ESCALATION_TTL_SECONDS` (default 86400) sets how long an unanswered escalation stays open before it counts as denied. Seats are capped by the launcher's `max_seats`; a turn that cannot get a seat tells the user nothing was done.
 
+## A remote host (pineal), verified 2026-09-21
+
+The Ego FieryPit can run on another machine, reached by URL. Recipe used on pineal (no sudo except step 3; everything under `$HOME`, since snap docker only bind-mounts there):
+
+1. **Model.** `ollama create qwen-clara-hermes:latest` from `FROM qwen-clara:latest` with **`RENDERER qwen3.8` and `PARSER qwen3.5`**, `num_ctx 65536`, `top_p 0.95`. The RENDERER/PARSER lines are not optional: pineal's stock `qwen-clara` used `qwen3-coder`, under which `think: false`
+   is ignored and the model writes ~1,300 tokens of reasoning per answer (13 to 47 s). Check with a `think:false` chat: it should answer in under a second.
+2. **Images.** `docker save lildaemon:ego | ssh <host> docker load` (built without `.env`), and `docker pull nousresearch/hermes-agent@sha256:6fd6f57...` (v0.21.3), tagged `hermes-agent:v0.21.3`.
+3. **Network (needs sudo once).** `docker network create --subnet 172.30.0.0/24 -o com.docker.network.bridge.name=br-clara-seats clara-seats`, then `sudo ufw allow in on br-clara-seats to any port 11434 proto tcp`. Without the rule a custom bridge cannot reach the host's Ollama
+   (only `docker0` is allowed by default), and both seats and the reviewer need it. Verify with a probe container on the bridge.
+4. **Config.** `~/ego/.env` (0600: the domain's `DIS_DOMAIN_PEER_TOKEN`, fresh `LILDAEMON_JWT_SECRET` and `LILDAEMON_SERVICE_SECRET`), `~/ego/launcher.toml`, and `docker-compose.ego-remote.yml`. **Hardening override on this host:** its docker refuses the Hermes (s6-overlay) entrypoint under
+   `--security-opt no-new-privileges` ("exec ...entrypoint-dispatch.sh: operation not permitted"; limbic's docker does not), so `launcher.toml` sets `hardening` to the default minus that one flag. The capability bounding set stays exactly the six granted caps (verified `CapBnd 0xeb`).
+5. **Launcher as a user service** (`loginctl enable-linger $USER` worked without sudo), unit at `~/.config/systemd/user/seat-launcher.service` (see `seat_launcher/seat-launcher.service.example`), then `docker compose -f docker-compose.ego-remote.yml up -d` (restart policy `unless-stopped`).
+6. **Main side.** In limbic's `docker/.env`: `EGO_FIERYPIT_URL=http://pineal:6667`, `EGO_REMOTE_KAFKA_BOOTSTRAP=limbic:9094` (Kafka's external listener as the Ego host resolves it; the remote compose maps `limbic` with `extra_hosts`), and **`EGO_SUPEREGO_LOCAL=1`**, then recreate only `lildaemon`.
+
+**Why the reviewer runs on limbic, not beside the Ego.** A reviewer should not share a host with the agent it reviews, and pineal's 9B was a poor reviewer: thinking off it judged `send_email` reversible and contained, thinking on it took 14 to 55 s and approved a hostile-justified email.
+`EGO_SUPEREGO_LOCAL=1` hosts the reviewer on the main FieryPit (27B, 1 to 5 s). The gate consults it by node id through Dis, so its location does not matter to the gate. `EGO_GATE_SUPEREGO_THINK=true` exists for a small reviewer that must reason (default off).
+
 ## Run a ritual with an Ego seat
 
     cd /path/to/lildaemon
