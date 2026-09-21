@@ -11,11 +11,14 @@ Inputs, treated as input and not decisions: `clara_feedback_hermes_agent_integra
 > **Invariant:** Hard veto governs side-effecting dispatch. Advisory philosophy governs creative content.
 > Different axes. Not in tension.
 
+> **Invariant (binding, non-waivable):** Prolog goals are never constructed from text supplied by Hermes.
+> Hermes output is parsed and bound as data only. (Recorded in the 2026-09-21 assembly review; see §8.)
+
 > **Note:** The Freudian labels (Id, Ego, Superego) are mnemonics only. They impose no behavioral constraint
 > beyond each seat's functional spec.
 
-Status tags: **[decided]** the user made the call. **[adopted]** taken from Clara's feedback via addendum 2, not
-yet user-confirmed. **[proposed]** new in v3, needs review. **[open]** unresolved. **[rejected]** dropped, with
+Status tags: **[decided]** the user made the call (items 9-14 originated with Clara and were confirmed
+2026-09-21). **[proposed]** new in v3, needs review. **[open]** unresolved. **[rejected]** dropped, with
 the reason.
 
 ## 0. Needs your decision first
@@ -24,8 +27,7 @@ the reason.
    proposes a resolution. Needs a yes/no.
 2. **Phase 0 runs on limbic** (§6). The earlier docs said it needs Pineal. It does not, except for a final
    cross-host confirmation.
-3. Whether the adopted items in §1 are now confirmed. They came from Clara, who reviewed a summary that predates
-   addendum 1.
+3. ~~Whether the adopted items in §1 are confirmed.~~ Items 9-14 confirmed by the user on 2026-09-21.
 
 ## 1. Decision ledger
 
@@ -39,12 +41,12 @@ the reason.
 | 6 | `caws_offer`/`caws_await` is the gate; timeout-to-deny is the enforcement; no Kafka control plane | decided | plan §3 |
 | 7 | `request_action(action, params, justification)` is the only side-effecting tool | decided | plan §3 |
 | 8 | Promote `caws_tristate/3` into `the_coire.pl` in the same change as `approve_action/4` | decided | addendum 1 §5 |
-| 9 | "Structurally deterministic; content-stochastic." Tests assert structure, never content | adopted | Clara #5 |
-| 10 | Tiered Superego context, with Tier 2 sourced independently of the Ego | adopted | Clara #4 |
-| 11 | `ritual_id` + `seq` envelope from Phase 1; full audit topics stay Phase 4 | adopted | Clara #7 |
-| 12 | Firewall is structural: distinct seats and `instance_id`s, no shared Coire subscriptions, no shared Prolog state | adopted | Clara #2, revised |
-| 13 | User override is an authenticated frontdesk WS action, not a Prolog predicate reachable by the Ego; does not change Superego rules | adopted | Clara #6, revised |
-| 14 | Governor question answered by the user plus timeout-to-deny; no fourth agent | adopted | Clara #6 |
+| 9 | "Structurally deterministic; content-stochastic." Tests assert structure, never content | decided (from Clara, confirmed 2026-09-21) | Clara #5 |
+| 10 | Tiered Superego context, with Tier 2 sourced independently of the Ego | decided (from Clara, confirmed 2026-09-21) | Clara #4 |
+| 11 | `ritual_id` + `seq` envelope from Phase 1; full audit topics stay Phase 4 | decided (from Clara, confirmed 2026-09-21) | Clara #7 |
+| 12 | Firewall is structural: distinct seats and `instance_id`s, no shared Coire subscriptions, no shared Prolog state | decided (from Clara, confirmed 2026-09-21) | Clara #2, revised |
+| 13 | User override is an authenticated frontdesk WS action, not a Prolog predicate reachable by the Ego; does not change Superego rules | decided (from Clara, confirmed 2026-09-21) | Clara #6, revised |
+| 14 | Governor question answered by the user plus timeout-to-deny; no fourth agent | decided (from Clara, confirmed 2026-09-21) | Clara #6 |
 | 15 | Params: allowlist + schema only, no free-text | superseded by §4 | addendum 2 §3 |
 | 16 | Shared, serialized Superego (FIFO queue) | rejected | contradicts #1; a Prolog-`assert` queue also reintroduces clause accumulation from the rumination-ingest work |
 | 17 | Denial retry, or loop to Id | rejected | contradicts #2 and #3 |
@@ -76,7 +78,7 @@ the reason.
   `Alternatives`, formalizes one, acts only through the gate. Delivery uses existing choke points
   (`impl Handler<TurnResult> for FrontDeskActor`, `ws.rs:451`).
 
-## 3. Superego context and message envelope [adopted]
+## 3. Superego context and message envelope [decided, items 10-11]
 
 - Tier 1 (always): action, params, justification, ritual state.
 - Tier 2 (on request): richer context. The Ego is the gated party, so the Superego must not take Tier 2 from it.
@@ -150,3 +152,10 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
 
 Resolved since the base plan: Superego sharing (item 1), denial handling (item 2), kill-switch mechanics (item 5,
 pending Phase 0), governor (item 14).
+
+## 8. Review history
+
+- 2026-09-21, user review: items 9-14 confirmed. §4 is endorsed by the assembly (below) but not yet explicitly confirmed by the user, so it stays [proposed].
+- 2026-09-21, Deliberative Analyst assembly: adopted 4-0. Filed as `hermes_v3_assembly_review_2026-09-21.md`,
+  advisory input only. It added the goal-construction invariant (now in the header). It did not resolve the §7
+  open questions.
