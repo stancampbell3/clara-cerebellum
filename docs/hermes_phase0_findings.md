@@ -560,3 +560,16 @@ deleting a session released the remote seat; killing pineal's FieryPit with `SIG
 - Real hostile workloads, larger tasks, or two Ego turns interleaved on pineal's single GPU alongside PitBoss loads (no contention test).
 - Where published files should go: they live on pineal (`~/ego/state/outbox`); a pickup story is still open.
 - Replacing pineal's existing lildaemon (baked secrets) is untouched; egress firewall beyond the one Ollama rule.
+
+
+# Updating pineal's lildaemon, and a Dis session-cap defect it exposed (2026-09-21)
+
+**Pineal update.** Its existing FieryPit (`docker-lildaemon-1`, host network, `:6666`, compose file `docker-compose.remote-fierypit.yml` in its own clone) ran an image with a baked `.env` (Aug 24) and none of the Ego code. Now: limbic's current `lildaemon:latest`
+(no `.env`) loaded with `docker save | ssh docker load`, recreated via that compose file with `--env-file` built on pineal from the running container's own environment (secrets never left pineal; the temp file was removed). Rollback image `lildaemon:pre-update` (`35cc3c5a11c8`, still contains the
+baked secrets: delete once satisfied). Verified: healthy, re-registered with Dis (13 evaluators, was 12: `hermes_ego` is now in config, harmless there because no launcher socket is set), no errors, and the PitBoss cross-host verifier (`examples_ritual_remote_fierypit.py`) got answers from both the local and the pineal seat.
+Note that verifier's default 25 s window is too tight for pineal's stock `qwen-clara` (its renderer/parser is `qwen3-coder`, so it thinks for tens of seconds; see the pineal findings); use `--poll-max-wait-s 200 --max-cycles 900 --patience-cycles 700`. Fixing that model tag is a separate, optional step.
+
+**The Dis defect.** Before the update, ritual joins on the live stack failed with `429 Too Many Requests` from `POST /devils/sessions`. Cause: `SessionStore::count_active` counted EVERY session row, and `DELETE /devils/sessions/{id}` only marks a session terminated, never removes it, so each Prolog session ever created (one per
+Prolog-capable participant that ever joined) consumed a slot of the 50-session cap until the process restarted; only 6 of the 50 were live. Fixed in clara-session (`40c720b`): count non-terminated sessions only, and purge sessions terminated more than 10 minutes ago on the next create; 2 new tests, 18 session tests pass.
+Deployed by rebuilding and restarting only `clara-api` (about a minute; all 38 rituals restored from DuckDB, in-memory sessions cleared; rollback image `clara-api:pre-session-fix`), then recreating the main lildaemon. This was a latent time-bomb independent of the Ego work: any long-lived stack would eventually have refused all new Prolog participants.
+Before deploying I terminated 44 dead sessions (23 already terminated, 21 leaked-active) chosen by checking that their ids appeared in no running FieryPit's log; that only frees "active" slots, it did not free the cap (hence the restart).
