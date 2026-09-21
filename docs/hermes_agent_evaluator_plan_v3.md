@@ -23,10 +23,15 @@ the reason.
 
 ## 0. Needs your decision first
 
-1. ~~Params handling (§4).~~ Confirmed by the user 2026-09-21. The two sub-questions in §4 remain open.
+1. ~~Params handling (§4).~~ Confirmed by the user 2026-09-21. Escalation rule for irreversible or unsure free-form
+   actions decided the same day (ledger 28). The remaining FFI detail is a Phase 2 spike.
+[STAN]  Not sure what the question is.  Please explain.
 2. **Phase 0 runs on limbic** (§6). The earlier docs said it needs Pineal. It does not, except for a final
    cross-host confirmation.
+[STAN]  Correct.  We envision running a new example analyst in our clara-frontdesk-poc demo which should integrate our Superego, the new HermesAgentEvaluator as an Ego, and leaving space for future Id work (currently, its suggestions are too wild to be useful).
+
 3. ~~Whether the adopted items in §1 are confirmed.~~ Items 9-14 confirmed by the user on 2026-09-21.
+[STAN] Confirmed.
 
 ## 1. Decision ledger
 
@@ -59,6 +64,7 @@ the reason.
 | 25 | Ritual-space concurrency: append mode plus write-with-expected-version; a conflict returns an error. No last-writer-wins | decided (2026-09-21) | §8 |
 | 26 | Ritual-space lifecycle keyed by `ritual_id`; reuse Dis ritual TTL reaping with the `persist:true` opt-in | decided (2026-09-21) | §8 |
 | 27 | Toolified evaluators migrate over time to the same ritual-space API, replacing path-based file tools | decided (2026-09-21) | §8 |
+| 28 | Free-form (semantic-review) route approves only reversible, contained actions; **irreversible or unsure escalates to the user**; timeout denies | decided (2026-09-21) | §4 |
 
 ## 2. Architecture
 
@@ -105,9 +111,15 @@ property of how data flows, not of what shape it has.
   - **Free-form or unknown action:** params go as an opaque data term to semantic review (`clara_fy` or other
     tools), which can only approve or deny. Never auto-approved by rules; fail-closed on timeout.
 - Rule replaced: "reject free-text `Params`" becomes "never construct goals from Hermes-supplied text".
-- **[open]** Should the free-form route require a stricter bar for irreversible action classes (semantic approval
-  plus user confirm)? Does the known clara-prolog FFI dict-serialization gap force the data term to be a JSON
-  string blob parsed Python-side?
+- **Escalation rule [decided 2026-09-21, ledger 28]:** the free-form route may approve only actions its review judges
+  **reversible and contained**. If it judges an action **irreversible or is unsure**, it escalates to the user through
+  the same path as a denial (ledger 2): no silent approve, no silent deny. Timeout still means deny. The semantic
+  review therefore returns a verdict (`approve` / `deny` / `escalate`) plus a reversibility classification, and the
+  demo starts with a small allowlist of known actions.
+- **Params reaching Prolog [Phase 2 spike, not a decision]:** because the clara-prolog FFI cannot serialize dicts,
+  params reach the rules either as a JSON string or as a structured term. Default: Python validates known-action params
+  against a schema first, and Prolog only sees validated fields as plain values. The invariant (never build goals from
+  Hermes text) holds either way.
 
 ## 5. Phase 0 facts gathered so far (limbic, read-only)
 
@@ -146,11 +158,16 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
   assert structure only.
 - **Phase 3.** Frontdesk integration, terminal "denied" outcome, authenticated user override, pending-approval UX
   decision.
+  Target (user, 2026-09-21): a new example analyst in `clara-frontdesk-poc` (style of `id_analyst.pl` and
+  `deliberative_analyst.pl`) wiring the Superego (`approve_action`), the `HermesAgentEvaluator` as Ego, and an empty
+  Id slot left for future work (Id suggestions are currently too wild to be useful; ledger 3). Consolidating copy-pasted
+  analyst logic stays gated on this landing.
 - **Phase 4 (named only).** Audit topics, latency budget, PitBoss auto-placement.
 
 ## 7. Open questions
 
-1. Params: stricter bar for irreversible free-form actions; FFI serialization path (§4).
+1. Params: FFI serialization path is a Phase 2 spike (§4). The irreversible-action bar is decided (ledger 28); still to
+   define is how the review classifies reversibility and what the user sees when it escalates.
 2. Hermes wire format, confirmation hook, cancel API, API-server platform toolsets (Phase 0).
 3. Placement and naming of `approve_action/4` (Phase 2).
 4. Pending-approval UX in the WS protocol (Phase 3).
@@ -255,3 +272,5 @@ evaluators and retire the path-based tools for ritual-scoped work.
 - 2026-09-21, user attested Phase 0 and commented on the findings' remaining questions (kanban dispatcher concern
   added as open item 10).
 - 2026-09-21, ritual-space design agreed (decisions 23-27) and written up as §8; Hermes home/config approach and NFS-first backend remain [proposed].
+- 2026-09-21, user decided the free-form escalation rule (ledger 28), confirmed the frontdesk analyst target for Phase 3,
+  and left inline `[STAN]` comments in §0.
