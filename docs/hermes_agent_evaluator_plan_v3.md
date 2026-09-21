@@ -271,12 +271,44 @@ evaluators and retire the path-based tools for ritual-scoped work.
 - Caveat: `flock` on NFS is only as good as the mount's lock support; verify on the real export before relying on it
   across hosts.
 
+### Implemented: slice 2 (lildaemon branch `hermes-ego-phase1`, 2026-09-21, uncommitted)
+
+Wires the ritual space into rituals, toolified evaluators and app startup. 23 more tests (`tests/test_ritual_space_wiring.py`).
+
+- **Scope, not arguments.** `goat/ritual_space/scope.py`: `ritual_scope(ritual_id, node_id)` and `author_scope(instance_id)`
+  are `ContextVar` context managers (same pattern as `python_tools.workspace_scope`). `RitualParticipant` enters
+  `ritual_scope` **inside the executor thread** that evaluates (`run_in_executor` does not copy context), and
+  `ToolifiedOllamaEvaluator._dispatch_tool` enters `author_scope`. Tools take ritual and author from the scope, never
+  from model-supplied arguments, so a model cannot name another ritual's space. Outside a ritual every tool fails closed.
+- **Author is `<node_id>/<instance_id>`** (a superset of decision 24's `instance_id`), so a reader can tell which seat wrote
+  a document, which is what the Superego needs to treat Ego-authored documents as Ego-supplied.
+- **Tools:** `goat/tools/ritual_space_tools.py` + `.json`: `ritual_list`, `ritual_stat`, `ritual_read`, `ritual_write`,
+  `ritual_append`. Return convention matches `python_tools` (`{"success", "result"}` or `{"success": false, "error",
+  "error_type"}`), so a `VersionConflict` comes back to the model as data it can recover from. **Opt-in per evaluator**, no
+  live registration changed:
+
+      metadata:
+        tools: goat/tools/ritual_space_tools.json    # module derived from the path
+
+  To combine with `python_tools`, `tools` must be an inline list with an explicit `path` per tool (only one JSON file
+  is accepted).
+- **Reaping tied to the ritual:** `reap_by_ritual_status` (`goat/ritual_space/reaper.py`) with the Dis adapter in
+  `goat/app/ritual_space_reaper.py`. A space idle less than the grace period, or marked persist, is never touched. Past
+  that: Dis `active` keeps it however quiet; `terminated` or 404 reaps it; any other Dis failure only reaps past the long
+  ceiling, so a Dis outage cannot wipe live rituals. **Opt-in**: `RITUAL_SPACE_REAP_ENABLED`, plus
+  `RITUAL_SPACE_REAP_INTERVAL_SECONDS` (3600), `RITUAL_SPACE_TERMINATED_GRACE_SECONDS` (3600),
+  `RITUAL_SPACE_MAX_IDLE_SECONDS` (7 days). Enable on exactly one host per shared root. Wired into `goat/app/main.py`
+  startup and shutdown.
+- **`persist` is not read from Dis.** Dis's `persist` flag exists only on `/deduce`, not on rituals, so ritual-space
+  persistence is `RitualSpace.set_persist()` until a ritual config exposes it.
+- **Risk to watch:** a Dis that restarts and forgets a live ritual would answer 404, and its space would be reaped after
+  the grace period of idleness. Acceptable for now; revisit if Dis rituals are not durable.
+
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
   drops mid-lock) before any cross-host use. Slice 1 only proved it locally. Tracked in memory as `flock-over-nfs-unverified`.
-- Wiring: `RitualParticipant` supplying `ritual_id` to evaluators, the reaper in app startup, and coupling reaping to
-  Dis ritual status (slice 2).
+- Ritual configs exposing `persist` for the ritual space (needs a config/Dis change).
 - Whether the export step needs a Superego review or is only logged for `read` of ritual documents by an outside party.
 - Retention default and the reaper's interaction with `persist:true` across hosts.
 - Reproducing and root-causing the container path failures (independent of this design, but worth doing before the
@@ -299,3 +331,4 @@ evaluators and retire the path-based tools for ritual-scoped work.
 - 2026-09-21, user decided the free-form escalation rule (ledger 28), confirmed the frontdesk analyst target for Phase 3,
   and left inline `[STAN]` comments in §0.
 - 2026-09-21, Phase 1 slice 1 implemented in lildaemon (`goat/ritual_space/`, branch `hermes-ego-phase1`, uncommitted).
+- 2026-09-21, Phase 1 slice 2 implemented in lildaemon (scope wiring, tools, ritual-status reaper), uncommitted.
