@@ -316,3 +316,42 @@ unrecorded) has not been checked; see follow-ups.
   dispatcher itself was left running. Requirement: nothing autonomous may act without going through the Superego gate.
   Investigate whether the dispatcher and cron can be disabled outright for Ego seats (config or `hermes pause`), and
   treat "no autonomous work" as an explicit Phase 1 check.
+
+---
+
+# Slice 3 live spike: the real ego_gate MCP server against Hermes (2026-09-21)
+
+The real server (`lildaemon` branch `hermes-ego-phase1`, `goat/mcp/ego_gate/`) against a throwaway Hermes v0.21.3 container
+with the Phase 0 gate recipe (fresh data dir, no published ports, memory/CPU/pids limits, live `hermes` untouched and
+re-verified by config/`.env` hash, everything torn down). The gate server ran **inside the lildaemon image** (Python 3.11,
+mcp 2.2.0) with the branch source mounted read-only, which also verified it on the production dependency set.
+
+| Check | Result |
+|---|---|
+| Tools Hermes registers | exactly six: `mcp__ego_gate__request_action`, `..._ritual_list`, `_ritual_stat`, `_ritual_read`, `_ritual_write`, `_ritual_append` |
+| Shared document | `ritual_write` landed in the seat's ritual space (`spike-ritual-1`) authored `n2/hermes-inst`. Ritual and author came from the **token**, not from anything the model sent |
+| `request_action` | denied by default (`DENIED: no action gate is configured. Do not retry.`); the model reported the refusal and did not retry |
+| Stateless and stateful HTTP | both work with Hermes; stateless is the default (per-request auth) |
+| No or wrong token | HTTP 401 with `WWW-Authenticate: Bearer`; Hermes registers 0 tools and no tool events fire |
+| Input tokens with the six tools | 10,244 (vs 660 with no tools, 13,357 with the default toolsets) |
+
+## Findings that change the design
+
+1. **A host-run listener is unreachable from containers.** Container to host traffic is filtered on everything but allowed
+   ports (Ollama's works), so a listener bound to the docker bridge gateway timed out. Container to container on the
+   bridge works (as the Phase 0 stub showed). The FieryPit itself runs in a container, so the listener belongs **inside
+   the FieryPit container**, bound `0.0.0.0` there and **not published**, with seat containers on the same docker network.
+2. **Token delivery: put it in the seat's Hermes-home `.env`.** `${VAR}` in MCP `headers` resolved when `EGO_GATE_TOKEN`
+   was in `$HERMES_HOME/.env`, but **not** when passed by `docker run -e/--env-file`: the placeholder stayed literal
+   (`Bearer ${EGO_GATE_TOKEN}`) and the server returned 401. An unset variable keeps its literal placeholder **silently**.
+   So at seat creation write the token into the per-seat `.env` (mode 0600), which fits the per-seat home copied from the
+   golden template. (The gateway runs under s6, which does not pass container env to it; `docker exec` shows the variable
+   but the gateway does not use it. Not confirmed from `/proc`, which was not readable.)
+3. **The model narrates success it did not achieve.** With the wrong token Hermes had zero tools and no tool events fired,
+   yet the answer said "Saved x.md ... in /opt/data/x.md". Nothing was written, so this was safe, but the prose was false.
+   The evaluator must never trust the model's narrative: verify at seat start that the expected tools are registered, and
+   report outcomes from tool events and the ritual-space journal, not from the model's own account.
+4. **Who executes an approved action is undefined.** `request_action` returning APPROVED means the gate allows it; nothing
+   yet runs it. Needs an evaluator-side executor (by action name, and a reviewed handler for free-form actions) in Phase 2.
+5. `mcp` 2.x hides the message of any non-`ToolError` exception raised in a tool (returns `Error executing tool <name>`), a
+   good default; the tools return structured `{"success": false, ...}` for recoverable errors instead.

@@ -181,6 +181,29 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
 10. Autonomous work: Hermes' embedded kanban dispatcher and cron must not be able to act outside the Superego gate.
     Investigate disabling them for Ego seats; make "no autonomous work" a Phase 1 check (user concern, 2026-09-21).
 11. Pineal Hermes must be reconciled with limbic's version and config before cross-host work.
+12. **Who executes an approved action** is undefined. `approve` says the action may run; an evaluator-side executor (by action
+    name, and a reviewed handler for free-form actions) is needed in Phase 2. With the deny-all default nothing runs today.
+13. **Verify the seat at start, and never trust its narrative.** With a bad token Hermes ran with zero tools and the model
+    still claimed to have saved a file. The evaluator must assert the expected six tools are registered before dispatching
+    work, and report outcomes from tool events and the ritual-space journal (slice 4).
+14. **Token delivery** must go through the seat's Hermes-home `.env` (0600), written at seat creation; container env vars are
+    not resolved by `${VAR}` in MCP headers, and an unresolved variable stays literal without any error.
+15. **Where the listener and seat containers live.** The listener runs inside the FieryPit container (unpublished) and seat
+    containers join the same docker network; a host-run listener is unreachable from containers. The FieryPit also needs a way
+    to start seat containers (docker socket access or a host-side launcher), unresolved (slice 4).
+16. **Later (user idea, 2026-09-21): a way to be sure of what the agent actually did and what was actually decided.** Item 13 is the
+    motivating case (the model narrated a save that never happened). A verifiable record of actions taken and decisions made,
+    independent of the model's own account, is worth designing once the gate and executor exist; not scoped yet.
+    **User strategy (2026-09-21):** detect or intercept the tool calls the agent makes, and record a log or emit an event asserting
+    that the action was taken. Notes for when this is scoped: (a) the `ego_gate` server is already that interception point, since
+    the seat's only tools are ours and native toolsets are off (verified at seat start, item 13); an event per call written by the
+    server (seat, ritual, tool, arguments or a digest, verdict or result, the ritual `seq` from decision 11) is a complete record
+    of what the seat could do, and absence of an event means it did not happen. (b) The audit record must not live in a
+    model-writable place: keep it out of ritual-space documents (those are shared and model-writable), in an append-only log the
+    server writes. Ritual-space writes are already journaled with author and `seq`. (c) Hermes' own SSE `tool.started/completed`
+    events (name and preview, no full arguments) are an independent cross-check for detecting a tool call that never reached us.
+    (d) Emission targets: a server-side log first; audit topics are the existing Phase 4 idea. (e) The user-facing answer should
+    attach the recorded actions rather than rely on the model's summary. Not built yet.
 
 Resolved since the base plan: Superego sharing (item 1), denial handling (item 2), kill-switch mechanics (item 5,
 pending Phase 0), governor (item 14).
@@ -317,6 +340,27 @@ Wires the ritual space into rituals, toolified evaluators and app startup. 23 mo
   earlier count, per `dis_deduction_ritual_ttl_reaping`), so the 404-after-restart risk noted in an earlier draft is
   largely moot. Taken from the notes and the commit; not re-tested live.
 
+### Implemented: slice 3, the ego_gate MCP server (lildaemon branch `hermes-ego-phase1`, 2026-09-21, uncommitted)
+
+`goat/mcp/ego_gate/` (`seats`, `envelope`, `gate`, `tools`, `server`, `wiring`), 59 tests (`tests/test_ego_gate_core.py`,
+`tests/test_ego_gate_server.py`), `mcp>=2.2,<3` declared in `pyproject.toml` (dev venv upgraded; the container already had
+2.2.0). Live-verified against a throwaway Hermes (see `hermes_phase0_findings.md`, "Slice 3 live spike").
+
+- **Per-seat identity from a bearer token.** `SeatRegistry` maps token to `(ritual_id, node_id, instance_id)`, storing only a
+  SHA-256. Auth is checked twice: an ASGI wrapper rejects any HTTP request without a valid token (401), and every tool call
+  re-resolves the seat from its own request headers, so a revoked token stops working immediately even inside a session.
+  Tools take no ritual or author argument.
+- **Six tools:** `request_action` and the five `ritual_*` tools (delegating to slice 2's functions inside the seat's scope).
+- **`request_action` is deny-all until Phase 2**, behind an `ActionGate` interface. Timeout, exception or a malformed verdict
+  all become deny, and the pending decision is cancelled, so a late verdict is discarded by construction (v3 open item 8,
+  now implemented and tested; a gate that hands work to a thread must expire its own correlation id).
+- **Envelope:** free-form action names (128 chars), `params` a JSON object up to 16 KiB, `justification` up to 4 KiB; plain data,
+  never turned into Prolog text.
+- **Separate listener, not on the public port.** Opt-in via `EGO_GATE_ENABLED` (`EGO_GATE_HOST`, `EGO_GATE_PORT` default 8765,
+  `EGO_GATE_REQUEST_TIMEOUT_SECONDS`, `EGO_GATE_STATELESS` default true), started and stopped in `goat/app/main.py`.
+- **Not fixed here:** `goat/mcp/ochecho/server.py` (imports the removed `mcp.server.fastmcp`) and
+  `MCPToolRegistry`'s client (`streamablehttp_client` was renamed `streamable_http_client`) are still broken on mcp 2.x.
+
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
@@ -346,3 +390,4 @@ Wires the ritual space into rituals, toolified evaluators and app startup. 23 mo
 - 2026-09-21, Phase 1 slice 1 implemented in lildaemon (`goat/ritual_space/`, branch `hermes-ego-phase1`, uncommitted).
 - 2026-09-21, Phase 1 slice 2 implemented in lildaemon (scope wiring, tools, ritual-status reaper), uncommitted.
 - 2026-09-21, ritual-space retention aligned with Dis's 7 day terminated-ritual retention (grace 7 days, ceiling 14 days); persist options recorded, deferred.
+- 2026-09-21, Phase 1 slice 3 implemented in lildaemon (`goat/mcp/ego_gate/`) and live-verified against Hermes; open items 12-16 added.
