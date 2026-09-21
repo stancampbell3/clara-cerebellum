@@ -296,19 +296,32 @@ Wires the ritual space into rituals, toolified evaluators and app startup. 23 mo
   `goat/app/ritual_space_reaper.py`. A space idle less than the grace period, or marked persist, is never touched. Past
   that: Dis `active` keeps it however quiet; `terminated` or 404 reaps it; any other Dis failure only reaps past the long
   ceiling, so a Dis outage cannot wipe live rituals. **Opt-in**: `RITUAL_SPACE_REAP_ENABLED`, plus
-  `RITUAL_SPACE_REAP_INTERVAL_SECONDS` (3600), `RITUAL_SPACE_TERMINATED_GRACE_SECONDS` (3600),
-  `RITUAL_SPACE_MAX_IDLE_SECONDS` (7 days). Enable on exactly one host per shared root. Wired into `goat/app/main.py`
+  `RITUAL_SPACE_REAP_INTERVAL_SECONDS` (3600), `RITUAL_SPACE_TERMINATED_GRACE_SECONDS` (**7 days**),
+  `RITUAL_SPACE_MAX_IDLE_SECONDS` (14 days). Enable on exactly one host per shared root. Wired into `goat/app/main.py`
   startup and shutdown.
-- **`persist` is not read from Dis.** Dis's `persist` flag exists only on `/deduce`, not on rituals, so ritual-space
-  persistence is `RitualSpace.set_persist()` until a ritual config exposes it.
-- **Risk to watch:** a Dis that restarts and forgets a live ritual would answer 404, and its space would be reaped after
-  the grace period of idleness. Acceptable for now; revisit if Dis rituals are not durable.
+- **Retention follows Dis (decided 2026-09-21).** Dis keeps a terminated ritual's row for 7 days and then deletes it
+  (`clara-coire` CarrionPicker pass 5, reusing `snapshot_ttl`, `clara-cerebellum@c4e1aca`); active rituals are never
+  touched. The grace default matches that, so a completed ritual's documents stay readable for the workers that will later
+  pull finished work (the user's stated plan), and once Dis's sweep removes the row its status returns 404 and the reaper
+  follows. The unknown-status ceiling is longer than the grace so an outage never reaps sooner than a confirmed
+  termination would. (An earlier draft used a 1 hour grace; that would have deleted documents long before Dis forgets the
+  ritual.)
+- **`persist` for ritual spaces.** Dis's `persist` flag exists only on `/deduce` (durable deduction snapshots); ritual
+  creation has no equivalent, so `persist` cannot be read from Dis. Until a ritual opts in, retention is the Dis-aligned
+  default above, and `RitualSpace.set_persist()` is the hook. Deferred, in order: (a) a `persist_space` field on the
+  lildaemon ritual config (`goat/app/ritual_configs/models.py`) applied at activation (`router.py:352`), stored in the
+  space's own `space.json` so it works across hosts without touching Dis; (b) only if persistent rituals should also be
+  exempt from Dis's own terminated-ritual GC, a `persist` field on the Dis `RitualConfig`/rituals table, returned by
+  `/ritual/{id}/status` (Rust change plus migration).
+- **Dis restarts do not lose rituals.** Dis restores rituals from its DuckDB store on start (251 were restored in the
+  earlier count, per `dis_deduction_ritual_ttl_reaping`), so the 404-after-restart risk noted in an earlier draft is
+  largely moot. Taken from the notes and the commit; not re-tested live.
 
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
   drops mid-lock) before any cross-host use. Slice 1 only proved it locally. Tracked in memory as `flock-over-nfs-unverified`.
-- Ritual configs exposing `persist` for the ritual space (needs a config/Dis change).
+- Ritual configs exposing `persist` for the ritual space (options (a) and (b) above; neither needed yet).
 - Whether the export step needs a Superego review or is only logged for `read` of ritual documents by an outside party.
 - Retention default and the reaper's interaction with `persist:true` across hosts.
 - Reproducing and root-causing the container path failures (independent of this design, but worth doing before the
@@ -332,3 +345,4 @@ Wires the ritual space into rituals, toolified evaluators and app startup. 23 mo
   and left inline `[STAN]` comments in §0.
 - 2026-09-21, Phase 1 slice 1 implemented in lildaemon (`goat/ritual_space/`, branch `hermes-ego-phase1`, uncommitted).
 - 2026-09-21, Phase 1 slice 2 implemented in lildaemon (scope wiring, tools, ritual-status reaper), uncommitted.
+- 2026-09-21, ritual-space retention aligned with Dis's 7 day terminated-ritual retention (grace 7 days, ceiling 14 days); persist options recorded, deferred.
