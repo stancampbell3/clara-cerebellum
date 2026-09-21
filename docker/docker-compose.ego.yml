@@ -68,12 +68,24 @@ services:
       - EGO_GATE_ADVERTISE_URL=http://lildaemon-ego:8765/mcp
       - SEAT_LAUNCHER_SOCKET=/run/seat-launcher/l.sock
       - RITUAL_SPACE_ROOT=/app/ritual_spaces
+      # Phase 2, the real gate. deny_all (default here): every request_action is refused, nothing runs.
+      # superego: a Prolog policy decides through Dis (DIS_BASE_URL above); allowlisted actions
+      # (export_document, record_note) may then execute into EGO_OUTBOX_ROOT, and free-form actions go to
+      # the reviewing LLM node of the same ritual and can NEVER execute. Every decision and execution is
+      # appended to <RITUAL_SPACE_ROOT>/<ritual_id>/actions.jsonl, which the model has no tool to reach.
+      - EGO_GATE_MODE=${EGO_GATE_MODE:-deny_all}
+      - EGO_GATE_SUPEREGO_NODE=${EGO_GATE_SUPEREGO_NODE:-superego}
+      - EGO_GATE_SUPEREGO_MODEL=${EGO_GATE_SUPEREGO_MODEL:-qwen-clara-hermes:latest}
+      - EGO_OUTBOX_ROOT=/app/outbox
     volumes:
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/data:/app/data
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/output:/app/output
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/workspace:/app/workspace
       # Documents shared by a ritual's participants (goat/ritual_space). Outside any repository tree.
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/ritual_spaces:/app/ritual_spaces
+      # Where approved export_document / record_note actions write, for pickup outside the ritual. The only
+      # place an approved action can leave a file; nothing else on the host is writable from here.
+      - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/outbox:/app/outbox
       # The seat launcher's unix socket (its DIRECTORY is mounted). This is the ONLY route to container
       # control; docker.sock is never mounted.
       - ${SEAT_LAUNCHER_DIR:-/tmp/sl-ego}:/run/seat-launcher

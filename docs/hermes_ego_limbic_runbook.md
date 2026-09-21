@@ -16,6 +16,8 @@ Seats live on the dedicated `clara-seats` bridge, so a seat cannot reach the mai
 networks (see "What the isolation does and does not give you"). No code assumes a docker network name: FieryPits can be remote and are identified by URL. The advertised gate URL plus each host's launcher `network`
 setting is all that ties a seat to its FieryPit.
 
+> **Phase 2 (2026-09-21, branch `hermes-ego-phase2`, not merged):** the gate can be real (`EGO_GATE_MODE=superego`, below). Build `lildaemon:ego` from that branch to use it.
+>
 > **Status (2026-09-21):** the Hermes Ego work is merged onto lildaemon `master` (local; not pushed) and the live `lildaemon:latest` was rebuilt from it, without the baked
 > `.env`. The commands below still build `lildaemon:ego` from whatever is checked out in `lildaemon`, which is now `master`.
 
@@ -27,7 +29,7 @@ setting is all that ties a seat to its FieryPit.
 
 ## One-time setup
 
-    mkdir -p /tmp/sl-ego /tmp/ego-launcher-state /tmp/ego-fierypit/{data,output,workspace,ritual_spaces}
+    mkdir -p /tmp/sl-ego /tmp/ego-launcher-state /tmp/ego-fierypit/{data,output,workspace,ritual_spaces,outbox}
 
 Create these yourself first so they are owned by you; docker would otherwise create them as root and the launcher could not use them.
 For a lasting deployment choose persistent paths and set `SEAT_LAUNCHER_DIR` and `EGO_STATE_DIR` accordingly.
@@ -58,14 +60,27 @@ Launcher config, e.g. `/tmp/sl-ego/launcher.toml`:
 Check: `docker ps` shows `ego-lildaemon-ego-1` healthy; `curl -s http://127.0.0.1:6667/health`; Dis lists it (`GET /fierypits` with the
 peer token); the container log shows `ego_gate: listening on http://0.0.0.0:8765/mcp`.
 
+## Enable the real gate (Phase 2)
+
+By default the gate is `deny_all`. To use the Prolog Superego, bring the FieryPit up with the gate mode set (it needs the main stack's Dis, and Ollama for the reviewer):
+
+    EGO_GATE_MODE=superego docker compose -f docker-compose.ego.yml up -d --build
+
+Then the container log shows `ego_gate: gate mode superego`. Other knobs, all optional: `EGO_GATE_SUPEREGO_NODE` (default `superego`), `EGO_GATE_SUPEREGO_MODEL` (default `qwen-clara-hermes:latest`, the seat's own model, so
+Ollama does not swap models), `EGO_GATE_DIS_POLL_SECONDS`. Approved `export_document` / `record_note` actions write only under `$EGO_STATE_DIR/outbox/<ritual_id>/`. Every decision is appended to
+`$EGO_STATE_DIR/ritual_spaces/<ritual_id>/actions.jsonl`, which the model has no tool to read or write.
+
 ## Run a ritual with an Ego seat
 
     cd /path/to/lildaemon
-    python examples_ritual_hermes_ego.py --strict --ritual-space-root /tmp/ego-fierypit/ritual_spaces
+    python examples_ritual_hermes_ego.py --strict \
+        --ritual-space-root /tmp/ego-fierypit/ritual_spaces --outbox-root /tmp/ego-fierypit/outbox
 
-(`DIS_DOMAIN_PEER_TOKEN` in the environment; the script reads it from there.) It creates a ritual, joins `hermes_ego` as node `ego`,
-sends the Ego a task through Prolog `caws_offer`/`caws_await`, then prints **evidence, not the model's account**: the shared documents
-and their authors from disk, and the seat container's real isolation from `docker inspect`. It then leaves the ritual, which closes the
+(`DIS_DOMAIN_PEER_TOKEN` in the environment; the script reads it from there.) It creates a ritual, joins `hermes_ego` as node `ego` and a reviewer as node `superego`
+(`--no-superego` skips it),
+sends the Ego a three-part task through Prolog `caws_offer`/`caws_await` (export a document; email someone; a request with a hostile justification), then prints **evidence, not the model's account**: the shared documents
+and their authors from disk, the gate's action ledger and the outbox, structural checks on them (no free-form action executed, the evaluator's report matches the ledger, the outbox holds exactly what the ledger
+recorded), and the seat container's real isolation from `docker inspect`. It then leaves the ritual, which closes the
 evaluator and deletes the seat, and confirms the container is gone. `--strict` exits non-zero if any check fails.
 
 The first offering starts the seat (15 to 30 seconds), so allow for it; `eval_timeout_s` defaults to 240.
