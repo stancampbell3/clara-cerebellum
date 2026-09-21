@@ -18,3 +18,15 @@ lildaemon/workspace/
 # local venv; git history has no runtime purpose.
 lildaemon/.venv/
 lildaemon/.git/
+
+# Secrets never belong in an image layer. The repo's .env (gitignored, never committed) holds API keys,
+# tokens and JWT secrets; it used to be copied in by `COPY lildaemon/ .` and loaded at import by
+# goat/__init__.py's load_dotenv(), so a variable NOT set in docker-compose.yml silently fell back to a
+# value from that hidden file (found 2026-09-21: an unconfigured EDGEQUAKE_BASE_URL let the
+# assistant-documents reaper run in a second FieryPit). Configuration reaches the container through
+# compose `environment:` only. Measured before excluding it: the only variables the live container got
+# solely from the baked file were CLIPS_MCP_URL, FIERYPIT_BASE_URL, GITHUB_TOKEN, GROQ_BASE_URL,
+# OLLAMA_URL and PROLOG_MCP_URL, and none is read in a way compose does not already cover.
+lildaemon/.env
+lildaemon/.env.*
+lildaemon/**/.env

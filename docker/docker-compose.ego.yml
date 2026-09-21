@@ -49,11 +49,12 @@ services:
       - LILDAEMON_OUTPUT_DIR=/app/output
       - PYTHON_TOOLS_WORKSPACE=/app/workspace
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      # This FieryPit must not act on shared resources or hold the main stack's third-party credentials. The
-      # image bakes a copy of the repo's `.env` that goat/__init__.py loads at import, so simply NOT setting
-      # these is not enough (found live: EDGEQUAKE_BASE_URL=http://localhost:8082 came from it, and the
-      # assistant-documents reaper ran). An explicitly EMPTY value wins over the baked file (load_dotenv never
-      # overrides an existing variable) and keeps the reaper and the third-party evaluators off.
+      # This FieryPit must not act on shared resources or hold the main stack's third-party credentials.
+      # Images built BEFORE 2026-09-21 baked a copy of the repo's `.env` that goat/__init__.py loads at import, so
+      # simply not setting these was not enough (found live: EDGEQUAKE_BASE_URL=http://localhost:8082 came from
+      # it, and the assistant-documents reaper ran). Dockerfile.lildaemon.dockerignore now excludes `.env`, but
+      # these explicit EMPTY values stay as belt and braces: an empty variable wins over any baked file
+      # (load_dotenv never overrides an existing variable) and keeps the reaper and third-party evaluators off.
       - EDGEQUAKE_BASE_URL=
       - EDGEQUAKE_API_KEY=
       - GROQ_API_KEY=
