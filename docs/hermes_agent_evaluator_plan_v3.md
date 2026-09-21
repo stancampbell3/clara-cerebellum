@@ -12,7 +12,7 @@ Inputs, treated as input and not decisions: `clara_feedback_hermes_agent_integra
 > Different axes. Not in tension.
 
 > **Invariant (binding, non-waivable):** Prolog goals are never constructed from text supplied by Hermes.
-> Hermes output is parsed and bound as data only. (Recorded in the 2026-09-21 assembly review; see §8.)
+> Hermes output is parsed and bound as data only. (Recorded in the 2026-09-21 assembly review; see §9.)
 
 > **Note:** The Freudian labels (Id, Ego, Superego) are mnemonics only. They impose no behavioral constraint
 > beyond each seat's functional spec.
@@ -38,7 +38,7 @@ the reason.
 | 4 | Native Hermes toolsets disabled is a hard Phase 0 gate | decided | addendum 2 §2.1 |
 | 5 | One Hermes container per Ego seat, hard-stopped by the evaluator, cgroup-bounded, unless Phase 0 finds a real cancel API | decided | addendum 2 §2.2 |
 | 6 | `caws_offer`/`caws_await` is the gate; timeout-to-deny is the enforcement; no Kafka control plane | decided | plan §3 |
-| 7 | `request_action(action, params, justification)` is the only side-effecting tool | decided | plan §3 |
+| 7 | `request_action(action, params, justification)` is the only side-effecting tool | decided; amended by #23 | plan §3 |
 | 8 | Promote `caws_tristate/3` into `the_coire.pl` in the same change as `approve_action/4` | decided | addendum 1 §5 |
 | 9 | "Structurally deterministic; content-stochastic." Tests assert structure, never content | decided (from Clara, confirmed 2026-09-21) | Clara #5 |
 | 10 | Tiered Superego context, with Tier 2 sourced independently of the Ego | decided (from Clara, confirmed 2026-09-21) | Clara #4 |
@@ -54,6 +54,11 @@ the reason.
 | 20 | Prompt string-match as firewall evidence | rejected as evidence | kept as a cheap extra only |
 | 21 | 4-week estimate | rejected | |
 | 22 | Observer / Id Analyst seat | deferred | not on the Ego critical path |
+| 23 | `request_action` is the only tool with **external** side effects (amends #7). Ritual-space read and write are contained and allowed directly as separate MCP tools, with size caps and logging. Anything leaving the ritual space goes through `request_action` | decided (2026-09-21) | §8 |
+| 24 | Every ritual-space write records author seat (`instance_id`) and `seq`; the Superego treats Ego-authored documents as Ego-supplied, keeping Tier 2 context independent (extends #10) | decided (2026-09-21) | §8 |
+| 25 | Ritual-space concurrency: append mode plus write-with-expected-version; a conflict returns an error. No last-writer-wins | decided (2026-09-21) | §8 |
+| 26 | Ritual-space lifecycle keyed by `ritual_id`; reuse Dis ritual TTL reaping with the `persist:true` opt-in | decided (2026-09-21) | §8 |
+| 27 | Toolified evaluators migrate over time to the same ritual-space API, replacing path-based file tools | decided (2026-09-21) | §8 |
 
 ## 2. Architecture
 
@@ -133,7 +138,7 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
   (2) native toolsets, and the acquisition surfaces in §5, can be disabled, (3) whether a native confirmation hook
   exists, (4) whether a sub-agent cancel API exists (if not, item 5 applies). Output:
   `hermes_phase0_findings.md`. If toolsets cannot be disabled, revisit the gate design before Phase 1.
-- **Phase 1.** `AgentEvaluator` + `HermesAgentEvaluator` skeleton, container-per-Ego-seat with cgroup limits,
+- **Phase 1.** Ritual-space API and NFS backend (§8), then `AgentEvaluator` + `HermesAgentEvaluator` skeleton, container-per-Ego-seat with cgroup limits and per-seat Hermes home from the golden template,
   fan-out cap, `ritual_id`/`seq` envelope. Ungated, text-in/text-out, one seat.
 - **Phase 2.** `request_action`, `approve_action/4` with both §4 routes, paired Superego seat, `caws_tristate`
   promotion in the same change, structural firewall tests, independently sourced Tier 2 context, and
@@ -152,13 +157,7 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
 5. Superego decision-latency budget against deduction-cycle, httpx and Kafka timeouts (size early, tune Phase 4).
 6. Cost model: not estimated anywhere; Clara flagged it. Phase 0 gives a first data point (660 input tokens with the
    gate config vs 13,357 with default tools; 10-27 s per run on the 27b model).
-7. **Ritual space** (added 2026-09-21, needs its own design discussion). Each performance of a ritual, or ritual of
-   rituals, involving an Ego gets a ritual space: files shared among that ritual's evaluators, plus shared
-   configuration and memory for its Ego instances. NFS plus a docker mount may deliver it. Phase 0 facts: all Hermes
-   state lives under one home dir; it holds six SQLite databases in WAL mode (unsafe on NFS); two containers on one
-   data dir do not lock against each other (PID-based liveness fails across PID namespaces). So shared evaluator files
-   may fit NFS while the Hermes home likely needs local disk or a per-seat home with selected config and memory shared.
-   Also lifecycle/TTL reaping and extending the `workspace_dir` convention.
+7. **Ritual space**: designed in §8 (decisions 23-27). Remaining sub-questions are listed at the end of §8.
 8. Late-verdict handling: gate needs a correlation id with expiry so a Superego verdict arriving after the Ego's
    timeout is discarded (Phase 2).
 9. Add a container pids limit alongside memory and CPU (Phase 1).
@@ -169,7 +168,81 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
 Resolved since the base plan: Superego sharing (item 1), denial handling (item 2), kill-switch mechanics (item 5,
 pending Phase 0), governor (item 14).
 
-## 8. Review history
+## 8. Ritual space design
+
+Requirement (user, 2026-09-21): evaluators in a ritual must be able to read and write documents that other
+participants can see. A Hermes Ego is a special case of that. Each performance of a ritual, or ritual of rituals, has
+its own **ritual space**. Clara's mind splinters are distributed across FieryPits and hosts, so the approach must not
+depend on any one host's filesystem layout.
+
+### Why not extend the existing file tools
+
+The lildaemon container has three overlapping roots: `/app` (working directory, code), `/app/workspace` (intended
+file-tool root, `PYTHON_TOOLS_WORKSPACE`, a bind mount from `~/moonpool/.../lildaemon/workspace`) and `/app/moonpool`
+(the whole moonpool tree, read-only). Models handed filesystem paths have three bases to guess from. The user reports
+the path handling has never worked reliably (mistreating `/`, repo root and `./workspace`); this was **not reproduced**
+here, only the configuration was read. The existing `instances/<label>-<instance_id>` private directory
+(`toolified_ollama.py:763-791`) stays for seat-private scratch, but the ritual space does not build on path handling.
+
+### Layers
+
+| Layer | Scope | Where | Shared? |
+|---|---|---|---|
+| Seat-private | one evaluator instance | Hermes home on local disk (one per container); toolified `instances/<label>-<instance_id>` | never |
+| **Ritual space** | one ritual performance (`ritual_id`) | dedicated backend directory, reached only through the API below | all participants in that ritual |
+| Export | leaves the ritual space | `request_action` gate | per decision 23 |
+
+### Ritual-space API [decided in principle; exact shape proposed]
+
+- Operations: `list`, `read`, `write`, `append`, `stat`. Arguments are **logical document names**, never filesystem
+  paths, so `/`, `./workspace` and repo-root confusion cannot occur. The server maps names to a directory.
+- Caps on document size, document count and total bytes per ritual space. Names restricted to a safe character set.
+- Every write records author `instance_id` and `seq` (decision 24); `stat`/`read` return that provenance.
+- `write` takes an expected version and fails with a conflict error on mismatch; `append` is atomic (decision 25).
+- Every operation is logged with `ritual_id`, author and `seq`, feeding the Phase 4 audit topics.
+- For a Hermes seat the **evaluator hosts these as MCP tools** beside `request_action`. The container has **no mount**
+  and no filesystem tools, so the Phase 0 gate stays hermetic. Toolified evaluators call the same API in-process.
+
+### Backend [proposed]
+
+- First backend: a dedicated directory on NFS, since limbic and pineal both mount moonpool. It must live **outside the
+  repo tree** (see the moonpool shared-mount hazard), on its own subdirectory or export, and be written only by
+  FieryPit-side code.
+- The interface is backend-neutral so a service-hosted backend can be added for hosts that do not mount the share.
+- NFS suits document files. It does not suit Hermes' own state (below).
+
+### Hermes home and config [proposed]
+
+- Hermes expands `${VAR}` and `${env:VAR}` in config (`hermes_cli/config.py:1618-1666`) and honours a per-container
+  `HERMES_HOME`. So one golden template is **copied into each seat's local home at creation**; per-seat values (gate
+  URL, API key, model) come from env. Config is not mounted from NFS. "Invariant" means copied, not read-only mounted:
+  Hermes writes to its home at boot and on `config set`.
+- Under the gate config Hermes' native memory, skills and session search are off, so nothing in the home needs
+  sharing. Ritual-space documents are the shared, auditable memory. Sessions, `response_store.db`, `kanban.db` and
+  the rest are per-seat scratch on local disk, reaped with the seat (Phase 0: six WAL-mode SQLite databases, unsafe
+  on NFS; two containers on one data dir do not lock against each other).
+
+### Lifecycle
+
+Keyed by `ritual_id` (decision 11). Created with the ritual, reaped by the Dis ritual TTL sweep, retained when the
+ritual sets `persist:true` (decision 26). Note the future multi-Dis-domain work: the key may later need the domain id.
+
+### Migration (decision 27)
+
+Toolified evaluators move to the ritual-space API in phases, so there is not a second file model to maintain.
+Sequence: build the API and backend; wire Hermes seats first (they have no legacy path); then migrate toolified
+evaluators and retire the path-based tools for ritual-scoped work.
+
+### Still open
+
+- Exact API schema, size limits and error vocabulary.
+- Whether the export step needs a Superego review or is only logged for `read` of ritual documents by an outside party.
+- Retention default and the reaper's interaction with `persist:true` across hosts.
+- Reproducing and root-causing the container path failures (independent of this design, but worth doing before the
+  toolified migration).
+- Whether a service backend is needed soon (any FieryPit host without the moonpool mount).
+
+## 9. Review history
 
 - 2026-09-21, user review: items 9-14 confirmed. §4 was endorsed by the assembly (below) and explicitly confirmed by the user later the same day, so it is now [decided].
 - 2026-09-21, Deliberative Analyst assembly: adopted 4-0. Filed as `hermes_v3_assembly_review_2026-09-21.md`,
@@ -181,3 +254,4 @@ pending Phase 0), governor (item 14).
   `tools.include`); deny/timeout fail closed; stop and kill measured. Details in `hermes_phase0_findings.md`.
 - 2026-09-21, user attested Phase 0 and commented on the findings' remaining questions (kanban dispatcher concern
   added as open item 10).
+- 2026-09-21, ritual-space design agreed (decisions 23-27) and written up as §8; Hermes home/config approach and NFS-first backend remain [proposed].
