@@ -106,8 +106,8 @@ property of how data flows, not of what shape it has.
 
 ## 5. Phase 0 facts gathered so far (limbic, read-only)
 
-> Superseded by `hermes_phase0_findings.md` (2026-09-21, source review). Phase 0 is **not yet attested**: the exact
-> tool-call wire format needs one live run. The list below is the earlier CLI-only pass.
+> Superseded by `hermes_phase0_findings.md` (2026-09-21). Phase 0 criteria are **met on limbic and attested by the
+> user (2026-09-21)**. Hard gate cleared for Phase 1 design, subject to the follow-ups in the findings doc. The list below is the earlier CLI-only pass.
 
 Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `hermes` (8642, 9119).
 
@@ -150,7 +150,21 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
 3. Placement and naming of `approve_action/4` (Phase 2).
 4. Pending-approval UX in the WS protocol (Phase 3).
 5. Superego decision-latency budget against deduction-cycle, httpx and Kafka timeouts (size early, tune Phase 4).
-6. Cost model: not estimated anywhere; Clara flagged it.
+6. Cost model: not estimated anywhere; Clara flagged it. Phase 0 gives a first data point (660 input tokens with the
+   gate config vs 13,357 with default tools; 10-27 s per run on the 27b model).
+7. **Ritual space** (added 2026-09-21, needs its own design discussion). Each performance of a ritual, or ritual of
+   rituals, involving an Ego gets a ritual space: files shared among that ritual's evaluators, plus shared
+   configuration and memory for its Ego instances. NFS plus a docker mount may deliver it. Phase 0 facts: all Hermes
+   state lives under one home dir; it holds six SQLite databases in WAL mode (unsafe on NFS); two containers on one
+   data dir do not lock against each other (PID-based liveness fails across PID namespaces). So shared evaluator files
+   may fit NFS while the Hermes home likely needs local disk or a per-seat home with selected config and memory shared.
+   Also lifecycle/TTL reaping and extending the `workspace_dir` convention.
+8. Late-verdict handling: gate needs a correlation id with expiry so a Superego verdict arriving after the Ego's
+   timeout is discarded (Phase 2).
+9. Add a container pids limit alongside memory and CPU (Phase 1).
+10. Autonomous work: Hermes' embedded kanban dispatcher and cron must not be able to act outside the Superego gate.
+    Investigate disabling them for Ego seats; make "no autonomous work" a Phase 1 check (user concern, 2026-09-21).
+11. Pineal Hermes must be reconciled with limbic's version and config before cross-host work.
 
 Resolved since the base plan: Superego sharing (item 1), denial handling (item 2), kill-switch mechanics (item 5,
 pending Phase 0), governor (item 14).
@@ -163,3 +177,7 @@ pending Phase 0), governor (item 14).
   open questions.
 - 2026-09-21, Phase 0 source review: `hermes_phase0_findings.md`. No blockers; two preconditions for Phase 1
   (explicit API-platform toolset config, per-seat data dir). Wire format still unverified, so the gate is open.
+- 2026-09-21, throwaway-container test: gate recipe verified (`platform_toolsets.api_server: []`, `tool_search off`, MCP
+  `tools.include`); deny/timeout fail closed; stop and kill measured. Details in `hermes_phase0_findings.md`.
+- 2026-09-21, user attested Phase 0 and commented on the findings' remaining questions (kanban dispatcher concern
+  added as open item 10).
