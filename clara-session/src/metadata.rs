@@ -309,7 +309,7 @@ impl Session {
 }
 
 /// Get current Unix timestamp in seconds
-fn current_timestamp() -> u64 {
+pub(crate) fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

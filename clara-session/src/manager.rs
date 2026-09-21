@@ -31,6 +31,9 @@ pub enum ManagerError {
     PrologError(#[from] clara_prolog::PrologError),
 }
 
+/// How long a terminated session stays readable before it is purged (seconds).
+const TERMINATED_RETENTION_SECS: u64 = 600;
+
 /// Session manager configuration
 #[derive(Debug, Clone)]
 pub struct ManagerConfig {
@@ -84,6 +87,9 @@ impl SessionManager {
         name: Option<String>,
         limits: Option<ResourceLimits>,
     ) -> Result<Session, ManagerError> {
+        // Drop long-terminated sessions first; they never count against the limits below, but they do use memory.
+        let _ = self.store.purge_terminated(crate::metadata::current_timestamp(), TERMINATED_RETENTION_SECS);
+
         // Check global session limit
         let active_count = self.store.count_active()?;
         if active_count >= self.config.max_concurrent_sessions {
@@ -212,6 +218,9 @@ impl SessionManager {
         name: Option<String>,
         limits: Option<ResourceLimits>,
     ) -> Result<Session, ManagerError> {
+        // Drop long-terminated sessions first; they never count against the limits below, but they do use memory.
+        let _ = self.store.purge_terminated(crate::metadata::current_timestamp(), TERMINATED_RETENTION_SECS);
+
         // Check global session limit
         let active_count = self.store.count_active()?;
         if active_count >= self.config.max_concurrent_sessions {
