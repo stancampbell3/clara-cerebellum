@@ -194,7 +194,13 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
     seats reach its gate (`EGO_GATE_ADVERTISE_URL`); each host's seat launcher chooses the network a seat joins. **Decided
     2026-09-21:** seat containers are started by a **host-side launcher on a unix socket** bind-mounted into the FieryPit, not
     by mounting `docker.sock` (root on the host, next to `shell_command`) and not from a static pool. Contract in slice 4a;
-    daemon is slice 4b.
+    the daemon is built (slice 4b) and live-verified.
+17. **Slice 4c: a full-stack ritual run.** The real lildaemon container needs an image rebuild with this branch, the launcher socket
+    bind-mounted in compose (`clara-cerebellum/docker/docker-compose*.yml`), and `SEAT_LAUNCHER_SOCKET`, `EGO_GATE_ENABLED`,
+    `EGO_GATE_ADVERTISE_URL` set. That disturbs the running stack, so it needs the user's go-ahead. Pineal gets its own launcher.
+18. **Version fragility.** The launcher reads Hermes' own log lines (tool registration, kanban dispatcher). Pin the Hermes image and
+    re-verify the parser on every upgrade; the parser is tested against captured real lines and fails closed.
+19. **The Ego role prompt** (`seat_launcher/template/SOUL.md`) is a first draft and needs real evaluation across models and tasks.
 16. **Later (user idea, 2026-09-21): a way to be sure of what the agent actually did and what was actually decided.** Item 13 is the
     motivating case (the model narrated a save that never happened). A verifiable record of actions taken and decisions made,
     independent of the model's own account, is worth designing once the gate and executor exist; not scoped yet.
@@ -393,6 +399,31 @@ The real launcher daemon and a live end-to-end run are slice 4b.
 - Registration is a **commented example** in `config/evaluators.yaml`; no live registration changed. Needs per FieryPit
   `SEAT_LAUNCHER_SOCKET`, `EGO_GATE_ADVERTISE_URL` and `EGO_GATE_ENABLED`.
 
+### Implemented: slice 4b, the seat launcher daemon (lildaemon branch `hermes-ego-phase1`, 2026-09-21, uncommitted)
+
+New top-level package `seat_launcher/` (**stdlib only**, runs on the docker host under the system Python with no venv and no
+`goat` import), 117 tests, and a live end-to-end run against real Hermes (findings doc, "Slice 4b live end-to-end").
+
+- **Trust boundary.** The FieryPit supplies only `seat_id`, `ritual_id`, `node_id`, `gate_url`, `gate_token`, `lease_seconds`. Image,
+  mounts, network, limits, flags and config template are launcher config. `build_run_args` is the single place a `docker run` line is
+  built: the seat's own home is the only mount; never `docker.sock`, `--privileged`, or host networking. Every id that becomes a
+  container or directory name is matched against a strict pattern; unknown fields, oversized bodies and hostile values are rejected
+  before docker or the filesystem is touched.
+- **Secure by default.** Seats run with `no-new-privileges` and `--cap-drop ALL` plus six capabilities (verified live); a read-only root
+  filesystem does not work. `hardening = []` opts out.
+- **Ready on evidence only.** Hermes must report the six registered tools in its own log (read on the host), answer `/health`, confirm
+  `kanban dispatcher: disabled via config`, and `hermes cron list` must show no jobs. This is the launcher half of slice 3 item 13; the
+  evaluator's exact-tool-set check remains the second guard.
+- **The seat's API key never leaves the launcher** (seat `.env`, mode 0600); the FieryPit drives the seat through proxied run endpoints.
+- **Dead-man switch verified live:** a `SIGKILL`ed FieryPit had its seat reaped in 16 s; a killed launcher's orphans are swept on restart.
+- **Golden seat template** (`seat_launcher/template/`): `platform_toolsets.api_server: []`, `tool_search: off`, `mcp_servers.ego_gate` with
+  only the six tools, kanban dispatch/review/notify off, memory off, `agent.max_turns` backstop, and a short Ego role prompt (`SOUL.md`,
+  first draft). A test cross-checks the template's tool list against `TOOL_NAMES` so they cannot drift.
+- Docs and examples in `seat_launcher/README.md`, `launcher.example.toml`, `seat-launcher.service.example`; the compose snippet that
+  bind-mounts the socket is documented, **not applied**.
+- Bugs caught along the way (all with regression tests): keep-alive request smuggling on unread bodies, unix socket path length, an
+  over-strict hardening-argument validator.
+
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
@@ -424,3 +455,4 @@ The real launcher daemon and a live end-to-end run are slice 4b.
 - 2026-09-21, ritual-space retention aligned with Dis's 7 day terminated-ritual retention (grace 7 days, ceiling 14 days); persist options recorded, deferred.
 - 2026-09-21, Phase 1 slice 3 implemented in lildaemon (`goat/mcp/ego_gate/`) and live-verified against Hermes; open items 12-16 added.
 - 2026-09-21, Phase 1 slice 4a implemented in lildaemon (evaluator, launcher contract, close hook); item 15 corrected: reachability is per-host config, launcher on a unix socket decided.
+- 2026-09-21, Phase 1 slice 4b implemented (seat launcher daemon) and live-verified end to end; open items 17-19 added.

@@ -358,3 +358,61 @@ mcp 2.2.0) with the branch source mounted read-only, which also verified it on t
    yet runs it. Needs an evaluator-side executor (by action name, and a reviewed handler for free-form actions) in Phase 2.
 5. `mcp` 2.x hides the message of any non-`ToolError` exception raised in a tool (returns `Error executing tool <name>`), a
    good default; the tools return structured `{"success": false, ...}` for recoverable errors instead.
+
+---
+
+# Slice 4b live end-to-end: real launcher, real evaluator, real Hermes seat (2026-09-21)
+
+The `seat_launcher` daemon (lildaemon branch `hermes-ego-phase1`, `seat_launcher/`) running on the host under the **system
+Python 3.14, no venv**, a real `HermesAgentEvaluator` and in-process `ego_gate` in a throwaway container standing in for the
+FieryPit (only the launcher socket mounted; no `docker.sock`), and a real Hermes v0.21.3 seat container. Same isolation rules as
+before (scratch dirs, nothing published, live `hermes` re-verified by hash, everything torn down).
+
+| Check | Result |
+|---|---|
+| Full chain | evaluator -> launcher socket -> seat container -> MCP back to the gate -> ritual space: 3 tool calls, shared document written, `request_action` denied, honest answer, **~35 s including seat startup** |
+| Tool set | Hermes registered exactly the six `mcp__ego_gate__*` tools; the launcher reported them and the evaluator accepted the seat |
+| Authorship | document authored `n2/<evaluator instance>`, taken from the token |
+| Recovery | with a leftover document the model got a `VersionConflict`, read it, and continued correctly |
+| Seat isolation (`docker inspect`) | memory 8 GiB, 2 CPUs, pids 512, `Privileged=false`, **one** mount (the seat's own home), no docker socket, restart `no`, labels set, API key **absent** from the container env, seat home `0700`, `.env` `0600`, process runs as `hermes` |
+| Default hardening | `CapDrop=[ALL]`, six capabilities added back, `no-new-privileges`; the full run passes under it |
+| No autonomous work | `hermes cron list`: "No scheduled jobs"; log line `kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false` |
+| `close()` | container and seat home removed |
+| **Dead-man switch** | evaluator stand-in `SIGKILL`ed with no chance to clean up: seat reaped by the launcher **16 s** later (lease 30 s) |
+| **Launcher crash** | daemon `SIGKILL`ed with a seat running (orphan stays up), restarted: the startup sweep removed the container and its home |
+| SIGTERM | daemon shuts down cleanly and removes every seat |
+
+## Hardening probe (Hermes v0.21.3, five variants started in parallel)
+
+| Extra `docker run` flags | Hermes boots and answers `/health` |
+|---|---|
+| none | yes |
+| `--security-opt no-new-privileges` | yes |
+| `--cap-drop ALL` plus `CHOWN SETUID SETGID DAC_OVERRIDE FOWNER KILL` | yes |
+| both of the above | yes |
+| `--read-only --tmpfs /tmp --tmpfs /run:exec` | **no**: s6 init needs a writable root filesystem (and the default `/run` tmpfs is `noexec`) |
+
+The strict combination is the launcher's secure default; `hardening = []` opts out.
+
+## Findings that change the design
+
+1. **Positive confirmation, not absence.** The launcher now requires the log line `kanban dispatcher: disabled via config` before a
+   seat is ready. Checking only for an *active* line would silently pass if a Hermes upgrade reworded it. Same principle as the exact
+   tool-set check: a seat is ready on evidence, and no evidence means not ready.
+2. **`API_SERVER_HOST`/`PORT` are honoured from the seat's `.env`** (the launcher reaches the API by container IP), but only with a
+   **strong API key**. A short key (`probekey`) made Hermes silently skip the API platform ("No messaging platforms enabled"), which
+   looks exactly like "not healthy". The launcher generates `token_urlsafe(32)`.
+3. **Unix socket paths are limited to 107 bytes.** A long state path failed at bind with `AF_UNIX path too long`; config validation now
+   reports it clearly.
+4. **A real server bug the tests caught:** rejecting an oversized request body without reading it left the bytes on the keep-alive
+   connection, where they were parsed as the *next* request (request smuggling). The server now closes the connection whenever a body
+   went unread, with a raw-socket regression test.
+5. **Seat startup is 15-30 s** (mostly Hermes booting), about 80 s if several seats start at once on this box.
+6. Process hygiene: `pgrep`/`pkill -f` match their own command line, so a stopped daemon looked "still running" and a real leftover
+   daemon was found later. Verify with `ps -eo pid,args | grep ...`.
+
+## Not yet verified
+
+- A full **ritual** through Dis and Kafka with the real lildaemon container: needs an image rebuild with this branch, the socket
+  bind-mount added to compose, and env set (slice 4c; disturbs the running stack, so it needs a go-ahead).
+- Pineal's launcher and cross-host behaviour; the Ego role prompt (`SOUL.md`) is a first draft.
