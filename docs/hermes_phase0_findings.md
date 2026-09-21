@@ -416,3 +416,37 @@ The strict combination is the launcher's secure default; `hardening = []` opts o
 - A full **ritual** through Dis and Kafka with the real lildaemon container: needs an image rebuild with this branch, the socket
   bind-mount added to compose, and env set (slice 4c; disturbs the running stack, so it needs a go-ahead).
 - Pineal's launcher and cross-host behaviour; the Ego role prompt (`SOUL.md`) is a first draft.
+
+---
+
+# Slice 4c live full-stack ritual: a real ritual with a Hermes Ego seat (2026-09-21)
+
+A **second FieryPit** (`lildaemon-ego`, its own compose project `ego`, image `lildaemon:ego` built from branch `hermes-ego-phase1`) registered
+with the live Dis by URL, next to the live `lildaemon` and the remote `pineal` FieryPit. The seat launcher ran on the host; seats ran on a
+dedicated `clara-seats` bridge. Procedure: `hermes_ego_limbic_runbook.md`. The live stack was untouched (see below).
+
+| Check | Result |
+|---|---|
+| Registration | Dis `GET /fierypits` listed `pineal`, `lildaemon` and `lildaemon-ego` (13 evaluators, including `hermes_ego`): FieryPits are identified by URL |
+| Full path | real Dis, Kafka and Prolog `caws_offer`/`caws_await` -> `hermes_ego` participant -> launcher socket -> seat container -> MCP back to the gate -> ritual space; `examples_ritual_hermes_ego.py --strict` exited 0 |
+| Evidence (disk and `docker inspect`, not the model) | one seat started on demand; memory 8 GiB, 2 CPUs, 512 pids, `cap_drop=[ALL]`, `no-new-privileges`, single mount `/opt/data`, network `clara-seats` only; document `plan.md` v1 authored `ego/<instance>`; the gate log shows `request_action` `send_email` denied; seat container removed when the ritual was left |
+| Launcher log | seat created at ritual start, deleted at leave |
+| **Real-stack dead-man switch** | ego FieryPit container `SIGKILL`ed mid-ritual: seat reaped **290 s** later (lease 300 s), no cleanup possible |
+| Live stack unaffected | `docker ps` start times, image IDs and health identical before and after; `lildaemon:latest` image ID unchanged; live `hermes` config and `.env` hashes unchanged; no extra networks left |
+
+## Findings that change the design
+
+1. **The image bakes in a copy of the repo `.env`** (API keys, tokens, JWT secrets) and `goat/__init__.py` loads it at import. Not setting a
+   variable in compose therefore does not keep it off. Found live: the assistant-documents reaper ran against
+   `EDGEQUAKE_BASE_URL=http://localhost:8082` from the baked file (it failed to connect, so nothing reached the shared Edgequake, but only
+   because `localhost` inside the container is the container). Fixed for the ego FieryPit by setting `EDGEQUAKE_BASE_URL`, `EDGEQUAKE_API_KEY`,
+   `GROQ_API_KEY`, `GITHUB_TOKEN` and `GOOGLE_CUSTOM_SEARCH_API_KEY` to explicit empty values (an empty variable wins over the baked file).
+   **Pre-existing and wider:** the main image has the same baked `.env`, and `Dockerfile.lildaemon.dockerignore` does not exclude it.
+2. **The seat network isolates from the compose networks, not from the host or LAN.** Measured from inside a running seat: the gate and Ollama are
+   reachable (intended); Dis, Kafka, Cobbler and Edgequake do not resolve by their compose names; but through the docker host gateway the seat
+   **can** reach host-published ports (Dis `:8080`, Kafka external `:9094`, Cobbler `:5001`, ssh `:22`) and resolve LAN names such as `pineal`.
+   With all Hermes toolsets off the model has no network tool, so this is a defense-in-depth gap against a compromised Hermes, not a
+   model-reachable hole. Closing it needs host firewall rules on the `clara-seats` bridge (allow DNS, the gate, Ollama). Not done.
+3. `host.docker.internal:host-gateway` resolved to `172.17.0.1` even from the `clara-seats` bridge, and Ollama was reachable through it, so the
+   launcher's new `extra_hosts` setting is sufficient for model access.
+4. Seat startup on the real path was about 30 s (ritual created 16:02:13, seat created 16:02:16, ritual left 16:02:46 in one run).

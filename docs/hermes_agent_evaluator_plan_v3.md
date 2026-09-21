@@ -195,12 +195,17 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
     2026-09-21:** seat containers are started by a **host-side launcher on a unix socket** bind-mounted into the FieryPit, not
     by mounting `docker.sock` (root on the host, next to `shell_command`) and not from a static pool. Contract in slice 4a;
     the daemon is built (slice 4b) and live-verified.
-17. **Slice 4c: a full-stack ritual run.** The real lildaemon container needs an image rebuild with this branch, the launcher socket
-    bind-mounted in compose (`clara-cerebellum/docker/docker-compose*.yml`), and `SEAT_LAUNCHER_SOCKET`, `EGO_GATE_ENABLED`,
-    `EGO_GATE_ADVERTISE_URL` set. That disturbs the running stack, so it needs the user's go-ahead. Pineal gets its own launcher.
+17. **Slice 4c (done, 2026-09-21): a full-stack ritual run** as a second FieryPit; see the slice 4c section. Merging the branch and rebuilding
+    `lildaemon:latest` is still to do, as is a launcher for pineal.
 18. **Version fragility.** The launcher reads Hermes' own log lines (tool registration, kanban dispatcher). Pin the Hermes image and
     re-verify the parser on every upgrade; the parser is tested against captured real lines and fails closed.
 19. **The Ego role prompt** (`seat_launcher/template/SOUL.md`) is a first draft and needs real evaluation across models and tasks.
+20. **Seat egress filtering.** *(Decision 2026-09-21: leave the firewall as is for testing; lock it down when moving to a production build.)* The `clara-seats` bridge isolates seats from the compose networks but not from host-published ports or the LAN (measured live:
+    Dis :8080, Kafka :9094, Cobbler :5001 and ssh are reachable through the docker gateway). Add host firewall rules on the bridge allowing only DNS, the gate
+    and Ollama. Defense in depth: the model itself has no network tool.
+21. **Secrets baked into the FieryPit images (pre-existing, both images).** `Dockerfile.lildaemon` copies the repo `.env` into the image and
+    `Dockerfile.lildaemon.dockerignore` does not exclude it, so API keys, tokens and JWT secrets live in image layers. Recommend excluding `.env` (and
+    passing secrets via compose) and reviewing what else the image carries. Not changed here: it affects the main build. Needs your call.
 16. **Later (user idea, 2026-09-21): a way to be sure of what the agent actually did and what was actually decided.** Item 13 is the
     motivating case (the model narrated a save that never happened). A verifiable record of actions taken and decisions made,
     independent of the model's own account, is worth designing once the gate and executor exist; not scoped yet.
@@ -424,6 +429,20 @@ New top-level package `seat_launcher/` (**stdlib only**, runs on the docker host
 - Bugs caught along the way (all with regression tests): keep-alive request smuggling on unread bodies, unix socket path length, an
   over-strict hardening-argument validator.
 
+### Implemented: slice 4c, a full-stack ritual with a Hermes Ego seat (lildaemon `bea4bb8` on `hermes-ego-phase1`; compose file and docs uncommitted, 2026-09-21)
+
+- **A second FieryPit, not a rebuild of the live one:** `clara-cerebellum/docker/docker-compose.ego.yml` (project `ego`, image `lildaemon:ego`, its own
+  state, loopback-only port) registers with the existing Dis by URL. The live `lildaemon`, `lildaemon:latest` and `docker-compose.yml` are never touched;
+  rollback is `docker compose -f docker-compose.ego.yml down`. Verified: the live stack was byte-identical before and after.
+- **Seats on a dedicated `clara-seats` bridge**, with the launcher's new `extra_hosts` setting for Ollama. The runbook is
+  `hermes_ego_limbic_runbook.md`.
+- **`hermes_ego` is now a live registration** in `config/evaluators.yaml` (inert until a ritual joins with it; without the launcher socket and gate URL an
+  evaluation fails closed with a 503).
+- **`examples_ritual_hermes_ego.py`** drives a real ritual (Dis, Kafka, Prolog) and reports **evidence from disk and `docker inspect`, not the model's
+  account**; `--strict` exits non-zero on any failed check. 29 tests, including that cleanup always happens even when the run fails.
+- **Result:** passed end to end; real-stack dead-man switch reaped a seat 290 s after its FieryPit was `SIGKILL`ed (lease 300 s). Details in the findings doc,
+  "Slice 4c live full-stack ritual".
+
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
@@ -456,3 +475,4 @@ New top-level package `seat_launcher/` (**stdlib only**, runs on the docker host
 - 2026-09-21, Phase 1 slice 3 implemented in lildaemon (`goat/mcp/ego_gate/`) and live-verified against Hermes; open items 12-16 added.
 - 2026-09-21, Phase 1 slice 4a implemented in lildaemon (evaluator, launcher contract, close hook); item 15 corrected: reachability is per-host config, launcher on a unix socket decided.
 - 2026-09-21, Phase 1 slice 4b implemented (seat launcher daemon) and live-verified end to end; open items 17-19 added.
+- 2026-09-21, Phase 1 slice 4c: full-stack ritual with a Hermes Ego seat passed on the real stack as a second FieryPit; open items 20-21 added, item 17 done.
