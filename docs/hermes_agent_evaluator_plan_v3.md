@@ -23,8 +23,7 @@ the reason.
 
 ## 0. Needs your decision first
 
-1. **Params handling** (§4). Addendum 2 adopted "allowlist + schema, no free-text params"; your note objected. §4
-   proposes a resolution. Needs a yes/no.
+1. ~~Params handling (§4).~~ Confirmed by the user 2026-09-21. The two sub-questions in §4 remain open.
 2. **Phase 0 runs on limbic** (§6). The earlier docs said it needs Pineal. It does not, except for a final
    cross-host confirmation.
 3. ~~Whether the adopted items in §1 are confirmed.~~ Items 9-14 confirmed by the user on 2026-09-21.
@@ -87,7 +86,7 @@ the reason.
 - Tier 3 (rare): full transcript.
 - Every message carries `ritual_id` and `seq` from Phase 1, so failed rituals can be replayed.
 
-## 4. Params handling [proposed, replaces item 15]
+## 4. Params handling [decided 2026-09-21, replaces item 15]
 
 Your objection: restricting params to allowlisted structured data would stop the Superego, or other oversight, from
 weighing a free-form action with `clara_fy` or other predicates and tools. Agreed. Injection safety should be a
@@ -106,6 +105,9 @@ property of how data flows, not of what shape it has.
   string blob parsed Python-side?
 
 ## 5. Phase 0 facts gathered so far (limbic, read-only)
+
+> Superseded by `hermes_phase0_findings.md` (2026-09-21, source review). Phase 0 is **not yet attested**: the exact
+> tool-call wire format needs one live run. The list below is the earlier CLI-only pass.
 
 Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `hermes` (8642, 9119).
 
@@ -155,7 +157,9 @@ pending Phase 0), governor (item 14).
 
 ## 8. Review history
 
-- 2026-09-21, user review: items 9-14 confirmed. §4 is endorsed by the assembly (below) but not yet explicitly confirmed by the user, so it stays [proposed].
+- 2026-09-21, user review: items 9-14 confirmed. §4 was endorsed by the assembly (below) and explicitly confirmed by the user later the same day, so it is now [decided].
 - 2026-09-21, Deliberative Analyst assembly: adopted 4-0. Filed as `hermes_v3_assembly_review_2026-09-21.md`,
   advisory input only. It added the goal-construction invariant (now in the header). It did not resolve the §7
   open questions.
+- 2026-09-21, Phase 0 source review: `hermes_phase0_findings.md`. No blockers; two preconditions for Phase 1
+  (explicit API-platform toolset config, per-seat data dir). Wire format still unverified, so the gate is open.
