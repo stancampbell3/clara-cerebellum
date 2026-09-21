@@ -1,5 +1,7 @@
 # HermesAgentEvaluator: planning document
 
+> **Superseded for review by `hermes_agent_evaluator_plan_v3.md` (2026-09-21).** Kept as history.
+
 Status: **draft for team review — not yet implemented.**
 
 ## Context

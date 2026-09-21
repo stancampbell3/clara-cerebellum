@@ -1,5 +1,7 @@
 # HermesAgentEvaluator / Ego integration — addendum 2 (2026-09-20)
 
+> **Superseded for review by `hermes_agent_evaluator_plan_v3.md` (2026-09-21).** Kept as history.
+
 Status: **draft for team review — folds Clara's feedback into the plan; still no code written.**
 
 Read alongside `hermes_agent_evaluator_plan.md` and `hermes_agent_evaluator_plan_addendum_2026-09-20.md`
@@ -50,6 +52,8 @@ predates addendum 1, so some of her advice contradicts decisions already made.
 - **Params handling.** Hermes emits JSON; parse to data, validate against a per-action allowlist and param
   schema, never interpolate into goals. A free-text `Params` string is rejected. Plan around the known
   clara-prolog FFI dict-serialization gap.
+[STAN]  I'm not 100% sure about this decision.  Keeping the contract with Hermes to speak JSON makes sense, but I'm not sure about restricting this to non-goals.  It could be the case that we want the Superego (or some other oversight) to weigh a free-form action using clara_fy or other predicates/tools.
+
 - **Firewall is a structural property**: distinct seats and `instance_id`s, no shared Coire subscriptions, no
   shared Prolog state. A prompt string-match test is a cheap extra, not the evidence. The Observer / Id
   Analyst seat is deferred; it is not on the Ego critical path.
