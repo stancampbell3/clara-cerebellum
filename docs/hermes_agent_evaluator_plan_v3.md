@@ -250,9 +250,33 @@ Toolified evaluators move to the ritual-space API in phases, so there is not a s
 Sequence: build the API and backend; wire Hermes seats first (they have no legacy path); then migrate toolified
 evaluators and retire the path-based tools for ritual-scoped work.
 
+### Implemented: slice 1 (lildaemon branch `hermes-ego-phase1`, 2026-09-21, not yet merged)
+
+`goat/ritual_space/` with `tests/test_ritual_space.py` (44 tests). What the API settled:
+
+- Flat document names matching `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`; the space id (the Dis `ritual_id`, **not**
+  `performance_id`, which is minted per participant join) uses the same rule. No name can express a path.
+- `RitualSpace(backend, space_id, author)` with `list`, `stat`, `read`, `write(name, content, expected_version=None)`,
+  `append`, and `set_persist`. Creating needs no version; overwriting requires the current one. Text only (UTF-8, no NUL).
+- Space-wide `seq` from an append-only `journal.jsonl`. Every mutation is journal, then content, then metadata, so a
+  crash between content and metadata is repaired on the next read from the journal record (provenance survives); an
+  externally edited document is kept and flagged author `unknown`.
+- Caps enforced under the lock (defaults 256 KiB per document, 200 documents, 8 MiB total; env-configurable).
+- Cross-process safety is `fcntl.flock` per space. Verified: four processes appending 100 times lose nothing, and the
+  same workload with the lock removed loses about half the appends and duplicates `seq`.
+- Reaping: `reap_expired_spaces(backend, max_idle_seconds)`, time-based only, skips `persist` spaces. Not yet wired to
+  the app or to Dis ritual status.
+- Config: `RITUAL_SPACE_ROOT` (dev default `workspace/ritual_spaces`; production must be outside any repo tree),
+  `RITUAL_SPACE_MAX_DOC_BYTES`, `_MAX_DOCS`, `_MAX_TOTAL_BYTES`.
+- Caveat: `flock` on NFS is only as good as the mount's lock support; verify on the real export before relying on it
+  across hosts.
+
 ### Still open
 
-- Exact API schema, size limits and error vocabulary.
+- **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
+  drops mid-lock) before any cross-host use. Slice 1 only proved it locally. Tracked in memory as `flock-over-nfs-unverified`.
+- Wiring: `RitualParticipant` supplying `ritual_id` to evaluators, the reaper in app startup, and coupling reaping to
+  Dis ritual status (slice 2).
 - Whether the export step needs a Superego review or is only logged for `read` of ritual documents by an outside party.
 - Retention default and the reaper's interaction with `persist:true` across hosts.
 - Reproducing and root-causing the container path failures (independent of this design, but worth doing before the
@@ -274,3 +298,4 @@ evaluators and retire the path-based tools for ritual-scoped work.
 - 2026-09-21, ritual-space design agreed (decisions 23-27) and written up as §8; Hermes home/config approach and NFS-first backend remain [proposed].
 - 2026-09-21, user decided the free-form escalation rule (ledger 28), confirmed the frontdesk analyst target for Phase 3,
   and left inline `[STAN]` comments in §0.
+- 2026-09-21, Phase 1 slice 1 implemented in lildaemon (`goat/ritual_space/`, branch `hermes-ego-phase1`, uncommitted).
