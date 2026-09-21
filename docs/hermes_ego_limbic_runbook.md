@@ -16,6 +16,9 @@ Seats live on the dedicated `clara-seats` bridge, so a seat cannot reach the mai
 networks (see "What the isolation does and does not give you"). No code assumes a docker network name: FieryPits can be remote and are identified by URL. The advertised gate URL plus each host's launcher `network`
 setting is all that ties a seat to its FieryPit.
 
+> **Status (2026-09-21):** the Hermes Ego work is merged onto lildaemon `master` (local; not pushed) and the live `lildaemon:latest` was rebuilt from it, without the baked
+> `.env`. The commands below still build `lildaemon:ego` from whatever is checked out in `lildaemon`, which is now `master`.
+
 ## Prerequisites
 
 - The main stack is up (Dis = `clara-api`, Kafka) and `clara-cerebellum/docker/.env` holds its secrets.
@@ -107,7 +110,7 @@ The live stack is unaffected throughout: compare `docker ps` start times and `do
 - **Seat starts slowly**: 15 to 30 seconds is normal; about 80 seconds if several start at once.
 - **A read-only root filesystem breaks Hermes** (its init needs a writable root); do not add `--read-only`.
 - **Stopping processes**: `pgrep -f` and `pkill -f` match their own command line. Find the daemon with `ps -eo pid,args | grep seat_launcher`.
-- **The FieryPit image bakes in a copy of the repo `.env`** (API keys, tokens, JWT secrets), and `goat/__init__.py` loads it at import.
+- **(Fixed for images built after 2026-09-21.) The FieryPit image used to bake in a copy of the repo `.env`** (API keys, tokens, JWT secrets), and `goat/__init__.py` loads it at import.
   `docker-compose.ego.yml` therefore sets `EDGEQUAKE_BASE_URL`, `EDGEQUAKE_API_KEY`, `GROQ_API_KEY`, `GITHUB_TOKEN` and
   `GOOGLE_CUSTOM_SEARCH_API_KEY` to explicit empty values (an empty variable wins over the baked file). Merely omitting them is not enough:
   found live, the assistant-documents reaper ran against `EDGEQUAKE_BASE_URL=http://localhost:8082` from the baked file. The main image has

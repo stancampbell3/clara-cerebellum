@@ -203,7 +203,7 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
 20. **Seat egress filtering.** *(Decision 2026-09-21: leave the firewall as is for testing; lock it down when moving to a production build.)* The `clara-seats` bridge isolates seats from the compose networks but not from host-published ports or the LAN (measured live:
     Dis :8080, Kafka :9094, Cobbler :5001 and ssh are reachable through the docker gateway). Add host firewall rules on the bridge allowing only DNS, the gate
     and Ollama. Defense in depth: the model itself has no network tool.
-21. **Secrets baked into the FieryPit images (pre-existing, both images).** `Dockerfile.lildaemon` copies the repo `.env` into the image and
+21. **Secrets baked into the FieryPit images.** *(RESOLVED for new builds 2026-09-21: `.env` is excluded and the live `lildaemon` was rebuilt without it. The old image, kept as `lildaemon:pre-ego-merge` for rollback, still contains it; pineal's image is unchanged and still has it until rebuilt.)* Original finding, both images: `Dockerfile.lildaemon` copies the repo `.env` into the image and
     `Dockerfile.lildaemon.dockerignore` does not exclude it, so API keys, tokens and JWT secrets live in image layers. Recommend excluding `.env` (and
     passing secrets via compose) and reviewing what else the image carries. Not changed here: it affects the main build. Needs your call.
 16. **Later (user idea, 2026-09-21): a way to be sure of what the agent actually did and what was actually decided.** Item 13 is the
@@ -443,6 +443,20 @@ New top-level package `seat_launcher/` (**stdlib only**, runs on the docker host
 - **Result:** passed end to end; real-stack dead-man switch reaped a seat 290 s after its FieryPit was `SIGKILL`ed (lease 300 s). Details in the findings doc,
   "Slice 4c live full-stack ritual".
 
+### Merged and deployed (2026-09-21): lildaemon `master` == `0bb4b4b`, live `lildaemon:latest` rebuilt
+
+- **Merge:** lildaemon `hermes-ego-phase1` (8 commits) fast-forwarded onto `master` (old master `f7cfb60`, kept as the rollback point). **Nothing pushed:** local `master` is 8
+  commits ahead of `github/master`; you will say when to push. The branch is kept because the docs reference it.
+- **Rebuild:** `docker compose -f docker-compose.yml build lildaemon`, then `up -d --no-deps lildaemon`: only that service was recreated (healthy in 8 s). Verified: the 12 other
+  containers unchanged (start times, images, health); Dis lists `http://lildaemon:6666` with 13 evaluators including `hermes_ego` (was 12); zero errors in the startup log; the
+  ego_gate listener and the ritual-space reaper are **off** (opt-in, as intended); the dependents show no lildaemon-related errors.
+- **`.env` excluded from the image** (`Dockerfile.lildaemon.dockerignore`, its own commit). Verified: `/app/.env` is gone, and the live process environment differs from before by
+  **exactly** the six baked-only variables (`CLIPS_MCP_URL`, `FIERYPIT_BASE_URL`, `GITHUB_TOKEN`, `GROQ_BASE_URL`, `OLLAMA_URL`, `PROLOG_MCP_URL`), none added; only `HOSTNAME` (the container id)
+  otherwise changed. Open item 21 is resolved for new builds.
+- **Regression on the merged code:** the second FieryPit (`docker-compose.ego.yml`) rebuilt from the merged master, and `examples_ritual_hermes_ego.py --strict` passed again (exit 0, evidence green).
+- **Rollback kept:** image `lildaemon:pre-ego-merge` (the previous `lildaemon:latest`, `1223728067cd`). **It still contains the baked secrets**; delete it once you are satisfied.
+- **Not done, by decision:** pineal's rebuild; the seat egress firewall (deferred to the production build); pushing.
+
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
@@ -476,3 +490,4 @@ New top-level package `seat_launcher/` (**stdlib only**, runs on the docker host
 - 2026-09-21, Phase 1 slice 4a implemented in lildaemon (evaluator, launcher contract, close hook); item 15 corrected: reachability is per-host config, launcher on a unix socket decided.
 - 2026-09-21, Phase 1 slice 4b implemented (seat launcher daemon) and live-verified end to end; open items 17-19 added.
 - 2026-09-21, Phase 1 slice 4c: full-stack ritual with a Hermes Ego seat passed on the real stack as a second FieryPit; open items 20-21 added, item 17 done.
+- 2026-09-21, branch fast-forwarded onto lildaemon master (not pushed); live lildaemon rebuilt without the baked `.env`; regression ritual passed on the merged code.
