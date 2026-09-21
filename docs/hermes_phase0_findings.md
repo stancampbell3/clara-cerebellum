@@ -1,6 +1,7 @@
 # Hermes Agent Phase 0 findings (limbic, source review)
 
-Status: **draft for review. Read-only. No requests were sent to the agent and nothing was changed.**
+Status: **draft for review. Source review is read-only. One live run was made on 2026-09-21 (see "Live run" under A2); it
+read a file and changed nothing except creating one Hermes session/run record.**
 Checklist: `hermes_phase0_research_checklist.md`. Plan: `hermes_agent_evaluator_plan_v3.md`.
 
 **Subject:** Hermes Agent (Nous Research), v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install,
@@ -52,8 +53,7 @@ server's default preset is nearly the full toolset, so the gate is only real if 
 ## A2. Wire format and API surface
 
 Answer: **Port 8642 is the API server; it runs the whole agent loop server-side. Tool calls are executed inside
-Hermes, not returned to the caller.** Exact request/response bodies with a tool call are **unknown** (needs a live
-run; see New questions).
+Hermes, not returned to the caller.** Exact wire format confirmed by a live run (below).
 
 - 8642: OpenAI-compatible server (`gateway/platforms/api_server.py`). Routes: `POST /v1/chat/completions`,
   `POST /v1/responses`, `GET /v1/models`, `GET /v1/capabilities`, `GET /v1/toolsets`, `GET /v1/skills`,
@@ -74,6 +74,42 @@ run; see New questions).
   `tool_loop_guardrails` warn thresholds on, `hard_stop_enabled: false`, non-interactive hard stop enabled.
   Confirmed (`config.yaml`).
 - 9119: dashboard. Not inspected. Unknown.
+
+### Live run (confirmed, 2026-09-21, limbic, v0.21.3)
+
+Called from inside the container (the API binds `127.0.0.1` there; the published port is unreachable from the host).
+
+Request: `POST /v1/runs`, headers `Authorization: Bearer <API_SERVER_KEY>`, `Content-Type: application/json`,
+`Idempotency-Key: phase0-wire-1`:
+
+    {"model":"hermes-agent","input":"Use your file tool to read the first 3 lines of /opt/hermes/LICENSE, then tell me what they say. Do not use any other tool."}
+
+Response: `202 {"run_id":"run_96dd...","status":"started","replayed":false}`.
+
+`GET /v1/runs/{id}/events` (SSE, `data: {json}` frames, closes with `: stream closed`), in order:
+
+    {"event":"tool.started","run_id":...,"timestamp":...,"tool":"read_file","preview":"LICENSE"}
+    {"event":"tool.completed",...,"tool":"read_file","duration":0.272,"error":false,"preview":"{\"content\": \"1|MIT License\\n2|\\n3|Copyright ...\", \"total_lines\": 21, ...}"}
+    {"event":"message.delta",...,"delta":"..."}            (many)
+    {"event":"reasoning.available",...,"text":"<final text>"}
+    {"event":"run.completed",...,"output":"<final text>","usage":{"input_tokens":26909,"output_tokens":151,"total_tokens":27060},"completed":true,"partial":false,"interrupted":false}
+
+`GET /v1/runs/{id}` returns `{"object":"hermes.run","status":"completed","session_id":"<same as run_id>","output":...,"usage":...}`.
+
+What this establishes:
+- **Tool calls are internal.** The caller never receives a `tool_calls` object to execute. It sees only
+  `tool.started` (tool name plus a short `preview`) and `tool.completed` (duration, error flag, redacted preview
+  capped at 500 chars). **Full tool arguments are not exposed in events.** So the evaluator cannot audit
+  `request_action` arguments from the event stream; it must receive them directly, which an evaluator-hosted HTTP
+  MCP `request_action` server does.
+- **Model behaviour:** `qwen-clara-hermes` made a correct single native tool call and answered from the result.
+  About 12 s wall time including model load.
+- **Prompt overhead is large:** 26,909 input tokens for a one-line task, dominated by the 25 tool schemas and system
+  prompt. Cutting toolsets to one tool should shrink this sharply; measure it after the gate config is applied.
+- Each run gets its own `session_id` (equal to `run_id` here), so a per-seat session is the default, not something
+  to configure. Whether memory still leaks across sessions through the shared data dir is unchanged (B1).
+- Still unverified: a run in which the model calls an MCP tool, and the tool-call format for a non-native path.
+
 
 ## A3. Native confirmation hook
 
@@ -168,8 +204,8 @@ None found that stop the single-tool design. Conditions that must hold before Ph
 
 ## New questions
 
-1. Exact request and response bodies for a run with a tool call (`POST /v1/runs` plus `/events`). Needs one live run
-   against the model, which sends a prompt and uses the GPU; not done in this read-only pass.
+1. ~~Exact request and response bodies for a run with a tool call.~~ Answered by the live run under A2. Remaining:
+   the same for an MCP-provided tool.
 2. Platform key for the API server's `platform_toolsets`, and whether disabled tools are also blocked at execution.
 3. Does MCP sampling, `a2a`, `peer` or `webhook` remain reachable once the core toolsets are off?
 4. Is there a total-spawn or total-tool-call cap per run, or must the evaluator count via the events stream?
