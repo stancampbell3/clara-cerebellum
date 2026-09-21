@@ -74,6 +74,10 @@ Ollama does not swap models), `EGO_GATE_DIS_POLL_SECONDS`. Approved `export_docu
 
 The compose file also sets `EGO_FIERYPIT_URL` (default `http://lildaemon-ego:6666`), `EGO_REMOTE_KAFKA_BOOTSTRAP` (default `kafka:9092`), and `EGO_SEAT_IDLE_SECONDS` (default 900). An assistant runtime with the `ego` ruleset
 (here this FieryPit itself; in a real deployment the MAIN lildaemon, pointed at this FieryPit by URL and needing the same `DIS_DOMAIN_PEER_TOKEN`) creates one ritual per session with `ego-<id>`/`superego-<id>` nodes hosted here.
+**Main-hosted assistant.** The main stack's `docker-compose.yml` now passes `EGO_FIERYPIT_URL` and `EGO_REMOTE_KAFKA_BOOTSTRAP` (empty by default = the ego ruleset says the Ego is not configured). Set them in `docker/.env`
+(e.g. `EGO_FIERYPIT_URL=http://lildaemon-ego:6666`, `EGO_REMOTE_KAFKA_BOOTSTRAP=kafka:9092` for the second FieryPit on the same host; for a real remote host use its LAN URL and Kafka's external listener, e.g. `limbic:9094`), then
+`docker compose up -d --no-deps lildaemon`. Ledger, outbox and seats stay on the Ego FieryPit. Remember: from inside a container on this host, `limbic` resolves to 127.0.1.1 and the host's published ports are firewalled off from the bridges.
+
 To try it: run a frontdesk pointed at the FieryPit (`fiery_pit_url` in its TOML, e.g. a local `cargo run -p clara-frontdesk-poc` on another port with `FRONTDESK_CONFIG`), log in, choose "Ego (acts through a gate)", and ask it to
 publish a document (`publish_document {"name": ...}`) or do anything irreversible. It appears in the bell with Approve/Deny. The ledger and outbox are under `$EGO_STATE_DIR` as before.
 `EGO_ESCALATION_TTL_SECONDS` (default 86400) sets how long an unanswered escalation stays open before it counts as denied. Seats are capped by the launcher's `max_seats`; a turn that cannot get a seat tells the user nothing was done.

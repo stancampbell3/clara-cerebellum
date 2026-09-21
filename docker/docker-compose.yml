@@ -237,6 +237,11 @@ services:
       # fatal), same tone as every other startup step here.
       - DELIBERATION_REMOTE_MEMBER_FIERYPIT_URL=${DELIBERATION_REMOTE_MEMBER_FIERYPIT_URL:-}
       - DELIBERATION_REMOTE_KAFKA_BOOTSTRAP=${DELIBERATION_REMOTE_KAFKA_BOOTSTRAP:-}
+      # The `ego` assistant ruleset hands work to a Hermes Ego hosted on a SEPARATE FieryPit (see
+      # docker-compose.ego.yml): its URL as this container reaches it, and the Kafka bootstrap as THAT FieryPit
+      # resolves it. Both empty = the ego ruleset answers "the Ego is not configured" and nothing else changes.
+      - EGO_FIERYPIT_URL=${EGO_FIERYPIT_URL:-}
+      - EGO_REMOTE_KAFKA_BOOTSTRAP=${EGO_REMOTE_KAFKA_BOOTSTRAP:-}
       - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
       - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
       # Ochecho TTS (goat.mcp.ochecho, used by the clara_mind_splinter evaluator's

@@ -514,3 +514,25 @@ Deny left no file. A second and third session each had their own ritual, seat, o
 - The assistant running on the MAIN FieryPit against a remote Ego FieryPit (only the Ego FieryPit hosted its own assistant here; the URL plumbing and `join_remote` are exercised, cross-host is not).
 - 24 h expiry live (unit-tested with backdated records); escalation delivery when the frontdesk reconnects after a long absence beyond the reload case.
 - `flock` on the ledger over NFS (unchanged open item).
+
+
+# Main-hosted assistant with a separate Ego FieryPit (2026-09-21)
+
+The real main `lildaemon` (live stack, `lildaemon:latest` at `e55da95`) ran the `ego` assistant ruleset against the second FieryPit `lildaemon-ego`, configured only by `EGO_FIERYPIT_URL=http://lildaemon-ego:6666` and
+`EGO_REMOTE_KAFKA_BOOTSTRAP=kafka:9092` (two new env vars on the main service, empty by default). A local frontdesk build pointed at the main FieryPit; same browser scenario as Phase 3.
+
+**Result.** Both escalations reached the bell in 39 s; Approve `publish_document` published `plan.md`, Deny `send_email` did nothing. Evidence: the ledger, outbox and Hermes seats exist ONLY on the Ego FieryPit; the main container has no
+`ritual_spaces`, no outbox, no seat launcher socket and no gate env; the Ego FieryPit's log shows `/ritual/join`, `GET /ego/escalations` and both `POST .../resolve` calls arriving from the main container's address (172.19.0.5); the ledger's
+resolver is the logged-in user's id. Deleting the session on the main FieryPit released the seat on the Ego FieryPit (`POST /ego/rituals/{id}/close`). With the Ego FieryPit stopped, a turn answered in 0.3 s "I couldn't reach the Ego just now
+(ConnectError). Nothing was done." and left no pending row. Live stack otherwise unchanged (only `lildaemon` recreated, env diff = the two variables); Dis listed three FieryPits (pineal, lildaemon, lildaemon-ego).
+
+## Findings
+1. **Same-host "remote by host URL" is not testable without firewall changes.** Inside the main container `limbic` resolves to `127.0.1.1`, and the host's LAN IP on Kafka's external listener (`10.0.0.192:9094`) and `host.docker.internal:9094` time out from the
+   `docker_clara-net` bridge (host firewall blocks bridge-to-host-published traffic; remote hosts such as pineal are unaffected). So this proof used the Ego FieryPit's clara-net address as its URL. It exercises the code path (peer-token calls, `join_remote`,
+   per-session ritual, escalation proxying, seat release, unreachable Ego) but NOT a real network hop; that is what pineal is for.
+2. **Outputs live where the Ego lives.** A published file lands in the Ego FieryPit's outbox, not on the main host. Fine for the demo; a real deployment needs a pickup story (the shared durable store idea, or serving the outbox), otherwise "published" means
+   "on the other machine".
+3. Peer-token calls between the FieryPits are plain HTTP, as everywhere else in this system; fine on a trusted LAN, worth TLS before anything less trusted.
+
+## Not verified
+- A real cross-host hop (pineal). Needs: rebuilt pineal image (drops baked secrets), Hermes image, a 64K-context `qwen-clara-hermes` tag on the 9B model, a seat launcher there, GPU headroom on 12 GB, and Kafka's external listener as the bootstrap.
