@@ -339,8 +339,11 @@ mcp 2.2.0) with the branch source mounted read-only, which also verified it on t
 
 1. **A host-run listener is unreachable from containers.** Container to host traffic is filtered on everything but allowed
    ports (Ollama's works), so a listener bound to the docker bridge gateway timed out. Container to container on the
-   bridge works (as the Phase 0 stub showed). The FieryPit itself runs in a container, so the listener belongs **inside
-   the FieryPit container**, bound `0.0.0.0` there and **not published**, with seat containers on the same docker network.
+   bridge works (as the Phase 0 stub showed). In the local compose stack the FieryPit itself runs in a container, so there
+   the listener belongs **inside the FieryPit container**, bound `0.0.0.0` there and **not published**. **This is per-host
+   deployment configuration, not a design assumption:** FieryPits can be remote and are identified by their registered URL, not
+   by a docker network, so nothing may assume a shared network name. The FieryPit advertises the URL at which seats reach its
+   gate (`EGO_GATE_ADVERTISE_URL`) and each host's seat launcher decides which network a seat joins.
 2. **Token delivery: put it in the seat's Hermes-home `.env`.** `${VAR}` in MCP `headers` resolved when `EGO_GATE_TOKEN`
    was in `$HERMES_HOME/.env`, but **not** when passed by `docker run -e/--env-file`: the placeholder stayed literal
    (`Bearer ${EGO_GATE_TOKEN}`) and the server returned 401. An unset variable keeps its literal placeholder **silently**.

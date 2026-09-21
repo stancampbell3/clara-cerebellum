@@ -183,14 +183,18 @@ Hermes Agent v0.21.3 (2026.9.14), upstream 8ffc2f03, docker install, container `
 11. Pineal Hermes must be reconciled with limbic's version and config before cross-host work.
 12. **Who executes an approved action** is undefined. `approve` says the action may run; an evaluator-side executor (by action
     name, and a reviewed handler for free-form actions) is needed in Phase 2. With the deny-all default nothing runs today.
-13. **Verify the seat at start, and never trust its narrative.** With a bad token Hermes ran with zero tools and the model
+13. **Verify the seat at start, and never trust its narrative.** *(Start-up check implemented in slice 4a; recorded-events reporting begun, audit design still open, item 16.)* With a bad token Hermes ran with zero tools and the model
     still claimed to have saved a file. The evaluator must assert the expected six tools are registered before dispatching
     work, and report outcomes from tool events and the ritual-space journal (slice 4).
 14. **Token delivery** must go through the seat's Hermes-home `.env` (0600), written at seat creation; container env vars are
     not resolved by `${VAR}` in MCP headers, and an unresolved variable stays literal without any error.
-15. **Where the listener and seat containers live.** The listener runs inside the FieryPit container (unpublished) and seat
-    containers join the same docker network; a host-run listener is unreachable from containers. The FieryPit also needs a way
-    to start seat containers (docker socket access or a host-side launcher), unresolved (slice 4).
+15. **Where the listener and seat containers live: per-host configuration, never an assumed shared docker network** (FieryPits
+    can be remote and are identified by their registered URL). A host-run listener is unreachable from containers, so in the
+    local compose stack the listener runs inside the FieryPit container, unpublished. The FieryPit advertises the URL at which
+    seats reach its gate (`EGO_GATE_ADVERTISE_URL`); each host's seat launcher chooses the network a seat joins. **Decided
+    2026-09-21:** seat containers are started by a **host-side launcher on a unix socket** bind-mounted into the FieryPit, not
+    by mounting `docker.sock` (root on the host, next to `shell_command`) and not from a static pool. Contract in slice 4a;
+    daemon is slice 4b.
 16. **Later (user idea, 2026-09-21): a way to be sure of what the agent actually did and what was actually decided.** Item 13 is the
     motivating case (the model narrated a save that never happened). A verifiable record of actions taken and decisions made,
     independent of the model's own account, is worth designing once the gate and executor exist; not scoped yet.
@@ -361,6 +365,34 @@ Wires the ritual space into rituals, toolified evaluators and app startup. 23 mo
 - **Not fixed here:** `goat/mcp/ochecho/server.py` (imports the removed `mcp.server.fastmcp`) and
   `MCPToolRegistry`'s client (`streamablehttp_client` was renamed `streamable_http_client`) are still broken on mcp 2.x.
 
+### Implemented: slice 4a, the Hermes evaluator and the seat-launcher contract (lildaemon branch `hermes-ego-phase1`, 2026-09-21, uncommitted)
+
+`goat/evaluators/agent_evaluator.py` (`AgentEvaluator`), `goat/evaluators/custom/hermes_agent_evaluator.py`
+(`HermesAgentEvaluator`), `goat/mcp/ego_gate/launcher.py` (contract and client), `Evaluator.close()`; 61 tests (all against fakes).
+The real launcher daemon and a live end-to-end run are slice 4b.
+
+- **`Evaluator.close()`** (no-op by default) is now called by `GoatWrangler.close_evaluator`, guarded so a failing `close()` never
+  blocks slot removal. `RitualManager.leave` already reaches it. Without this hook nothing could tear a seat down.
+- **`AgentEvaluator`** owns what must never be trusted to the agent: `max_tool_calls` (default 20) and `max_seconds` (120),
+  enforced from outside by stopping the run, a capped run is an error even if the runtime reports it completed, and every
+  failure is a `Tabu` (429 tool cap, 408 time cap, 502 failed or truncated run, 500 unexpected). The result carries the tool
+  events the runtime reported, so callers can read what was done from events instead of the model's prose (item 16).
+- **`HermesAgentEvaluator`**: one seat per instance, created lazily on the first evaluation from the ritual in scope (none
+  in scope is a 400; a different ritual later is a 409). It registers a per-seat token, asks the launcher for a container, waits
+  for ready, and **refuses to use a seat unless Hermes registered exactly the six `mcp__ego_gate__*` tools** (missing or
+  unexpected tools tear the seat down and return 503), which closes the slice 3 finding that a seat with no tools still gets
+  narrated success. A background thread renews the lease; `close()` deletes the seat and revokes the token.
+- **Launcher contract** (JSON over a unix socket; the daemon in 4b implements the other side): `POST /seats`,
+  `GET /seats/{id}` (state `starting|ready|failed|gone`, `tools_registered`), `POST /seats/{id}/lease`, `DELETE /seats/{id}`,
+  `POST /seats/{id}/runs`, `GET /seats/{id}/runs/{run}/events` (SSE), `POST /seats/{id}/runs/{run}/stop`. The launcher fixes the
+  image, limits and config template, **holds the seat's Hermes API key** (the FieryPit never sees it), **proxies the Hermes run
+  API** (so the FieryPit needs no network path to seat containers), and **removes any seat whose lease lapses**, so a crashed
+  FieryPit cannot leave containers running (decision 5's kill-switch guarantee).
+- **A real bug the tests caught:** `SeatRegistry` defines `__len__`, so an empty registry is falsy and `registry or <global>`
+  silently replaced a passed-in empty registry with the process singleton. Fixed with `is not None`, with a regression test.
+- Registration is a **commented example** in `config/evaluators.yaml`; no live registration changed. Needs per FieryPit
+  `SEAT_LAUNCHER_SOCKET`, `EGO_GATE_ADVERTISE_URL` and `EGO_GATE_ENABLED`.
+
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host
@@ -391,3 +423,4 @@ Wires the ritual space into rituals, toolified evaluators and app startup. 23 mo
 - 2026-09-21, Phase 1 slice 2 implemented in lildaemon (scope wiring, tools, ritual-status reaper), uncommitted.
 - 2026-09-21, ritual-space retention aligned with Dis's 7 day terminated-ritual retention (grace 7 days, ceiling 14 days); persist options recorded, deferred.
 - 2026-09-21, Phase 1 slice 3 implemented in lildaemon (`goat/mcp/ego_gate/`) and live-verified against Hermes; open items 12-16 added.
+- 2026-09-21, Phase 1 slice 4a implemented in lildaemon (evaluator, launcher contract, close hook); item 15 corrected: reachability is per-host config, launcher on a unix socket decided.
