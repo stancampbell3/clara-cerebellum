@@ -212,6 +212,9 @@ pub struct PendingResearchInfo {
     /// client can render an in-progress indicator, not just delivered
     /// results.
     pub status: String,
+    /// kind="escalation": "<ritual_id>/<seq>" of the action awaiting approve/deny. Opaque to the client.
+    #[serde(default, rename = "ref")]
+    pub reference: Option<String>,
 }
 
 fn default_kind() -> String {
@@ -272,4 +275,106 @@ pub fn ack_pending_research(
         )));
     }
     Ok(())
+}
+
+/// The user's answer to an escalated Ego action, as the backend reports it.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct EscalationOutcome {
+    /// "approved" | "denied"
+    pub state: String,
+    #[serde(default)]
+    pub executed: bool,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// Ready-to-show sentence: what was (or was not) done.
+    pub message: String,
+}
+
+/// Turn a resolve response into an outcome, or into an error carrying the backend's own `detail`
+/// (404 gone, 409 already handled, 410 expired, ...). Pure, so it is unit-tested without a server.
+pub fn parse_resolve_response(status: u16, body: &str) -> Result<EscalationOutcome, AssistantError> {
+    if (200..300).contains(&status) {
+        return serde_json::from_str(body)
+            .map_err(|e| AssistantError::Api(format!("bad resolve response: {e}")));
+    }
+    let detail = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("detail").and_then(|d| d.as_str().map(str::to_string)))
+        .unwrap_or_else(|| body.to_string());
+    Err(AssistantError::Api(format!("resolve_escalation failed ({status}): {detail}")))
+}
+
+/// POST /assistant/sessions/{id}/escalations/{request_id}/resolve — the logged-in user's approve/deny of an
+/// action the Ego's Superego escalated. The backend checks the session belongs to this token's user.
+pub fn resolve_escalation(
+    http: &Client,
+    base_url: &str,
+    token: &str,
+    session_id: &str,
+    request_id: &str,
+    decision: &str,
+) -> Result<EscalationOutcome, AssistantError> {
+    let resp = http
+        .post(format!(
+            "{base_url}/assistant/sessions/{session_id}/escalations/{request_id}/resolve"
+        ))
+        .bearer_auth(token)
+        .json(&json!({ "decision": decision }))
+        .send()?;
+    let status = resp.status().as_u16();
+    let body = resp.text().unwrap_or_default();
+    parse_resolve_response(status, &body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_an_approved_outcome() {
+        let out = parse_resolve_response(
+            200,
+            r#"{"state":"approved","executed":true,"outcome":"published 'plan.md'","message":"Approved. published 'plan.md'"}"#,
+        )
+        .unwrap();
+        assert_eq!(out.state, "approved");
+        assert!(out.executed);
+        assert_eq!(out.message, "Approved. published 'plan.md'");
+    }
+
+    #[test]
+    fn parses_a_denial_without_optional_fields() {
+        let out = parse_resolve_response(200, r#"{"state":"denied","message":"Denied."}"#).unwrap();
+        assert!(!out.executed);
+        assert_eq!(out.outcome, None);
+    }
+
+    #[test]
+    fn carries_the_backends_detail_on_errors() {
+        for (status, detail) in [(404, "no such escalation"), (409, "this escalation was already handled"), (410, "expired")] {
+            let body = format!(r#"{{"detail":"{detail}"}}"#);
+            let err = parse_resolve_response(status, &body).unwrap_err().to_string();
+            assert!(err.contains(&status.to_string()) && err.contains(detail), "{err}");
+        }
+    }
+
+    #[test]
+    fn tolerates_a_non_json_error_body_and_a_garbled_success() {
+        assert!(parse_resolve_response(502, "Bad Gateway").unwrap_err().to_string().contains("Bad Gateway"));
+        assert!(parse_resolve_response(200, "not json").is_err());
+    }
+
+    #[test]
+    fn the_pending_entry_accepts_the_new_ref_field_and_its_absence() {
+        // The backend field is `ref`; serde maps it via the rename on the struct field.
+        let with_ref: PendingResearchInfo = serde_json::from_str(
+            r#"{"request_id":"r","query":"q","reply":"t","kind":"escalation","status":"ready","ref":"ritual/3"}"#,
+        )
+        .unwrap();
+        assert_eq!(with_ref.reference.as_deref(), Some("ritual/3"));
+        let without: PendingResearchInfo =
+            serde_json::from_str(r#"{"request_id":"r","query":"q","reply":null,"status":"researching"}"#).unwrap();
+        assert_eq!(without.reference, None);
+        assert_eq!(without.kind, "research");
+    }
 }

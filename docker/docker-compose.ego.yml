@@ -77,6 +77,15 @@ services:
       - EGO_GATE_SUPEREGO_NODE=${EGO_GATE_SUPEREGO_NODE:-superego}
       - EGO_GATE_SUPEREGO_MODEL=${EGO_GATE_SUPEREGO_MODEL:-qwen-clara-hermes:latest}
       - EGO_OUTBOX_ROOT=/app/outbox
+      # Phase 3: how an ASSISTANT runtime (the `ego` ruleset; here this same FieryPit, or the main one) reaches
+      # the FieryPit that hosts the Ego seats, by URL, and the Kafka listener that FieryPit's participants
+      # use. Escalations (Approve/Deny) and seat release go to EGO_FIERYPIT_URL with the peer token.
+      # EGO_ESCALATION_TTL_SECONDS (default 86400): how long an escalation stays open before it counts as denied.
+      # A Hermes seat idle this long (seconds) is released and the next request starts a fresh one, so seats do not
+      # pile up against the launcher's max_seats when a browser tab is closed without ending its session.
+      - EGO_SEAT_IDLE_SECONDS=${EGO_SEAT_IDLE_SECONDS:-900}
+      - EGO_FIERYPIT_URL=${EGO_FIERYPIT_URL:-http://lildaemon-ego:6666}
+      - EGO_REMOTE_KAFKA_BOOTSTRAP=${EGO_REMOTE_KAFKA_BOOTSTRAP:-kafka:9092}
     volumes:
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/data:/app/data
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/output:/app/output

@@ -10,8 +10,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::assistant_client::{
-    ack_pending_research, create_session, list_pending_research, list_rulesets, send,
-    set_session_ruleset, PendingResearchInfo, RulesetInfo, SendResponse,
+    ack_pending_research, create_session, list_pending_research, list_rulesets, resolve_escalation,
+    send, set_session_ruleset, EscalationOutcome, PendingResearchInfo, RulesetInfo, SendResponse,
 };
 use crate::state::AppState;
 
@@ -46,6 +46,9 @@ enum IncomingMsg {
     /// arrives does the server call POST .../ack, closing the delivery-
     /// loss window a plain read-marks-delivered GET used to leave open.
     ResearchAck { request_id: String },
+    /// The user's Approve/Deny for an action the Ego's Superego escalated (a `research_update` of kind
+    /// "escalation"). `decision` is "approve" or "deny"; anything else is refused here, before any call.
+    EscalationResolve { request_id: String, decision: String },
 }
 
 // ─── Internal actor messages ───────────────────────────────────────────────
@@ -70,6 +73,13 @@ struct SessionReady {
 #[rtype(result = "()")]
 struct RulesetSetResult {
     outcome: Result<String, String>,
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct EscalationResolved {
+    request_id: String,
+    outcome: Result<EscalationOutcome, String>,
 }
 
 #[derive(Message)]
@@ -204,6 +214,10 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for FrontDeskActor {
                     IncomingMsg::ResearchAck { request_id } => {
                         self.handle_research_ack(request_id, ctx)
                     }
+                    IncomingMsg::EscalationResolve {
+                        request_id,
+                        decision,
+                    } => self.handle_escalation_resolve(request_id, decision, ctx),
                 }
             }
             Ok(ws::Message::Ping(b)) => ctx.pong(&b),
@@ -284,6 +298,51 @@ impl FrontDeskActor {
         });
     }
 
+    /// Forward the user's approve/deny. The backend, not this actor, enforces that the session belongs to
+    /// this visitor's token; a refusal comes back to the browser as an `escalation_error` frame.
+    fn handle_escalation_resolve(
+        &mut self,
+        request_id: String,
+        decision: String,
+        ctx: &mut ws::WebsocketContext<Self>,
+    ) {
+        if !valid_decision(&decision) {
+            ctx.text(escalation_error_frame(&request_id, "Unknown decision.", false));
+            return;
+        }
+        let Some(session_id) = self.session_id.clone() else {
+            ctx.text(escalation_error_frame(
+                &request_id,
+                "Session not ready yet — try again in a moment.",
+                false,
+            ));
+            return;
+        };
+        self.pending_status.remove(&request_id);
+
+        let http: Client = self.state.http.clone();
+        let base_url = self.state.fiery_pit_url.clone();
+        let token = self.token.clone();
+        let addr = ctx.address();
+
+        actix::spawn(async move {
+            let rid = request_id.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                resolve_escalation(&http, &base_url, &token, &session_id, &rid, &decision)
+            })
+            .await;
+            let outcome = match result {
+                Ok(Ok(out)) => Ok(out),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(e) => Err(format!("internal fault: {}", e)),
+            };
+            addr.do_send(EscalationResolved {
+                request_id,
+                outcome,
+            });
+        });
+    }
+
     /// Fire-and-forget ack: the client has already durably persisted the
     /// result (sessionStorage) by the time this arrives, so there is
     /// nothing to send back to it either way — a failed ack just means
@@ -347,6 +406,22 @@ impl Handler<RulesetSetResult> for FrontDeskActor {
     }
 }
 
+impl Handler<EscalationResolved> for FrontDeskActor {
+    type Result = ();
+
+    fn handle(&mut self, done: EscalationResolved, ctx: &mut Self::Context) {
+        let frame = match done.outcome {
+            Ok(out) => escalation_resolved_frame(&done.request_id, &out),
+            Err(e) => {
+                log::warn!("escalation resolve failed: {}", e);
+                let (text, is_final) = friendly_resolve_error(&e);
+                escalation_error_frame(&done.request_id, &text, is_final)
+            }
+        };
+        ctx.text(frame);
+    }
+}
+
 impl Handler<PendingResearchTick> for FrontDeskActor {
     type Result = ();
 
@@ -375,6 +450,7 @@ impl Handler<PendingResearchTick> for FrontDeskActor {
                                 "query": item.query,
                                 "reply": item.reply,
                                 "citation_count": item.citation_count,
+                                "ref": item.reference,
                             })
                             .to_string(),
                         );
@@ -534,4 +610,118 @@ pub async fn ws_index(
         &req,
         stream,
     )
+}
+
+
+// ─── Pure helpers (unit-tested below) ─────────────────────────────────────────
+
+fn valid_decision(decision: &str) -> bool {
+    decision == "approve" || decision == "deny"
+}
+
+fn escalation_resolved_frame(request_id: &str, out: &EscalationOutcome) -> String {
+    json!({
+        "type": "escalation_resolved",
+        "request_id": request_id,
+        "state": out.state,
+        "executed": out.executed,
+        "message": out.message,
+    })
+    .to_string()
+}
+
+/// `is_final`: the backend has retired the request (gone, already handled, expired), so the browser should
+/// drop it instead of offering the buttons again.
+fn escalation_error_frame(request_id: &str, text: &str, is_final: bool) -> String {
+    json!({"type": "escalation_error", "request_id": request_id, "text": text, "final": is_final})
+        .to_string()
+}
+
+/// Backend refusals worth telling the user about plainly, and whether they are final (the request is gone
+/// for good); anything else is a generic, retryable message.
+fn friendly_resolve_error(raw: &str) -> (String, bool) {
+    if raw.contains("(410)") {
+        ("This request expired, so it counts as denied.".to_string(), true)
+    } else if raw.contains("(409)") {
+        ("This request was already handled.".to_string(), true)
+    } else if raw.contains("(404)") || raw.contains("(403)") {
+        ("This request is no longer available.".to_string(), true)
+    } else {
+        ("Couldn't send your answer — please try again.".to_string(), false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(raw: &str) -> Option<IncomingMsg> {
+        serde_json::from_str(raw).ok()
+    }
+
+    #[test]
+    fn parses_an_escalation_resolve_frame() {
+        match parse(r#"{"type":"escalation_resolve","request_id":"abc","decision":"approve"}"#) {
+            Some(IncomingMsg::EscalationResolve { request_id, decision }) => {
+                assert_eq!(request_id, "abc");
+                assert_eq!(decision, "approve");
+            }
+            _ => panic!("did not parse as EscalationResolve"),
+        }
+    }
+
+    #[test]
+    fn rejects_a_resolve_frame_missing_a_field() {
+        assert!(parse(r#"{"type":"escalation_resolve","request_id":"abc"}"#).is_none());
+        assert!(parse(r#"{"type":"escalation_resolve","decision":"approve"}"#).is_none());
+    }
+
+    #[test]
+    fn existing_frames_still_parse() {
+        assert!(matches!(parse(r#"{"type":"chat","text":"hi"}"#), Some(IncomingMsg::Chat { .. })));
+        assert!(matches!(
+            parse(r#"{"type":"research_ack","request_id":"r"}"#),
+            Some(IncomingMsg::ResearchAck { .. })
+        ));
+    }
+
+    #[test]
+    fn only_approve_and_deny_are_valid_decisions() {
+        assert!(valid_decision("approve") && valid_decision("deny"));
+        for bad in ["", "Approve", "maybe", "approve ", "yes"] {
+            assert!(!valid_decision(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn frames_carry_the_request_id_and_the_outcome() {
+        let out = EscalationOutcome {
+            state: "approved".into(),
+            executed: true,
+            outcome: Some("published".into()),
+            message: "Approved. published".into(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&escalation_resolved_frame("r1", &out)).unwrap();
+        assert_eq!(v["type"], "escalation_resolved");
+        assert_eq!(v["request_id"], "r1");
+        assert_eq!(v["state"], "approved");
+        assert_eq!(v["executed"], true);
+        let e: serde_json::Value =
+            serde_json::from_str(&escalation_error_frame("r1", "nope", true)).unwrap();
+        assert_eq!(e["type"], "escalation_error");
+        assert_eq!(e["text"], "nope");
+        assert_eq!(e["final"], true);
+    }
+
+    #[test]
+    fn errors_are_translated_for_the_user() {
+        let (t, f) = friendly_resolve_error("resolve_escalation failed (410): expired");
+        assert!(t.contains("expired") && f);
+        let (t, f) = friendly_resolve_error("resolve_escalation failed (409): x");
+        assert!(t.contains("already") && f);
+        let (t, f) = friendly_resolve_error("resolve_escalation failed (404): x");
+        assert!(t.contains("no longer") && f);
+        let (t, f) = friendly_resolve_error("connection refused");
+        assert!(t.contains("try again") && !f, "a transient failure must stay retryable");
+    }
 }

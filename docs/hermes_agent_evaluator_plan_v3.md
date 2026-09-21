@@ -496,6 +496,35 @@ denied inside the gate before Prolog rather than as a separate REJECTED state.
 
 **Not in Phase 2:** delivering an escalation to the user and the override (Phase 3, frontdesk Ego analyst), `caws_tristate` promotion, egress firewall, pineal, pushing, any real outward action (email).
 
+### Phase 3 (2026-09-21, lildaemon branch `hermes-ego-phase3`, uncommitted; frontdesk changes in clara-cerebellum): escalations reach the user
+
+The Superego's "escalate" is now a real, answerable item. You decided: approve executes only if a handler exists; full UI (WS action and buttons); the Ego is not told the outcome; 24 h TTL.
+
+**Lifecycle (`goat/mcp/ego_gate/escalations.py`, derived entirely from the action ledger).** `decision(escalate)` (now stores the params, escalations only) -> `resolution(approve|deny, resolver, note)` ->
+`override_execution` (approve only). The resolution is appended atomically with the "not already resolved, not expired" check (`ActionLedger.append_checked`, one flock), so a double click, retry or two resolvers cannot execute twice.
+Approve runs the recorded params through the action's handler only if the action is allowlisted with a handler, after re-validating them against the schema and the recorded digest; a free-form action is approved on paper
+("no executor is registered; nothing was done"). Unresolved items expire after 24 h (`EGO_ESCALATION_TTL_SECONDS`) and count as denied. New irreversible demo action `publish_document` (always escalates; runs only on approval).
+
+**Endpoints on the Ego FieryPit (`goat/app/ego_escalations.py`), service credentials only:** `GET /ego/escalations`, `POST /ego/escalations/{ritual}/{seq}/resolve`, `POST /ego/rituals/{ritual}/close`. Peer token or service JWT only:
+an ordinary user JWT gets 403 and a seat's own bearer token 401 (a seat can reach this port over its bridge, so the check is the authentication itself). The user-facing path is the assistant: `POST /assistant/sessions/{id}/escalations/{request_id}/resolve`
+checks the session's owner, forwards to the Ego FieryPit naming that user as resolver, and writes the outcome into the session history. An ack can never retire an undecided escalation.
+
+**Assistant (`ego_analyst.pl`, ruleset key `ego`).** Every turn binds the async `ego` action (Id slot deliberately empty); `ego_step/5` is one consult of the ritual's Ego node with the raw user message as `user_request`. **One ritual per session**
+(own Hermes seat, ritual space and ledger, hosted on the FieryPit at `EGO_FIERYPIT_URL`, joined via `join_remote`), with uniquely named `ego-<ritual>`/`superego-<ritual>` nodes. On completion the reply shows the Ego's own account plus "What the gate recorded",
+built from the ledger, and each escalation becomes its own `ready` pending-research row (`kind="escalation"`, `ref="<ritual>/<seq>"`). The ego turn does not join the standing ritual. Deleting the session releases its seat.
+
+**Frontdesk (Rust + `index.html`).** WS action `escalation_resolve {request_id, decision}` (validated: approve|deny), forwarded to the resolve endpoint; frames `escalation_resolved` / `escalation_error` (with `final` when the request is gone for good).
+Escalation items in the bell carry Approve/Deny buttons (disabled while in flight) and are never auto-acked. 11 Rust unit tests, 4 new Playwright specs (all 13 pass).
+
+**Tests.** Suite 2 failed (same pre-existing) / 1771 passed / 26 skipped. Mutation checks, each killed: skip the service check, expired approvable, skip digest check, skip schema re-validation, execute a free-form approval, allow re-resolution, deny that executes,
+params not stored; ownership check removed, unscoped row lookup, all escalations instead of this turn's, one shared ritual across sessions, retire on any error, resolve without status check, claims taken from the agent instead of the gate.
+
+**Live proof** (real frontdesk build, real browser, real Hermes seats, real reviewer, on the second FieryPit). Ask the Ego to publish a document and send an email: both arrive in the bell in about 45 s. Approve `publish_document`: file appears under `outbox/<ritual>/published/`;
+ledger shows `resolution` (resolver = the logged-in user's id) then `override_execution executed=True`. Approve `send_email`: recorded, `executed=False`, nothing ran. Deny: nothing published. A second session on the same FieryPit ran on its own seat, ritual space and ledger.
+Details, and the four things it found: findings doc, "Phase 3 live proof".
+
+**Not in Phase 3:** telling the Ego the outcome (your decision), an Id, egress firewall, pineal, pushing, real outward actions (email), running the assistant on the MAIN FieryPit against a remote Ego FieryPit (built for it via `EGO_FIERYPIT_URL`, but the live proof used the Ego FieryPit as its own assistant host), deleting the live `lildaemon:latest` rebuild question (not rebuilt).
+
 ### Still open
 
 - **Verify `flock` over NFS on the real ritual-space export** (multi-host append test, plus behaviour when a host

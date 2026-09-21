@@ -70,6 +70,14 @@ Then the container log shows `ego_gate: gate mode superego`. Other knobs, all op
 Ollama does not swap models), `EGO_GATE_DIS_POLL_SECONDS`. Approved `export_document` / `record_note` actions write only under `$EGO_STATE_DIR/outbox/<ritual_id>/`. Every decision is appended to
 `$EGO_STATE_DIR/ritual_spaces/<ritual_id>/actions.jsonl`, which the model has no tool to read or write.
 
+## Escalations and the frontdesk Ego (Phase 3)
+
+The compose file also sets `EGO_FIERYPIT_URL` (default `http://lildaemon-ego:6666`), `EGO_REMOTE_KAFKA_BOOTSTRAP` (default `kafka:9092`), and `EGO_SEAT_IDLE_SECONDS` (default 900). An assistant runtime with the `ego` ruleset
+(here this FieryPit itself; in a real deployment the MAIN lildaemon, pointed at this FieryPit by URL and needing the same `DIS_DOMAIN_PEER_TOKEN`) creates one ritual per session with `ego-<id>`/`superego-<id>` nodes hosted here.
+To try it: run a frontdesk pointed at the FieryPit (`fiery_pit_url` in its TOML, e.g. a local `cargo run -p clara-frontdesk-poc` on another port with `FRONTDESK_CONFIG`), log in, choose "Ego (acts through a gate)", and ask it to
+publish a document (`publish_document {"name": ...}`) or do anything irreversible. It appears in the bell with Approve/Deny. The ledger and outbox are under `$EGO_STATE_DIR` as before.
+`EGO_ESCALATION_TTL_SECONDS` (default 86400) sets how long an unanswered escalation stays open before it counts as denied. Seats are capped by the launcher's `max_seats`; a turn that cannot get a seat tells the user nothing was done.
+
 ## Run a ritual with an Ego seat
 
     cd /path/to/lildaemon

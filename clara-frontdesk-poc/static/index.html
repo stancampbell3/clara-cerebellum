@@ -168,6 +168,20 @@
   }
   .research-item .cta { color: #ffd070; font-family: var(--font-head); font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase; }
 
+  /* An Ego action waiting for the user's decision (kind "escalation"): not click-to-open, it carries buttons. */
+  .research-item.escalation { cursor: default; border-left: 3px solid #c0703a; }
+  .research-item.escalation:hover { background: none; }
+  .research-item.escalation .body { color: var(--ash); white-space: pre-wrap; margin: 0.3rem 0 0.5rem; }
+  .research-item.escalation .actions { display: flex; gap: 0.5rem; }
+  .research-item.escalation button {
+    font-family: var(--font-head); font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 0.3rem 0.8rem; border-radius: 3px; border: 1px solid var(--border); background: transparent;
+    color: inherit; cursor: pointer;
+  }
+  .research-item.escalation button.approve { border-color: #4f8a4f; color: #9fd49f; }
+  .research-item.escalation button.deny { border-color: #8a4f4f; color: #d49f9f; }
+  .research-item.escalation button:disabled { opacity: 0.45; cursor: default; }
+
   .bubble.research-update {
     border-color: #7a6a2a;
   }
@@ -1060,6 +1074,17 @@
         addPendingResearch(data);
       } else if (data.type === 'research_status') {
         upsertInProgressFromServer(data);
+      } else if (data.type === 'escalation_resolved') {
+        dropPendingResearch(data.request_id);
+        appendBubble('agent', data.message || 'Done.', agentName, 'research-update');
+      } else if (data.type === 'escalation_error') {
+        if (data.final) {
+          dropPendingResearch(data.request_id);
+        } else {
+          delete escalationBusy[data.request_id];
+          renderResearchQueue();
+        }
+        appendNote(data.text);
       }
     };
 
@@ -1242,9 +1267,32 @@
     savePendingResearch();
     renderResearchQueue();
     resolveInProgress(item.request_id, item.query);
-    if (item.request_id && ws && ws.readyState === WebSocket.OPEN) {
+    // An escalation is retired only by the user's Approve/Deny (the server ignores an ack for it anyway):
+    // acking it here would just be noise, so we do not.
+    if (item.kind !== 'escalation' && item.request_id && ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'research_ack', request_id: item.request_id }));
     }
+  }
+
+  function sendEscalationDecision(item, decision) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      appendNote('Not connected — reconnect and try again.');
+      return;
+    }
+    escalationBusy[item.request_id] = true;
+    renderResearchQueue();
+    ws.send(JSON.stringify({ type: 'escalation_resolve', request_id: item.request_id, decision }));
+  }
+
+  // request_ids whose answer is in flight (buttons disabled so a double click cannot send twice).
+  const escalationBusy = {};
+
+  function dropPendingResearch(requestId) {
+    const idx = pendingResearch.findIndex(p => p.request_id === requestId);
+    if (idx >= 0) pendingResearch.splice(idx, 1);
+    delete escalationBusy[requestId];
+    savePendingResearch();
+    renderResearchQueue();
   }
 
   function renderResearchQueue() {
@@ -1261,6 +1309,10 @@
       return;
     }
     pendingResearch.forEach((item, idx) => {
+      if (item.kind === 'escalation') {
+        researchPanel.appendChild(renderEscalationItem(item));
+        return;
+      }
       const row = document.createElement('div');
       row.className = 'research-item';
       const q = document.createElement('div');
@@ -1274,6 +1326,31 @@
       row.addEventListener('click', () => deliverPendingResearch(idx));
       researchPanel.appendChild(row);
     });
+  }
+
+  function renderEscalationItem(item) {
+    const row = document.createElement('div');
+    row.className = 'research-item escalation';
+    const q = document.createElement('div');
+    q.className = 'q';
+    q.textContent = 'Needs your decision: ' + item.query;
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.textContent = item.reply || '';
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    for (const [decision, label] of [['approve', 'Approve'], ['deny', 'Deny']]) {
+      const btn = document.createElement('button');
+      btn.className = decision;
+      btn.textContent = label;
+      btn.disabled = !!escalationBusy[item.request_id];
+      btn.addEventListener('click', () => sendEscalationDecision(item, decision));
+      actions.appendChild(btn);
+    }
+    row.appendChild(q);
+    row.appendChild(body);
+    row.appendChild(actions);
+    return row;
   }
 
   function deliverPendingResearch(idx) {
@@ -1335,12 +1412,13 @@
     } catch { /* best effort */ }
   }
 
-  const ASYNC_ACTIONS = { deferred_query: true, deliberate: true, brainstorm: true };
+  const ASYNC_ACTIONS = { deferred_query: true, deliberate: true, brainstorm: true, ego: true };
 
   const ASYNC_ACTION_LABELS = {
     deferred_query: 'Researching',
     deliberate: 'Deliberating',
     brainstorm: 'Sparking impulses',
+    ego: 'Ego working',
   };
 
   function addInProgressPlaceholder(actionTaken, query) {

@@ -484,3 +484,33 @@ healthy; the ego project, network, launcher and state removed afterwards).
 - Anything with a large or slow reviewer model (all judged in 1 to 5 s here); gate timeout (45 s) under load.
 - The escalation is only recorded and reported; delivering it to the user and an override are Phase 3.
 - `flock` on the ledger over NFS (same open item as the ritual space).
+
+
+# Phase 3 live proof: escalations, approve/deny through the real frontdesk (2026-09-21)
+
+Real browser (Playwright) against a locally built frontdesk (Rust, this branch) pointed at the second FieryPit, real Hermes seats, real reviewer. The ruleset dropdown offered "Ego (acts through a gate)".
+Task: save `plan.md` and `publish_document` it; `send_email` the quarterly report. Ledger from disk, first session:
+
+    #1 DECISION  send_email: escalate via semantic        #2 DECISION publish_document: escalate via deterministic
+    #3 RESOLUTION approve (resolver = the user's id) seq 1  #4 OVERRIDE send_email: executed=False (no executor; nothing was done)
+    #5 RESOLUTION approve seq 2                             #6 OVERRIDE publish_document: executed=True, published 'plan.md' (24 bytes)
+
+Deny left no file. A second and third session each had their own ritual, seat, outbox and ledger; the second's document ("second session figures") never touched the first's.
+
+## Findings that change the design
+
+1. **A FieryPit keys evaluator slots by node id alone**, so the second session's `ego` node reused the first session's Hermes slot (bound to the first ritual) and got a Tabu: in effect one Ego per process. Fixed with per-ritual node ids
+   (`ego-<ritual8>`, `superego-<ritual8>`) and the reviewer's node id carried to the gate as seat context from the offering (still the trusted side, never Hermes). Phase 2's single-ritual proof could not have shown this.
+2. **A failed Ego turn left its row "researching" forever** with the user told nothing (the launcher refused a seat at its cap, the Ego answered Tabu, the deduction ended without a solution, and the poller only handled converged ones).
+   Now a failed or solution-less deduction becomes a ready reply "the Ego couldn't complete this request, so nothing was done", exercised live by running past `max_seats`.
+3. **Seats leaked until the session was deleted**, and a closed browser tab never deletes its session, so seats would pile up to the launcher's cap. Seats now release themselves after `EGO_SEAT_IDLE_SECONDS` (default 900) of no work, never during a run, and the next
+   request starts a fresh one. Verified live: released at about 90 s with a 45 s setting; the next turn's reply said `a.md already existed (v1)`, i.e. the ritual space survived the seat restart. Deleting a session also releases its seat
+   (`POST /ego/rituals/{id}/close`, because `DELETE /ritual/{id}` is user-JWT-only).
+4. **The client acks every delivered result**, which would have retired an undecided escalation before the user chose. The server now ignores an ack for `kind="escalation"`, and the page does not send one. (Found by design review, then covered by tests; the live run used the fixed page.)
+5. Smaller: the reviewer's verdict for `send_email` was `approve / reversible no / contained no`, which the policy correctly turns into an escalation, not an approval. The Phase 2 example's "export ran" check depends on Hermes choosing to do step 1 (it skipped it once out of two runs); the structural checks held both times.
+6. A process-pattern accident worth recording: `ps | grep clara-frontdesk` also matched the LIVE frontdesk container's process. The kill was refused (root-owned); nothing was affected. Match on something unique to the process you started.
+
+## Not verified
+- The assistant running on the MAIN FieryPit against a remote Ego FieryPit (only the Ego FieryPit hosted its own assistant here; the URL plumbing and `join_remote` are exercised, cross-host is not).
+- 24 h expiry live (unit-tested with backdated records); escalation delivery when the frontdesk reconnects after a long absence beyond the reload case.
+- `flock` on the ledger over NFS (unchanged open item).
