@@ -62,8 +62,40 @@ Robert's Rules) already are.
    unified partner needs a real lifecycle decision: one long-lived Ritual per session (like the Ego's),
    with research/knowledge/task participants all joined once and available across every turn? Per user?
    Spun up fresh per turn, like today?
-3. It isn't yet confirmed whether Cobbler's graph/node vocabulary can already express what these analysts
-   do today (tri-state caching, tier escalation, committee debate rounds) or would need extending first.
+
+## Spike results (2026-09-22): terse_analyst.pl on RitualConfig
+
+The open question below about Cobbler's graph vocabulary is now answered, via a real spike (lildaemon's
+`examples_ritual_config_terse_spike.py`), not left open.
+
+**The graph/transduction vocabulary does not yet express this analyst's logic.** Read directly:
+`clara-cycle/src/transduction.rs` has exactly one functional node type (`daemon`, wrapping an evaluator +
+optional hand-authored Prolog/CLIPS), and its only codegen is for **edge wiring** (`consult`/`emit`/
+`pipe`/`tee` helpers, driven by edge `msgType`/`qualifierKind`). There is no node type for a plain LLM
+prompt call (`ponder_text` never appears in the transducer), no branch/pattern-match node
+(`terse_analyst.pl`'s `research_pattern/1` has no analog), and no `caws_offer`-to-a-fixed-participant node
+(the transducer only ever emits `caws_consult`/`caws_pipe`/`caws_emit`/`caws_tee`). Confirmed against
+Cobbler's own frontend types too — `daemon` and the non-functional `ritual-group` container are the only
+node kinds offered at all. Expressing `terse_analyst.pl` graph-natively would mean adding new node types
+to both the Rust transducer and the Cobbler frontend — a real, separate, cross-repo project, not something
+a spike does.
+
+**But the `RitualConfig` create→activate→run→deactivate *lifecycle* is real and works end to end** — and
+had never been proven live before this (every existing test mocks `DisClient`/`RitualManager`). The spike
+wrapped `terse_analyst.pl`'s unchanged chat-path logic (`research_pattern/1`, `extract_hohi_response/2`,
+the `ponder_text`-calling branch) as one `daemon` node's hand-authored `prologSource`, adapted to
+`RitualConfig`'s fixed entry-goal contract (`reasoned_response/3`, genuinely different from
+`assistant_turn/5`), and ran it live against the real stack: create → activate (real Dis Ritual created) →
+run a plain question (converged, correct `ponder_text` answer) → run a research-triggering question
+(converged, correctly took the lexical-match branch instead) → deactivate (Ritual torn down cleanly).
+**Full pass, first try after fixing one wrong assumption in the spike script itself** (`deactivate`
+transitions to `terminated`, not `draft` — not a bug, just this doc author's incorrect guess).
+
+**Net effect on the candidate directions**: Approach A's *lifecycle* foundation is solid and already
+live-verified; its *graph-native expression* piece is real future work (new transducer node types), not
+close to ready. A full unification along Approach A would today mean daemon nodes carrying hand-authored
+Prolog (same authoring burden as today's flat files, just inside a different container) until that
+transducer work happens — worth knowing before committing resources there.
 
 ## The other mechanical constraint: shared Prolog libraries are cross-repo
 
@@ -130,9 +162,9 @@ tactics that could serve A's generated Prolog too, not just today's flat files.
   lift right now relative to the tactical fixes (B/C/D)?
 - Do deliberation and brainstorming fold into the same unified partner, or stay separate, explicitly-
   invoked Rituals?
-- Does the Cobbler graph/transduction vocabulary already express what these analysts do, or would it need
-  extending first? Worth a small spike on one analyst (`terse_analyst.pl`, the smallest) before committing
-  either way.
+- ~~Does the Cobbler graph/transduction vocabulary already express what these analysts do, or would it
+  need extending first?~~ **Answered by the 2026-09-22 spike below: no, it would need new node types
+  first — the lifecycle itself works, the graph-native expression doesn't yet.**
 - If analysts become `RitualConfig`s, what's the right Ritual lifecycle — per turn, per session, per user?
 - Should `caws_tristate/3` promotion be bundled with the upcoming `approve_action/4` work as already
   recommended, or decoupled and done sooner?
