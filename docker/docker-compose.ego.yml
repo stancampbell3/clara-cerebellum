@@ -92,11 +92,14 @@ services:
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/data:/app/data
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/output:/app/output
       - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/workspace:/app/workspace
-      # Documents shared by a ritual's participants (goat/ritual_space). Outside any repository tree.
-      - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/ritual_spaces:/app/ritual_spaces
-      # Where approved export_document / record_note actions write, for pickup outside the ritual. The only
-      # place an approved action can leave a file; nothing else on the host is writable from here.
-      - ${EGO_STATE_DIR:-/tmp/ego-fierypit}/outbox:/app/outbox
+      # Documents shared by a ritual's participants (goat/ritual_space), and where approved export_document /
+      # publish_document actions write, for pickup outside the ritual. On /mnt/clara-shared (see
+      # scripts/setup_clara_shared_nfs_{server,client}.sh, docs/clara_shared_nfs_plan.md), not $EGO_STATE_DIR:
+      # confirmed live 2026-09-22 this is safe across hosts for the actual deployment pattern (one ritual is
+      # always written by exactly one Ego FieryPit at a time), NOT safe if two hosts ever write the SAME
+      # ritual_id concurrently.
+      - ${CLARA_SHARED_ROOT:-/mnt/clara-shared}/ritual-spaces:/app/ritual_spaces
+      - ${CLARA_SHARED_ROOT:-/mnt/clara-shared}/outbox:/app/outbox
       # The seat launcher's unix socket (its DIRECTORY is mounted). This is the ONLY route to container
       # control; docker.sock is never mounted.
       - ${SEAT_LAUNCHER_DIR:-/tmp/sl-ego}:/run/seat-launcher

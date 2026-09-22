@@ -13,7 +13,14 @@
 # Host prerequisites (the runbook has the commands): a `clara-seats` bridge with the FIXED interface name
 # br-clara-seats, one firewall rule letting that interface reach the host's Ollama (11434), the Hermes image, the
 # `qwen-clara-hermes` 64K-context model, and the seat launcher running with its socket in $SEAT_LAUNCHER_DIR.
-# State lives on LOCAL disk (never NFS: flock over NFS is unverified). Snap docker can only bind-mount under $HOME.
+# Snap docker can only bind-mount under $HOME.
+#
+# Ritual space and the outbox live on /mnt/clara-shared (see scripts/setup_clara_shared_nfs_{server,client}.sh
+# and docs/clara_shared_nfs_plan.md), not local disk: confirmed live 2026-09-22 across limbic+pineal that this is
+# safe for the actual deployment pattern (one ritual is always written by exactly one Ego FieryPit at a time), but
+# NOT safe if two DIFFERENT hosts ever write the SAME ritual_id concurrently -- that races even with the lock held
+# correctly, and silently loses data (see the plan doc's "flock over NFS" section). $HOME-local `data/`, `output/`
+# and `workspace/` are unaffected -- those are per-seat/per-process scratch, never shared collaboration data.
 name: ego
 
 services:
@@ -63,8 +70,8 @@ services:
       - ${EGO_STATE_DIR:?set EGO_STATE_DIR to a directory under $HOME}/data:/app/data
       - ${EGO_STATE_DIR}/output:/app/output
       - ${EGO_STATE_DIR}/workspace:/app/workspace
-      - ${EGO_STATE_DIR}/ritual_spaces:/app/ritual_spaces
-      - ${EGO_STATE_DIR}/outbox:/app/outbox
+      - ${CLARA_SHARED_ROOT:-/mnt/clara-shared}/ritual-spaces:/app/ritual_spaces
+      - ${CLARA_SHARED_ROOT:-/mnt/clara-shared}/outbox:/app/outbox
       - ${SEAT_LAUNCHER_DIR:?set SEAT_LAUNCHER_DIR to the launcher's socket directory}:/run/seat-launcher
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6666/health', timeout=2)"]
