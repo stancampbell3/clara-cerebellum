@@ -93,11 +93,18 @@ pub unsafe fn term_to_json(t: term_t) -> PrologResult<serde_json::Value> {
             Ok(serde_json::Value::Null)
         }
         PL_ATOM => {
-            let mut a: atom_t = 0;
-            if PL_get_atom(t, &mut a) != 0 {
-                let chars = PL_atom_chars(a);
+            // PL_atom_chars (used here previously) returns a narrow/8-bit view that
+            // truncates or corrupts atoms SWI-Prolog stores as "wide" internally --
+            // any atom containing a codepoint outside Latin-1 (confirmed live
+            // 2026-09-22: a placeholder atom containing an em dash came back as just
+            // "(", cut off at the wide representation's embedded NUL byte). Reading
+            // directly off the term with CVT_ATOM|REP_UTF8, the same UTF-8-safe
+            // pattern term_to_string already uses below, avoids that entirely.
+            let mut chars: *mut c_char = std::ptr::null_mut();
+            let flags = CVT_ATOM | REP_UTF8 | BUF_STACK;
+            if PL_get_chars(t, &mut chars, flags) != 0 {
                 if chars.is_null() {
-                    return Err(PrologError::NullPointer("atom_chars null".to_string()));
+                    return Err(PrologError::NullPointer("atom chars null".to_string()));
                 }
                 let s = CStr::from_ptr(chars).to_string_lossy().into_owned();
                 // Handle special atoms
@@ -190,9 +197,15 @@ pub unsafe fn term_to_json(t: term_t) -> PrologResult<serde_json::Value> {
             if PL_get_functor(t, &mut f) != 0 {
                 let name_atom = PL_functor_name(f);
                 let arity = PL_functor_arity(f);
-                let name_chars = PL_atom_chars(name_atom);
 
-                if name_chars.is_null() {
+                // Same PL_atom_chars wide-atom hazard as the PL_ATOM branch above --
+                // route the functor name atom through a term ref so it can go
+                // through the same CVT_ATOM|REP_UTF8-safe extraction.
+                let name_term = PL_new_term_ref();
+                PL_put_atom(name_term, name_atom);
+                let mut name_chars: *mut c_char = std::ptr::null_mut();
+                let name_flags = CVT_ATOM | REP_UTF8 | BUF_STACK;
+                if PL_get_chars(name_term, &mut name_chars, name_flags) == 0 || name_chars.is_null() {
                     return Err(PrologError::NullPointer("functor name null".to_string()));
                 }
 

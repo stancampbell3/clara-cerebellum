@@ -21,11 +21,12 @@
     ruminate_and_assert_citations/3,
     cite/2,
     citation/8,
-    cites/2
+    cites/2,
+    answer_step/9
 ]).
 
 :- use_module(library(http/json)).
-:- use_module(library(the_rabbit), [dict_to_json/2]).
+:- use_module(library(the_rabbit), [dict_to_json/2, ponder_text/2, extract_hohi_response/2]).
 
 % citation/8 and cites/2 hold per-deduction state (populated by
 % ruminate_and_assert_citations/3), so they need the same thread_local
@@ -173,3 +174,35 @@ cite(ConclusionId, CitationId) :-
     -> true
     ;  assertz(cites(ConclusionId, CitationId))
     ).
+
+%!  answer_step(+Query, +WorkspaceId, +LlmProvider, +LlmModel, -ClaraAnswer, -EdgeAnswer, -Citations, -CitationCount, -CombinedAnswer)
+%
+%   Fixed platform predicate: answer Query from Clara's own knowledge
+%   (ponder_text/2) and, independently, from Edgequake (ruminate_opts/3),
+%   then reconcile both into one short combined answer. Falls back to
+%   "(no grounded answer available)" with no citations if the Edgequake leg
+%   fails. Promoted 2026-09-22 (Approach B of the frontdesk analyst
+%   consolidation brainstorm) out of being copy-pasted across the analyst
+%   ruleset files in lildaemon.
+answer_step(Query, WorkspaceId, LlmProvider, LlmModel,
+            ClaraAnswer, EdgeAnswer, Citations, CitationCount, CombinedAnswer) :-
+    ponder_text(Query, ClaraRaw),
+    extract_hohi_response(ClaraRaw, ClaraAnswer),
+    (   catch(
+            ruminate_opts(Query, _{workspace: WorkspaceId, mode: hybrid,
+                                    llm_provider: LlmProvider, llm_model: LlmModel},
+                          EdgeResult),
+            _Error,
+            fail
+        )
+    ->  ruminate_answer(EdgeResult, EdgeAnswer),
+        ruminate_citations(EdgeResult, Citations)
+    ;   EdgeAnswer = '(no grounded answer available)',
+        Citations = []
+    ),
+    length(Citations, CitationCount),
+    format(atom(Synth),
+           "Two candidate answers to the question '~w' follow. Reconcile them into one short, best answer.~nAnswer A (Clara's own knowledge): ~w~nAnswer B (grounded in retrieved documents): ~w",
+           [Query, ClaraAnswer, EdgeAnswer]),
+    ponder_text(Synth, CombinedRaw),
+    extract_hohi_response(CombinedRaw, CombinedAnswer).

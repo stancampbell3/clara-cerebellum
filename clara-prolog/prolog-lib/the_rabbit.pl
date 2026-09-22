@@ -24,7 +24,8 @@
     descriminate/2,
     descriminate_k/3,
     descriminate_k_with_context/4,
-    current_context/1
+    current_context/1,
+    extract_hohi_response/2
 ]).
 
 :- use_module(library(http/json)).
@@ -155,6 +156,24 @@ ponder_text(Text, System, Result) :-
                                          system: System,
                                          model: 'qwen-clara:latest'}}}, Json),
     clara_evaluate(Json, Result).
+
+%!  extract_hohi_response(+Dict, -Response)
+%
+%   Parse a ponder_text/2-or-/3 result down to its response text. Promoted
+%   2026-09-22 (Approach B of the frontdesk analyst consolidation brainstorm)
+%   out of being copy-pasted across the analyst ruleset files in lildaemon.
+extract_hohi_response(Dict, Response) :-
+    (   is_dict(Dict)
+    ->  D = Dict
+    ;   atom_string(A, Dict),
+        atom_json_dict(A, D, [value_string_as(atom)])
+    ),
+    get_dict(hohi, D, D1),
+    get_dict(response, D1, D2),
+    (   get_dict(content, D2, Response)
+    ->  true
+    ;   get_dict(response, D2, Response)
+    ).
 
 %% ponder_reason/2 - plain, voiceless internal reasoning (reasoning_system_prompt/1).
 ponder_reason(Text, Result) :-

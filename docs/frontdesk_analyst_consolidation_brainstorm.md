@@ -156,6 +156,40 @@ Six ruleset files: `deliberative_analyst.pl` (639 ln), `id_analyst.pl` (622 ln),
 These aren't mutually exclusive: D is worth doing regardless of what's decided about A; B and C are
 tactics that could serve A's generated Prolog too, not just today's flat files.
 
+## Approach B results (2026-09-22): promoted into the_coire.pl/the_rabbit.pl/the_cow.pl
+
+Done, following the exact `caws_tristate/3` promotion playbook. Re-verified the duplication inventory
+directly against current file contents first (not from this doc's snapshot above): the `extract_caws_response/2`
+divergence flagged in the inventory no longer existed (Approach D's `strip_think` canonicalization had
+already fixed it as a side effect), and `strip_think/2` itself — canonicalized but not yet promoted by that
+same earlier work — was confirmed byte-identical across all 5 copies.
+
+Promoted: `strip_think/2`, `extract_caws_response/2`, `research_step/8` (all three into `the_coire.pl`,
+alongside `caws_tristate/3` — they're all helpers around a caws round trip), `extract_hohi_response/2`
+(into `the_rabbit.pl` — parses `ponder_text/2`'s own output shape), `answer_step/9` (into `the_cow.pl` —
+synthesizes an Edgequake-grounded answer, `the_cow.pl`'s own established role). 6 ruleset files lost their
+local copies as pure subtractions (`deliberative_analyst.pl`, `id_analyst.pl`, `progressive_research.pl`,
+`terse_analyst.pl`, `ego_analyst.pl`, `goat/mcp/ego_gate/rulesets/superego_gate.pl`), no call-site changes
+anywhere.
+
+**Found and fixed a real, independent bug while verifying**: the new `tests/test_approach_b_promotion.py`
+integration test caught `clara-prolog/src/backend/ffi/conversion.rs`'s `term_to_json` silently truncating
+any Prolog atom containing a non-Latin-1 character (e.g. an em dash) down to just its first character, when
+that atom came back as a bound solution value over Dis's HTTP API. Root cause: `PL_atom_chars` — a
+narrow/8-bit-only SWI-Prolog C API function — returns garbage for atoms SWI-Prolog stores internally as
+"wide" (any codepoint outside Latin-1), and the truncation happened to land exactly on `'('`, the first
+character of `strip_think/2`'s own unterminated-`<think>`-block placeholder text (which contains an em
+dash). This was a latent, pre-existing bug (unrelated to the promotion's logic — the predicate bodies moved
+verbatim) that promotion exposed for the first time, because compiling library Prolog source into the
+binary via `build.rs` is a different code path than a ruleset registered at runtime over HTTP, and the two
+happened to produce different-enough internal atom representations to surface it. Fixed by routing both
+affected extraction sites (plain atoms, and compound-term functor names) through the same
+`CVT_ATOM|REP_UTF8`-safe pattern `term_to_string` already used correctly.
+
+Verified: `cargo test --workspace` 0 failed (clara-cerebellum), full lildaemon suite 1888 passed/26
+skipped/1 flaky-unrelated (passed standalone, an Ollama-dependent test unrelated to this work). Rebuilt +
+redeployed `docker-clara-api-1` on limbic (prolog-lib is embedded at Rust build time).
+
 ## Open questions
 
 - Does the unification vision (A) match what Clara and the team actually want next, or is it too big a

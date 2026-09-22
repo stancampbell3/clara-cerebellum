@@ -11,6 +11,9 @@
     caws_await/2,              % +CorrelationId, -Result
     caws_tristate/3,           % +CorrelationId, -State, -Result
     caws_consult/4,            % +TargetNodeId, +TopicPath, +Payload, -Result
+    strip_think/2,             % +Text, -Clean
+    extract_caws_response/2,   % +Dict, -Response
+    research_step/8,           % +Query, +MaxCrawls, +TopicPath, +IngestTopicPath, +TopicSubject, +IdleSeconds, +MaxWaitS, -R
     caws_pipe/4,               % +EdgeId, +TargetNodeId, +TopicPath, +IncomingCid
     caws_edge_reply/3,         % +EdgeId, +Kind, +CorrelationId
     caws_emit/4,               % +TargetNodeId, +TopicPath, +Kind, +Payload
@@ -228,6 +231,68 @@ caws_tristate(Cid, State, Raw) :-
 caws_consult(Target, Topic, Payload, Result) :-
     caws_offer(Target, Topic, Payload, Cid),
     caws_await(Cid, Result).
+
+% ── shared analyst-ritual helpers ────────────────────────────────────────────
+%
+% Promoted 2026-09-22 (Approach B of the frontdesk analyst consolidation
+% brainstorm) out of being copy-pasted across the analyst ruleset files in
+% lildaemon — same bodies, now callable unqualified like everything else here.
+
+%!  strip_think(+Text, -Clean)
+%
+%   Strip a thinking model's <think>...</think> block from Text. Handles a
+%   properly terminated block (returns whatever follows, or a placeholder if
+%   nothing does), an unterminated block (still mid-thought — a placeholder),
+%   and plain text with no <think> tag at all (returned unchanged).
+strip_think(Text, Clean) :-
+    format(atom(A), "~w", [Text]),
+    (   aggregate_all(max(B), sub_atom(A, B, 8, _, '</think>'), MaxB)
+    ->  Skip is MaxB + 8,
+        sub_atom(A, Skip, _, 0, Rest0),
+        split_string(Rest0, "", " \t\n", [S]),
+        (   S \== ""
+        ->  atom_string(Clean, S)
+        ;   Clean = '(no answer after thinking)'
+        )
+    ;   sub_atom(A, _, 7, _, '<think>')
+    ->  Clean = '(still thinking — no answer reached within the response budget)'
+    ;   Clean = A
+    ).
+
+%!  extract_caws_response(+Dict, -Response)
+%
+%   Parse a caws_await/2 result payload (or its JSON-string form) down to its
+%   response text, with <think> blocks stripped via strip_think/2.
+extract_caws_response(Dict, Response) :-
+    catch(
+        (   is_dict(Dict)
+        ->  D = Dict
+        ;   atom_string(A, Dict),
+            atom_json_dict(A, D, [value_string_as(atom)])
+        ),
+        _DecodeErr,
+        fail
+    ),
+    get_dict(response, D, D1),
+    (   get_dict(content, D1, Response0)
+    ->  true
+    ;   get_dict(response, D1, Response0)
+    ),
+    strip_think(Response0, Response).
+
+%!  research_step(+Query, +MaxCrawls, +TopicPath, +IngestTopicPath, +TopicSubject, +IdleSeconds, +MaxWaitS, -R)
+%
+%   Fixed platform predicate: offer a crawl to the snek participant and an
+%   ingest to edgequakeingest in parallel, await both, and return their
+%   results as a dict.
+research_step(Query, MaxCrawls, TopicPath, IngestTopicPath, TopicSubject, IdleSeconds, MaxWaitS, R) :-
+    caws_offer(snek, TopicPath, _{query: Query, max_crawls: MaxCrawls}, SnekCid),
+    caws_offer(edgequakeingest, IngestTopicPath,
+               _{topic_subject: TopicSubject, idle_seconds: IdleSeconds, max_wait_s: MaxWaitS},
+               IngestCid),
+    caws_await(SnekCid, SnekResult),
+    caws_await(IngestCid, IngestResult),
+    R = _{snek: SnekResult, edgequakeingest: IngestResult}.
 
 % Drain ritual/* mailbox events (correlated Hohi/Tabu/timeouts written by
 % the cycle controller's ingest_tephra) into the per-engine caws cache.
