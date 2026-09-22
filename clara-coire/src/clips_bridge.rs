@@ -29,19 +29,28 @@ fn to_c_string(s: &str) -> *mut c_char {
 }
 
 /// Free a string allocated by the coire bridge functions.
+///
+/// # Safety
+/// `s` must be either null or a pointer this module previously handed back to CLIPS (via
+/// `to_c_string`'s `CString::into_raw`), not already freed, and not aliased elsewhere.
+/// `userfunctions.c` upholds this: it only ever frees a pointer it just received from a
+/// `rust_coire_*` call, exactly once.
 #[no_mangle]
-pub extern "C" fn rust_coire_free_string(s: *mut c_char) {
+pub unsafe extern "C" fn rust_coire_free_string(s: *mut c_char) {
     if !s.is_null() {
-        unsafe {
-            drop(CString::from_raw(s));
-        }
+        drop(CString::from_raw(s));
     }
 }
 
 /// Emit an event to the Coire.
 /// Returns a heap-allocated C string: `"ok"` on success, or `{"error":"..."}` on failure.
+///
+/// # Safety
+/// `session`, `origin`, and `payload` must each be either null or a valid pointer to a
+/// NUL-terminated, UTF-8 C string, live for the duration of this call. `userfunctions.c` upholds
+/// this: all three come straight from CLIPS's own lexeme values.
 #[no_mangle]
-pub extern "C" fn rust_coire_emit(
+pub unsafe extern "C" fn rust_coire_emit(
     session: *const c_char,
     origin: *const c_char,
     payload: *const c_char,
@@ -76,8 +85,13 @@ pub extern "C" fn rust_coire_emit(
 
 /// Poll all pending events for a session. Marks them processed atomically.
 /// Returns a heap-allocated JSON array string.
+///
+/// # Safety
+/// `session` must be either null or a valid pointer to a NUL-terminated, UTF-8 C string, live for
+/// the duration of this call. `userfunctions.c` upholds this: it comes straight from CLIPS's own
+/// lexeme value.
 #[no_mangle]
-pub extern "C" fn rust_coire_poll(session: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn rust_coire_poll(session: *const c_char) -> *mut c_char {
     let result = (|| -> Result<String, String> {
         let session_str = unsafe { cstr_to_str(session) }
             .ok_or_else(|| "null session_id".to_string())?;
@@ -100,8 +114,13 @@ pub extern "C" fn rust_coire_poll(session: *const c_char) -> *mut c_char {
 
 /// Mark a single event as processed.
 /// Returns `"ok"` or `{"error":"..."}`.
+///
+/// # Safety
+/// `event_id` must be either null or a valid pointer to a NUL-terminated, UTF-8 C string, live for
+/// the duration of this call. `userfunctions.c` upholds this: it comes straight from CLIPS's own
+/// lexeme value.
 #[no_mangle]
-pub extern "C" fn rust_coire_mark(event_id: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn rust_coire_mark(event_id: *const c_char) -> *mut c_char {
     let result = (|| -> Result<String, String> {
         let id_str = unsafe { cstr_to_str(event_id) }
             .ok_or_else(|| "null event_id".to_string())?;
@@ -122,8 +141,13 @@ pub extern "C" fn rust_coire_mark(event_id: *const c_char) -> *mut c_char {
 }
 
 /// Count pending events for a session. Returns the count, or -1 on error.
+///
+/// # Safety
+/// `session` must be either null or a valid pointer to a NUL-terminated, UTF-8 C string, live for
+/// the duration of this call. `userfunctions.c` upholds this: it comes straight from CLIPS's own
+/// lexeme value.
 #[no_mangle]
-pub extern "C" fn rust_coire_count(session: *const c_char) -> i64 {
+pub unsafe extern "C" fn rust_coire_count(session: *const c_char) -> i64 {
     let result = (|| -> Result<i64, String> {
         let session_str = unsafe { cstr_to_str(session) }
             .ok_or_else(|| "null session_id".to_string())?;

@@ -233,27 +233,25 @@ impl clara_coire::EvaluateCacheEviction for ToolboxCacheEviction {
 /// Pointer to C string containing JSON response (must be freed with rust_free_string)
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn rust_clara_evaluate(
+pub unsafe extern "C" fn rust_clara_evaluate(
     _env: *mut libc::c_void,
     input_json: *const c_char,
 ) -> *mut c_char {
-    unsafe {
-        // Convert C string to Rust string
-        let input_str = if input_json.is_null() {
-            log::warn!("rust_clara_evaluate called with NULL input");
-            ""
-        } else {
-            match CStr::from_ptr(input_json).to_str() {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("Invalid UTF-8 in input: {}", e);
-                    ""
-                }
+    // Convert C string to Rust string
+    let input_str = if input_json.is_null() {
+        log::warn!("rust_clara_evaluate called with NULL input");
+        ""
+    } else {
+        match CStr::from_ptr(input_json).to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("Invalid UTF-8 in input: {}", e);
+                ""
             }
-        };
+        }
+    };
 
-        evaluate_json_string(input_str)
-    }
+    evaluate_json_string(input_str)
 }
 
 /// Internal evaluation function that can be called from Rust code
@@ -375,26 +373,27 @@ pub fn evaluate_json_string(input_str: &str) -> *mut c_char {
 /// - Must only be called with pointers allocated by rust_clara_evaluate
 #[cfg(feature = "ffi")]
 #[no_mangle]
-pub extern "C" fn rust_free_string(s: *mut c_char) {
+pub unsafe extern "C" fn rust_free_string(s: *mut c_char) {
     if s.is_null() {
         return;
     }
 
-    unsafe {
-        // Take ownership and drop
-        let _ = CString::from_raw(s);
-    }
+    // Take ownership and drop
+    let _ = CString::from_raw(s);
 }
 
-/// Safe Rust wrapper for freeing strings returned by evaluate_json_string
-pub fn free_c_string(s: *mut c_char) {
+/// Rust-facing wrapper for freeing strings returned by evaluate_json_string.
+///
+/// # Safety
+/// `s` must be either null or a pointer this module previously handed back via
+/// `CString::into_raw` (e.g. `evaluate_json_string`'s return value), not already freed, and not
+/// aliased elsewhere.
+pub unsafe fn free_c_string(s: *mut c_char) {
     if s.is_null() {
         return;
     }
 
-    unsafe {
-        let _ = CString::from_raw(s);
-    }
+    let _ = CString::from_raw(s);
 }
 
 #[cfg(test)]
@@ -423,7 +422,7 @@ mod tests {
         let _guard = setup();
         let result_ptr = evaluate_json_string("");
         assert!(!result_ptr.is_null());
-        free_c_string(result_ptr);
+        unsafe { free_c_string(result_ptr) };
     }
 
     #[test]
@@ -436,7 +435,7 @@ mod tests {
             assert!(result_str.contains("error"));
             assert!(result_str.contains("Invalid JSON"));
         }
-        free_c_string(result_ptr);
+        unsafe { free_c_string(result_ptr) };
     }
 
     #[test]
@@ -448,7 +447,7 @@ mod tests {
             let result_str = CStr::from_ptr(result_ptr).to_str().unwrap();
             assert!(result_str.contains("success"), "Expected success, got: {}", result_str);
         }
-        free_c_string(result_ptr);
+        unsafe { free_c_string(result_ptr) };
     }
 
     // ── Per-deduction cache scoping ──────────────────────────────────────────
@@ -465,8 +464,8 @@ mod tests {
         // Deduction A: miss, then hit under the same context.
         {
             let _ctx = deduction_context(Uuid::new_v4());
-            free_c_string(evaluate_json_string(input));
-            free_c_string(evaluate_json_string(input));
+            unsafe { free_c_string(evaluate_json_string(input)) };
+            unsafe { free_c_string(evaluate_json_string(input)) };
         }
         assert_eq!(
             get_evaluate_call_count(), 1,
@@ -476,7 +475,7 @@ mod tests {
         // Deduction B: same input, different deduction — must re-execute.
         {
             let _ctx = deduction_context(Uuid::new_v4());
-            free_c_string(evaluate_json_string(input));
+            unsafe { free_c_string(evaluate_json_string(input)) };
         }
         assert_eq!(
             get_evaluate_call_count(), 2,
@@ -484,8 +483,8 @@ mod tests {
         );
 
         // No deduction context: global namespace, memoizes independently.
-        free_c_string(evaluate_json_string(input));
-        free_c_string(evaluate_json_string(input));
+        unsafe { free_c_string(evaluate_json_string(input)) };
+        unsafe { free_c_string(evaluate_json_string(input)) };
         assert_eq!(
             get_evaluate_call_count(), 3,
             "no-context calls share one global namespace (1 miss, then hits)"
@@ -500,7 +499,7 @@ mod tests {
         let before_ms = now_ms();
         let input = r#"{"tool":"echo","arguments":{"message":"ts_test"}}"#;
         let ptr = evaluate_json_string(input);
-        free_c_string(ptr);
+        unsafe { free_c_string(ptr) };
         let after_ms = now_ms();
 
         let cache = evaluate_cache().read().unwrap();
@@ -532,7 +531,7 @@ mod tests {
         assert_eq!(bytes0, 0);
 
         let ptr = evaluate_json_string(r#"{"tool":"echo","arguments":{"message":"stats"}}"#);
-        free_c_string(ptr);
+        unsafe { free_c_string(ptr) };
 
         let (count1, bytes1) = evaluate_cache_stats();
         assert_eq!(count1, 1);
@@ -545,7 +544,7 @@ mod tests {
     fn evict_older_than_removes_stale_entries() {
         let _guard = setup();
         let ptr = evaluate_json_string(r#"{"tool":"echo","arguments":{"message":"evict_old"}}"#);
-        free_c_string(ptr);
+        unsafe { free_c_string(ptr) };
 
         // Backdate the entry so it appears old.
         {
@@ -566,7 +565,7 @@ mod tests {
     fn evict_older_than_preserves_fresh_entries() {
         let _guard = setup();
         let ptr = evaluate_json_string(r#"{"tool":"echo","arguments":{"message":"keep_fresh"}}"#);
-        free_c_string(ptr);
+        unsafe { free_c_string(ptr) };
 
         // Cutoff 10 minutes in the past — fresh entry should survive.
         let cutoff = now_ms() - 600_000;
@@ -640,7 +639,7 @@ mod tests {
             let _ctx = deduction_context(id);
             assert_eq!(current_deduction_id(), Some(id));
             let ptr = evaluate_json_string(r#"{"tool":"echo","arguments":{"message":"ctx_tag"}}"#);
-            free_c_string(ptr);
+            unsafe { free_c_string(ptr) };
         } // guard drops here, restores None
 
         assert_eq!(current_deduction_id(), None, "context should be cleared after guard drop");
@@ -697,7 +696,7 @@ mod tests {
         set_domain_id("test-domain".to_string());
 
         let ptr = evaluate_json_string(r#"{"tool":"echo","arguments":{"message":"domain_tag"}}"#);
-        free_c_string(ptr);
+        unsafe { free_c_string(ptr) };
 
         let cache = evaluate_cache().read().unwrap();
         let entry = cache

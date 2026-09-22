@@ -134,13 +134,13 @@ mod tests {
         assert!(!result_ptr.is_null(), "Should return non-null pointer even with empty input");
 
         // Clean up
-        free_c_string(result_ptr);
+        unsafe { free_c_string(result_ptr) };
     }
 
     #[test]
     fn test_free_c_string_null() {
         // Should not crash
-        free_c_string(std::ptr::null_mut());
+        unsafe { free_c_string(std::ptr::null_mut()) };
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
             assert!(result_str.contains("Invalid JSON"));
         }
 
-        free_c_string(result_ptr);
+        unsafe { free_c_string(result_ptr) };
     }
 
     #[test]
@@ -175,6 +175,6 @@ mod tests {
             );
         }
 
-        free_c_string(result_ptr);
+        unsafe { free_c_string(result_ptr) };
     }
 }

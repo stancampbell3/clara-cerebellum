@@ -2,6 +2,8 @@
 
 _For team review. Surfaced 2026-08-11 while wiring up GitLab CI (`clara-cerebellum/.gitlab-ci.yml`) on the new on-site GitLab instance — this is the first time `cargo clippy --workspace --all-targets` has ever actually run against this codebase. The old GitHub Actions `ci.yml` was an empty stub since the initial scaffold commit, so this is pre-existing lint debt, not a regression from anything done that day._
 
+**RESOLVED 2026-09-22 — see "Resolution" section below.**
+
 ## Summary
 
 `clara-coire/src/clips_bridge.rs` — the C-callable bridge linked into CLIPS via `userfunctions.c` — has 7 functions that are `pub` (or `pub extern "C"`) and dereference raw pointers internally, but are not themselves marked `unsafe fn`. `clippy::not_unsafe_ptr_arg_deref` is deny-by-default in the clippy version this workspace pins to (1.97.0) and fails the build:
@@ -42,6 +44,17 @@ The issue is narrower: because the *Rust function signature* isn't marked `unsaf
 
 `clara-toolbox/src/ffi.rs:236` (`rust_clara_evaluate`) has a structurally similar pattern — a `pub extern "C" fn` that dereferences a raw pointer via `CStr::from_ptr` inside an `unsafe` block, without being marked `unsafe fn` itself — but clippy did **not** flag it in this run. Worth a manual look when this gets triaged, since it may be a difference in how the null-check is structured rather than a genuine pass on safety.
 
-## Next step
+## Resolution (2026-09-22)
 
-Awaiting team feedback on which option to take before touching `clips_bridge.rs` or flipping `cargo-clippy`'s `allow_failure` off.
+Option 1 applied, team-approved. All 5 flagged `clara-coire` functions are now `pub unsafe extern "C" fn` with a `# Safety` doc comment each (`rust_coire_free_string`'s redundant inner `unsafe {}` block was unwrapped since it's now covered by the outer signature; the other 4 keep their internal `unsafe { cstr_to_str(...) }` since those calls sit inside nested IIFE closures that don't inherit the enclosing function's unsafe context).
+
+The "Aside" above was confirmed correct and extended to match:
+
+- **`clara-ritual/src/clips_bridge.rs`** — same unmarked pattern, not flagged by clippy in isolation but genuinely compiled into the same `--workspace` run (`clara-clips` depends on both crates' `ffi` feature). 6 of 7 functions marked `unsafe fn` the same way. `rust_ritual_topic_list()` was deliberately left as a plain `pub extern "C" fn` — it takes no pointer arguments, so there's no real safety contract to mark unsafe for; doing so anyway "for consistency" would be misleading rather than correct.
+- **`clara-toolbox/src/ffi.rs`** — `rust_clara_evaluate` and `rust_free_string` (both already had `# Safety` docs, just needed the signature change) got the same treatment; their now-fully-redundant enclosing `unsafe {}` blocks were removed.
+
+**A third case surfaced mid-fix, structurally different from the rest**: `clara-toolbox/src/ffi.rs`'s `free_c_string` — a plain `pub fn` (not `extern "C"`), explicitly documented as *"a safe wrapper... callable from Rust code"* — has the same unmarked raw-pointer deref, but unlike everything else above it has real Rust call sites (6, across `clara-prolog`/`clara-clips` test code, plus ~14 more inside `ffi.rs`'s own test module). After discussion it was marked `unsafe fn` too, for consistency with its siblings, and every call site updated to wrap in `unsafe {}`.
+
+**Open question, not fully settled**: marking `free_c_string` unsafe pushes the FFI safety burden back onto every Rust caller, which may cut against its original design intent as *the* safe half of the alloc/free pair (`evaluate_json_string` produces the raw pointer; `free_c_string` was meant to let ordinary Rust code free it without needing its own `unsafe` block). Flagged for a possible follow-up: reverting just this one function to a safe `pub fn` with an internal `unsafe {}` wrapping only the `CString::from_raw` call, distinct from the 7+ `extern "C"` functions where `unsafe fn` is unambiguously correct.
+
+Verified clean: `cargo clippy --workspace --all-targets` — zero `not_unsafe_ptr_arg_deref` errors, zero new `unused_unsafe` warnings. `cargo test --workspace` — 0 failed across every crate, including all 5 touched (`clara-coire` 53 passed, `clara-ritual` 71 passed, `clara-toolbox` 55 passed, `clara-prolog` 9+26 passed, `clara-clips` 15+4 passed). `cargo-clippy`'s `allow_failure: true` removed from `.gitlab-ci.yml` — it's blocking again.

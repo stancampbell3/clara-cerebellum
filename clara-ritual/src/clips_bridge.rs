@@ -30,19 +30,28 @@ fn err_json(e: impl std::fmt::Display) -> String {
 }
 
 /// Free a string allocated by the ritual bridge functions.
+///
+/// # Safety
+/// `s` must be either null or a pointer this module previously handed back to CLIPS (via
+/// `to_c_string`'s `CString::into_raw`), not already freed, and not aliased elsewhere.
+/// `userfunctions.c` upholds this: it only ever frees a pointer it just received from a
+/// `rust_ritual_*` call, exactly once.
 #[no_mangle]
-pub extern "C" fn rust_ritual_free_string(s: *mut c_char) {
+pub unsafe extern "C" fn rust_ritual_free_string(s: *mut c_char) {
     if !s.is_null() {
-        unsafe {
-            drop(CString::from_raw(s));
-        }
+        drop(CString::from_raw(s));
     }
 }
 
 /// Ensure an ad hoc topic exists (1 partition, replication factor 1).
 /// Returns `"ok"` or `{"error":"..."}`.
+///
+/// # Safety
+/// `subject_path` must be either null or a valid pointer to a NUL-terminated, UTF-8 C string, live
+/// for the duration of this call. `userfunctions.c` upholds this: it comes straight from CLIPS's
+/// own lexeme value.
 #[no_mangle]
-pub extern "C" fn rust_ritual_topic_create(subject_path: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn rust_ritual_topic_create(subject_path: *const c_char) -> *mut c_char {
     let result = (|| -> Result<String, String> {
         let subject = unsafe { cstr_to_str(subject_path) }
             .ok_or_else(|| "null subject_path".to_string())?;
@@ -61,6 +70,9 @@ pub extern "C" fn rust_ritual_topic_create(subject_path: *const c_char) -> *mut 
 
 /// List every ad hoc topic's subject path in the ambient Dis domain.
 /// Returns a heap-allocated JSON array of strings, or `{"error":"..."}`.
+///
+/// Takes no pointer arguments, so — unlike its siblings in this module — there's no real safety
+/// contract to mark `unsafe` for.
 #[no_mangle]
 pub extern "C" fn rust_ritual_topic_list() -> *mut c_char {
     let result = (|| -> Result<String, String> {
@@ -77,8 +89,13 @@ pub extern "C" fn rust_ritual_topic_list() -> *mut c_char {
 
 /// Delete an ad hoc topic. Deleting one that doesn't exist is not an error.
 /// Returns `"ok"` or `{"error":"..."}`.
+///
+/// # Safety
+/// `subject_path` must be either null or a valid pointer to a NUL-terminated, UTF-8 C string, live
+/// for the duration of this call. `userfunctions.c` upholds this: it comes straight from CLIPS's
+/// own lexeme value.
 #[no_mangle]
-pub extern "C" fn rust_ritual_topic_delete(subject_path: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn rust_ritual_topic_delete(subject_path: *const c_char) -> *mut c_char {
     let result = (|| -> Result<String, String> {
         let subject = unsafe { cstr_to_str(subject_path) }
             .ok_or_else(|| "null subject_path".to_string())?;
@@ -102,8 +119,14 @@ pub extern "C" fn rust_ritual_topic_delete(subject_path: *const c_char) -> *mut 
 /// `tags` (mirrors the `_caws` routing block `the_coire.clp`'s `caws-offer`
 /// already builds). Returns the minted `tephra_id` as a JSON string, or
 /// `{"error":"..."}`.
+///
+/// # Safety
+/// `subject_path` and `payload_json` must each be either null or a valid pointer to a
+/// NUL-terminated, UTF-8 C string, live for the duration of this call; `options_json` may
+/// additionally be an empty/absent string. `userfunctions.c` upholds this: all three come
+/// straight from CLIPS's own lexeme values.
 #[no_mangle]
-pub extern "C" fn rust_ritual_topic_publish(
+pub unsafe extern "C" fn rust_ritual_topic_publish(
     subject_path: *const c_char,
     payload_json: *const c_char,
     options_json: *const c_char,
@@ -164,8 +187,13 @@ fn parse_publish_options(options_str: &str) -> Result<(Option<String>, Option<u6
 /// `(consumer_id, subject_path)` — pass the caller's own Coire session id
 /// (`?*coire-session-id*`) as `consumer_id`. Returns a JSON array of
 /// envelopes, or `{"error":"..."}`.
+///
+/// # Safety
+/// `consumer_id` and `subject_path` must each be either null or a valid pointer to a
+/// NUL-terminated, UTF-8 C string, live for the duration of this call. `userfunctions.c` upholds
+/// this: both come straight from CLIPS's own lexeme values.
 #[no_mangle]
-pub extern "C" fn rust_ritual_topic_poll(
+pub unsafe extern "C" fn rust_ritual_topic_poll(
     consumer_id:  *const c_char,
     subject_path: *const c_char,
 ) -> *mut c_char {
@@ -195,8 +223,13 @@ pub extern "C" fn rust_ritual_topic_poll(
 /// Poll an ad hoc topic from an explicit offset (manual control — no cursor
 /// tracked). Returns JSON `{"envelopes":[...],"next_offset":N}`, or
 /// `{"error":"..."}`.
+///
+/// # Safety
+/// `subject_path` and `since_offset` must each be either null or a valid pointer to a
+/// NUL-terminated, UTF-8 C string, live for the duration of this call. `userfunctions.c` upholds
+/// this: both come straight from CLIPS's own lexeme values.
 #[no_mangle]
-pub extern "C" fn rust_ritual_topic_poll_from(
+pub unsafe extern "C" fn rust_ritual_topic_poll_from(
     subject_path: *const c_char,
     since_offset: *const c_char,
 ) -> *mut c_char {
