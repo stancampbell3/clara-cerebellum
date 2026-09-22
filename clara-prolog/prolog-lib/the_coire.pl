@@ -9,6 +9,7 @@
     caws_squawk/3,             % +TopicPath, +Tags, +Payload
     caws_offer/4,              % +TargetNodeId, +TopicPath, +Payload, -CorrelationId
     caws_await/2,              % +CorrelationId, -Result
+    caws_tristate/3,           % +CorrelationId, -State, -Result
     caws_consult/4,            % +TargetNodeId, +TopicPath, +Payload, -Result
     caws_pipe/4,               % +EdgeId, +TargetNodeId, +TopicPath, +IncomingCid
     caws_edge_reply/3,         % +EdgeId, +Kind, +CorrelationId
@@ -200,6 +201,25 @@ caws_await(Cid, Result) :-
     ;   caws_drain_ritual_events,
         caws_result(Cid, R),
         Result = R
+    ).
+
+%!  caws_tristate(+CorrelationId, -State, -Result)
+%
+%   Resolve an outstanding caws_offer to exactly one of ok/failed/pending,
+%   without collapsing "no reply yet" into the same plain failure caws_await/2
+%   gives a genuine Tabu/timeout -- callers that need to distinguish "still in
+%   flight, retry this cycle" from "genuinely failed" use this instead of
+%   caws_await/2 directly. Promoted 2026-09-22 out of being copy-pasted
+%   verbatim into three separate ruleset files (deliberative_analyst.pl,
+%   id_analyst.pl, progressive_research.pl in lildaemon) -- same body, now
+%   callable unqualified like every other predicate here.
+caws_tristate(Cid, ok, Raw) :- caws_result(Cid, Raw), !.
+caws_tristate(Cid, failed, _) :- caws_failed(Cid, _), !.
+caws_tristate(Cid, State, Raw) :-
+    caws_drain_ritual_events,
+    (   caws_result(Cid, Raw) -> State = ok
+    ;   caws_failed(Cid, _)   -> State = failed
+    ;   State = pending
     ).
 
 %!  caws_consult(+TargetNodeId, +TopicPath, +Payload, -Result)
