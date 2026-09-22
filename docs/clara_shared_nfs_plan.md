@@ -25,7 +25,7 @@ lived only in `~/.claude/plans/` and is not repeated here verbatim.
 /mnt/clara-shared/            (real directory on limbic; NFSv4.2 export, mounted at the same path
   ritual-spaces/<ritual_id>/   on every other FieryPit host — pineal today)
   outbox/<ritual_id>/
-  hermes-continuity/<ritual_id>/    (not yet built — Deliverable D)
+  hermes-continuity/<ritual_id>/    (built + verified live — Deliverable D, below)
 ```
 
 limbic is the NFS **server** (`nfs-kernel-server`, already running — it also serves the unrelated
@@ -112,16 +112,42 @@ This effectively resolves the paused "pickup story" for generated files
 `/mnt/clara-shared/outbox/<ritual_id>/...`, reachable from any host with the mount — no
 bespoke pull-proxy needed. Revisit only if a host without the mount ever needs access.
 
+## Deliverable D: ritual-keyed Hermes session continuity — done, verified live
+
+The actual gap that partly motivated this plan: an idle-released Ego seat used to start a
+genuinely blank Hermes home even within the same ritual. New module
+`seat_launcher/continuity.py`: `session_id_for(ritual_id)` gives a stable, ritual-derived Hermes
+session id; `start_run` now sends it in the `/v1/runs` body (Hermes' `api_server_runs.py` resumes a
+session by this mechanism); `_build_home` calls `restore_into_home` before the container starts
+(copies a checkpoint in, if one exists for this `ritual_id`); `_cleanup` calls
+`checkpoint_from_home` *after* `docker rm -f` confirms the container gone (never before — copying a
+file the container might still be writing risks a torn one) and *before* the seat directory is
+deleted. New config field `continuity_root` (`None` by default: identical to today's behavior,
+every seat starts blank). Deliberately not a Hermes `MemoryProvider` plugin — no new tool exposed to
+the model, no new attack surface, `memory.memory_enabled` stays `false`; it rides entirely on
+Hermes' own built-in session/resume mechanism.
+
+**What actually needed checkpointing, found by inspecting a live seat's home mid-run (not
+assumed):** `state.db` is SQLite in WAL mode — the most recent activity sits in `state.db-wal`
+(in one real seat, *larger* than `state.db` itself) and is not yet checkpointed into the main file.
+A first attempt that copied only `state.db` "succeeded" (no error) but silently lost the whole
+conversation on restore. Fixed by checkpointing `state.db`, `state.db-wal`, `state.db-shm` and
+`sessions/` together (the last confirmed empty in this Hermes version/config — kept anyway, since
+Hermes' own source names it as session storage and harmless if unused). 12 tests in
+`tests/test_seat_launcher_continuity.py`, plus integration tests in
+`tests/test_seat_launcher_manager.py` covering the full create/checkpoint/delete/restore
+lifecycle, the `session_id` sent on `start_run`, and that checkpoint only ever runs after the
+container is confirmed removed. Full suite: 2 failed (same pre-existing) / 1805 passed / 26
+skipped; black/mypy clean; mutation-tested (7/7 killed).
+
+**Live proof** (pineal, `EGO_SEAT_IDLE_SECONDS` lowered temporarily to 30 for a fast, deterministic
+test): told the Ego a secret code, waited for a real idle release (confirmed by a different
+container name before/after), asked a follow-up in the same session — the rebuilt seat correctly
+recalled the code. Without this fix (confirmed as the explicit baseline first): forgotten, every
+time.
+
 ## Deferred (not built this phase)
 
-- **Deliverable D, ritual-keyed Hermes session continuity.** The actual gap that partly motivated
-  this plan: an idle-released Ego seat currently starts a genuinely blank Hermes home even within
-  the same ritual. Design (not yet built): `seat_launcher.start_run` passes a `session_id` derived
-  from `ritual_id` in the `/v1/runs` body (Hermes' real `api_server_runs.py` supports resuming a
-  session this way); `_build_home` restores `$HERMES_HOME/{state.db,sessions/}` from
-  `hermes-continuity/<ritual_id>/` on the shared mount before start, and the launcher checkpoints
-  them back out on teardown. Deliberately not a Hermes `MemoryProvider` plugin — no new tool, no
-  new attack surface, `memory.memory_enabled` stays `false`.
 - **Per-user memory tier.** Real hook found in Hermes' source: `gateway/platforms/
   api_server_runs.py` accepts a `turn_author` (`{id, name, is_bot}`) per run, which
   `MemoryProvider.sync_turn` already receives as writer identity. Needs `user_id` threaded from
