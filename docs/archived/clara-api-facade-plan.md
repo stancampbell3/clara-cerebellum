@@ -1,5 +1,6 @@
+[STAN] Since we've already proceded with the Hermes integration, this can be archived as old research.
 # Clara — OpenAI-Compatible API Facade: API Surface
-# Brainstorming with Clara about exposing an API for integration with existing agent frameworks
+# Brainstorming with Clara about exposing an API for integration with existing agent frameworkse
 
 ## 1. Endpoints
 
