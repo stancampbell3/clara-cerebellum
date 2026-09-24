@@ -56,6 +56,7 @@ fn parse_publish_options(options_str: &str) -> Result<(Option<String>, Option<u6
         tags: v.get("tags").and_then(|x| x.as_array()).map(|a| {
             a.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect()
         }),
+        deadline_ms: None,
     };
     Ok((lbl, ttl_ms, routing))
 }

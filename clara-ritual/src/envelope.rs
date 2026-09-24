@@ -88,6 +88,10 @@ pub struct Routing {
     pub topic_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// Remaining wall-clock budget, in ms, of the deduction that published this
+    /// Offering. See [`TephraEnvelope::deadline_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
 }
 
 impl Routing {
@@ -97,6 +101,7 @@ impl Routing {
             && self.correlation_id.is_none()
             && self.topic_path.is_none()
             && self.tags.is_none()
+            && self.deadline_ms.is_none()
     }
 }
 
@@ -152,6 +157,15 @@ pub struct TephraEnvelope {
     pub topic_path:     Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags:           Option<Vec<String>>,
+    /// On an Offering: how much wall-clock budget the publishing deduction had
+    /// left, in milliseconds, when it published. A *relative* budget rather
+    /// than an instant so remote hosts with skewed clocks agree; the consumer
+    /// turns it into its own deadline on receipt (`received + deadline_ms`) and
+    /// must not work past it, since nobody is waiting for the reply after that.
+    /// `None` = the deduction has no deadline (pre-existing behavior). Never set
+    /// on Hohi/Tabu replies or events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms:    Option<u64>,
 }
 
 impl TephraEnvelope {
@@ -181,6 +195,7 @@ impl TephraEnvelope {
             correlation_id: None,
             topic_path: None,
             tags: None,
+            deadline_ms: None,
         }
     }
 
@@ -191,6 +206,7 @@ impl TephraEnvelope {
         self.correlation_id = routing.correlation_id;
         self.topic_path = routing.topic_path;
         self.tags = routing.tags;
+        self.deadline_ms = routing.deadline_ms;
         self
     }
 
@@ -235,6 +251,29 @@ mod tests {
             "dis.test",
             TephraPayload::Plaintext { body: json!(null) },
         )
+    }
+
+    #[test]
+    fn deadline_ms_round_trips_and_is_copied_from_routing() {
+        let env = fresh(60_000).with_routing(Routing { deadline_ms: Some(12_345), ..Default::default() });
+        assert_eq!(env.deadline_ms, Some(12_345));
+        let back: TephraEnvelope = serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();
+        assert_eq!(back.deadline_ms, Some(12_345));
+    }
+
+    #[test]
+    fn deadline_ms_is_omitted_when_absent_and_old_envelopes_still_parse() {
+        let json = serde_json::to_value(fresh(60_000)).unwrap();
+        assert!(json.get("deadline_ms").is_none(), "None must not appear on the wire");
+        // An envelope from a producer that predates the field.
+        let back: TephraEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(back.deadline_ms, None);
+    }
+
+    #[test]
+    fn a_routing_with_only_a_deadline_is_not_empty() {
+        assert!(Routing::default().is_empty());
+        assert!(!Routing { deadline_ms: Some(1), ..Default::default() }.is_empty());
     }
 
     #[test]
@@ -321,6 +360,7 @@ mod tests {
             correlation_id: Some(cid),
             topic_path:     Some("dis.local/ritual/p1/psych-evals/e1".into()),
             tags:           Some(vec!["urgent".into()]),
+            deadline_ms:    None,
         });
         let back: TephraEnvelope =
             serde_json::from_str(&serde_json::to_string(&env).unwrap()).unwrap();

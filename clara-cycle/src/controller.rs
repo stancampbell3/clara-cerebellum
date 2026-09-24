@@ -1041,12 +1041,14 @@ impl CycleController {
                     if let Some(obj) = body.as_object_mut() {
                         obj.remove("_caws");
                     }
-                    handle.publish_body_routed(
-                        body,
-                        directive.label,
-                        None,
-                        directive.routing.clone(),
-                    )
+                    let mut routing = directive.routing.clone();
+                    // An Offering tells its consumer how much of this deduction's
+                    // budget is left, so a child/peer never works past the point
+                    // where nobody is waiting for the reply.
+                    if directive.label == clara_ritual::label::OFFERING {
+                        routing.deadline_ms = Self::offer_deadline_ms(self.deadline_remaining());
+                    }
+                    handle.publish_body_routed(body, directive.label, None, routing)
                 }
                 // Legacy event: whole-ClaraEvent body, broadcast (unchanged
                 // pre-caws behavior).
@@ -1098,6 +1100,14 @@ impl CycleController {
         }
     }
 
+    /// The `deadline_ms` an Offering carries: the deduction's remaining budget in
+    /// ms (at least 1, so "spent" stays distinguishable from "no deadline");
+    /// `None` when the deduction has no deadline.
+    #[cfg(feature = "ritual")]
+    fn offer_deadline_ms(remaining: Option<std::time::Duration>) -> Option<u64> {
+        remaining.map(|d| (d.as_millis() as u64).max(1))
+    }
+
     /// Extract the routing directive from an outbound event's reserved
     /// `_caws` payload object (written by `caws_offer/4` / `caws_squawk/3`).
     /// `None` for legacy events (plain `coire_publish` with an `evaluator/`
@@ -1147,6 +1157,7 @@ impl CycleController {
                 correlation_id: Some(correlation_id),
                 topic_path,
                 tags,
+                deadline_ms: None,
             },
             correlation_id,
             expects_reply,
@@ -1775,6 +1786,7 @@ mod ritual_tests {
             correlation_id: None,
             topic_path:     None,
             tags:           None,
+            deadline_ms:    None,
         };
 
         ctrl.ingest_tephra(&tephra);
@@ -1951,6 +1963,68 @@ mod ritual_tests {
         assert_eq!(env.target_node_id.as_deref(), Some("n2"));
         assert_eq!(env.topic_path.as_deref(), Some("dis.test/ritual/p/consults/e1"));
         assert_eq!(env.tags, Some(vec!["urgent".to_string()]));
+    }
+
+    fn publish_one_caws_event(
+        kind: Option<&str>,
+        deadline: Option<std::time::Duration>,
+    ) -> clara_ritual::TephraEnvelope {
+        setup_coire();
+        let (registry, broker) = make_registry();
+        let ritual_id = registry
+            .create(RitualConfig { name: "deadline-test".into(), participants: vec![] })
+            .unwrap();
+        let session   = DeductionSession::new().unwrap();
+        let prolog_id = session.prolog_id;
+        let handle    = registry.join(ritual_id, None).unwrap();
+        let mut ctrl  = make_ctrl(session, handle.clone());
+        ctrl.deadline_at = deadline.map(|d| std::time::Instant::now() + d);
+
+        let mut caws = serde_json::json!({
+            "correlation_id": Uuid::new_v4().to_string(),
+            "target_node_id": "n2",
+        });
+        if let Some(k) = kind {
+            caws["kind"] = serde_json::json!(k);
+        }
+        clara_coire::global().write_event(&clara_coire::ClaraEvent::new(
+            prolog_id,
+            "evaluator/offering",
+            serde_json::json!({ "prompt": "hi", "_caws": caws }),
+        )).unwrap();
+        ctrl.publish_evaluator_events(&handle);
+
+        let topic = clara_ritual::topic_name("dis.test", ritual_id).unwrap();
+        let (mut envelopes, _) = broker.poll(&topic, 0).unwrap();
+        assert_eq!(envelopes.len(), 1);
+        envelopes.remove(0)
+    }
+
+    #[test]
+    fn an_offering_carries_the_deductions_remaining_budget() {
+        let env = publish_one_caws_event(None, Some(std::time::Duration::from_secs(30)));
+        let ms = env.deadline_ms.expect("an Offering under a deadline carries deadline_ms");
+        assert!(ms > 0 && ms <= 30_000, "remaining budget must be within (0, 30000], got {ms}");
+    }
+
+    #[test]
+    fn an_offering_without_a_deadline_carries_none() {
+        let env = publish_one_caws_event(None, None);
+        assert_eq!(env.deadline_ms, None);
+    }
+
+    #[test]
+    fn a_spent_budget_still_reads_as_a_deadline_not_as_none() {
+        let env = publish_one_caws_event(None, Some(std::time::Duration::ZERO));
+        assert_eq!(env.deadline_ms, Some(1), "spent must stay distinguishable from 'no deadline'");
+    }
+
+    #[test]
+    fn replies_and_events_never_carry_a_deadline() {
+        for kind in ["hohi", "tabu", "event"] {
+            let env = publish_one_caws_event(Some(kind), Some(std::time::Duration::from_secs(30)));
+            assert_eq!(env.deadline_ms, None, "{kind} must not be bounded");
+        }
     }
 
     #[test]

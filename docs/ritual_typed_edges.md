@@ -111,6 +111,15 @@ from the Offering envelope. Optional: `source_node_id` (yours),
 `{"type": "plaintext", "body": {...}}`; the body surfaces to the awaiting
 Prolog goal as a dict with `_routing` merged in.
 
+**Deadline (`deadline_ms`).** An Offering published by a deduction that has a wall-clock deadline carries top-level
+`deadline_ms`: the deduction's *remaining* budget in milliseconds when it published (at least 1; absent when the deduction has
+no deadline; never on hohi/tabu/event). It is a relative budget, not an instant, so peers on hosts with skewed clocks agree. A
+peer converts it on receipt (`received + deadline_ms`) and must not work past it: the parent has stopped waiting, so a spent
+Offering (`deadline_ms <= 1`) should be dropped unstarted, and any deduction the peer starts for it should be bounded by the
+remaining budget. lildaemon's `RitualParticipant` does this and exposes it to evaluators as
+`goat.models.performance_deadline.remaining_s()` (used by the `ritual` evaluator that hosts a child Ritual). Peers that ignore the
+field behave as before.
+
 ## Verification
 
 - **Rust**: full workspace `cargo test` green (clara-ritual 47 incl.
