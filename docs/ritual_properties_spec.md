@@ -82,10 +82,24 @@ What is *not* durable or not reusable today:
 
 ## 5. Composition and shared code
 
-- **No nesting in the backend.** No parent/child ritual ids anywhere in the Rust crates. `ritual-group` exists only
-  in Cobbler's types (`dagda/cobbler/frontend/src/components/GraphCanvas/types.ts:107-115`); activation selects
-  only `type == "daemon"` nodes with an `evaluatorName` (`ld/app/ritual_configs/router.py:328-330`), so a group node
-  is **presentation-only**.
+- **No flow creates a child Ritual today.** What the docs call a "Ritual of Rituals"
+  (`lildaemon/docs/assistant_demo.md:1246`, `id_ritual_of_rituals_planning.md`) is **one standing ritual plus more nodes
+  plus background `/deduce`s**: committee referral is a `caws_offer` to snek/edgequakeingest already in the same ritual
+  (`ld/app/assistant/rulesets/id_analyst.pl:142-143`); `_ensure_standing_ritual` creates `assistant-demo` once and never
+  terminates it (`ld/app/assistant/runtime.py:498-577`); `_ensure_deliberation_seats` (`:579`) joins seats onto it lazily
+  and never leaves. `peer_consult` (`ld/models/RitualParticipant.py:307-313`) is intra-ritual despite the "nested"
+  wording. The only parent/child-ish link is the async queue `assistant_pending_research`
+  (`ld/app/assistant/research_queue.py:70-105`, advanced by `advance_pending_research` at `:462`), and nothing cancels
+  child work when a parent deduction ends (`cancel_deduction`'s only callers are `mcp/ego_gate/superego.py:173,179`).
+- **No cross-ritual addressing, no parent/child fields.** A Ritual is one precomputed topic
+  (`cc/clara-ritual/src/ritual.rs:31-41`: id, config, state, topic, participants). `target_node_id` is matched only
+  against the participant's own node id on its own topic (`RitualParticipant.py:236-246`).
+- **`ritual-group` is presentation-only.** Cobbler defines it with optional `ritualConfigId`/`ritualId`
+  (`dagda/cobbler/frontend/src/components/GraphCanvas/types.ts:107-116`), but its only creator
+  (`RitualEditorCanvas.tsx:75-90`) sets neither and merely reparents daemons (a Cytoscape compound node). Activation and
+  Run select only `type == "daemon"` nodes with an `evaluatorName` (`ld/app/ritual_configs/router.py:328-330,577`).
+- **Orphans would accumulate.** Terminated rituals are swept after the snapshot TTL
+  (`cc/clara-coire/src/carrion_picker.rs:236-250`); active ones never are.
 - **One flat source per node.** Edge snippets plus the authored `prologSource` are joined and registered as a single
   content-addressed source via `register_source` (`router.py:158-190`).
 - **The registry** (`cc/clara-api/src/handlers/source_handler.rs`, `cc/clara-coire/src/source.rs`, table at
@@ -113,6 +127,9 @@ What is *not* durable or not reusable today:
   redeploy each time, and it is the concrete form of Stan's Rituals-of-Rituals question.
 
 ## 6. How participants are assembled today
+
+_Note:_ a FieryPit slots evaluators by bare `node_id`, so two rituals reusing a node id share one evaluator; this is why
+`ego_node_ids(ritual_id)` tags ids per ritual (`ld/app/assistant/runtime.py:246-250`, found live 2026-09-21).
 
 Nothing composes a roster declaratively. Each caller does `dis_client.join_ritual` plus `RitualManager.join`:
 
@@ -198,10 +215,39 @@ durability by re-attaching, not re-creating. Two decisions from Stan: an **opt-i
 - **Deliberately left out:** a `terminated -> draft` reset for non-persistent configs. It remains a separate small
   question; resume avoids needing it.
 
-**P3. Rituals of Rituals by reference.** Make `ritual-group` functional: a group node references a child
-RitualConfig, activation activates the child, and the parent sees it as one participant with its own edge
-metadata. Open: does the child's lifecycle follow the parent's (activate/terminate together), and how does a
-Performance on the parent fan out to the child?
+**P3. Rituals of Rituals (decided 2026-09-24).** Two decisions from Stan: a child Ritual appears to its parent as
+**one participant**, and lifecycle is **owned by default, borrowed opt-in**.
+
+- **Child as one participant.** A new evaluator kind (working name `RitualEvaluator`) in the parent wraps a child
+  RitualConfig. An Offering to it starts a **Performance on the child's entry node** (the fixed entry-goal contract in
+  `router.py`) and returns the result as Hohi; failure or `expired` returns Tabu. This reuses the participant/edge model
+  and needs **no cross-ritual addressing**. The child's internal nodes are unreachable from outside by design; only its
+  edge metadata is exposed.
+- **Declaration.** A `ritual-group` node becomes real: `ritualConfigId` references a child config (validated at save)
+  and `ownership: owned | borrowed` (default `owned`) selects the coupling. Persist a
+  `ritual_config_children (parent_id, node_id, child_id, ownership)` link table rather than a parent column, since a
+  borrowed child may have many parents. Cobbler's group creation must set `ritualConfigId`.
+- **Owned (default).** Activating the parent activates its owned children first, each in its own Dis ritual; a failure
+  rolls back the children already activated (and closes the remote-join leak in today's rollback, `router.py:436-462`).
+  Terminating the parent terminates the children **it activated**. A child that was already active when the parent
+  activated is treated as borrowed and left running.
+- **Borrowed (opt-in).** The parent requires the child to be `active` and `live` (P2's `runtime_state`); a missing or
+  detached child fails activation and Run with a clear error. Terminating the parent never touches it.
+- **With P2 (persist).** A persistent parent requires its owned children to be persistent; `resume_config` recurses
+  children-first with the same retry and backoff, and a child that cannot resume marks the parent `degraded`.
+- **With P1 (deadline).** The child Performance's deadline is `min(the Offering's deadline, the parent's remaining
+  budget)`. When the parent expires or is interrupted it **cancels the in-flight child deduction**
+  (`DELETE /deduce/{id}`), which nothing does today. A child `expired` reaches the parent as Tabu with
+  `reason: deadline`.
+- **Graph validity.** The parent-to-child reference graph must be a **DAG**: reject cycles and self-reference at save
+  and at activation. The child has its own `ritual_id`, so evaluator slots stay distinct; reuse the per-ritual node-id
+  tagging pattern (§6) where a slot name could otherwise repeat.
+- **With P4 (modules).** Unchanged: each node deduces on its own engine, so parent and child module sets cannot collide.
+- **Orphan safety net.** Active rituals are never reaped, so owned-child teardown must be part of parent terminate and
+  rollback. Children are configs too, so today's terminate-on-restart for non-persistent configs already covers them.
+- **Non-goals for now:** cross-ritual addressing; non-config (imperatively created) children such as the standing
+  assistant ritual; dynamically spawned children. The existing "Ritual of Rituals" assistant flows keep working as they
+  are on one ritual; moving them onto real parent/child is a separate later decision.
 
 **P4. Ritual-scoped module dependencies.** Requirements: no clara-cerebellum rebuild per shared predicate;
 **version-controlled and testable**; specified before graph or lifecycle work is instantiated. The design is
@@ -261,4 +307,7 @@ scope until P1-P5 settle.
 3. ~~P1: is `expired` a terminal state distinct from `interrupted`, and who owns the deadline?~~
    **Decided by Stan 2026-09-24:** `expired` is distinct and resumable; deadline layered request > RitualConfig
    default > server ceiling.
-4. P3: should child Ritual lifecycle be tied to the parent's?
+4. ~~P3: should child Ritual lifecycle be tied to the parent's?~~
+   **Decided by Stan 2026-09-24:** child appears as one participant; owned by default, borrowed opt-in.
+
+_All four decisions are now made. The next planning step is an implementation-ordering pass across P1-P5._
