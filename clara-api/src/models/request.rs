@@ -191,6 +191,12 @@ pub struct DeduceRequest {
     /// Prolog/CLIPS FFI call overruns until it returns.
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    /// `prolog-module` sources (`POST /source` with `source_type: "prolog-module"`) loaded, in this order, into the
+    /// run's namespace **ahead of** the node source. A missing or wrongly typed id, or a predicate defined by more
+    /// than one source (or by a module and a compiled-in overlay export), ends the run `error` with reason
+    /// `module_dependency` before anything is loaded. Persisted with `persist: true` so a resume reloads them.
+    #[serde(default)]
+    pub prolog_module_source_ids: Vec<Uuid>,
 }
 
 /// Request to resume a previously persisted deduction.

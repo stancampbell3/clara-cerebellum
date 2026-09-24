@@ -19,4 +19,9 @@ pub enum CycleError {
 
     #[error("Context seeding failed: {0}")]
     ContextSeedFailed(String),
+
+    /// A Prolog module fragment the run depends on is missing, mistyped, unreadable, or conflicts with another
+    /// source. The run does not start.
+    #[error("Module dependency error: {0}")]
+    ModuleDependency(String),
 }

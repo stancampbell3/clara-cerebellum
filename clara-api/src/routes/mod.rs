@@ -60,6 +60,8 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/transduce/graph",                                web::post().to(transduce::transduce_graph))
             // Source registry
             .route("/source",                                         web::post().to(source::register_source))
+            // Literal sub-path before `/source/{id}` so it is not read as an id.
+            .route("/source/check-modules",                           web::post().to(source::check_modules))
             .route("/source/{id}",                                    web::get().to(source::get_source))
             .route("/source/{id}/artifact/{type}",                    web::get().to(source::get_source_artifact))
             .route("/source/{id}",                                    web::delete().to(source::delete_source))

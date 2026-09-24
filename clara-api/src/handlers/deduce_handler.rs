@@ -10,6 +10,7 @@ use uuid::Uuid;
 use clara_cycle::{CycleController, CycleStatus, DeductionSession, PredicateEntry};
 
 use crate::handlers::session_handler::{AppState, DeductionEntry};
+use crate::module_sources::{self, ModuleError};
 use crate::models::{
     DeduceDeleteSnapshotResponse, DeduceInterruptResponse, DeduceRequest, DeduceResumeRequest,
     DeduceStartResponse, DeduceStatusResponse,
@@ -25,6 +26,59 @@ fn reason_for_status(status: &CycleStatus) -> Option<String> {
         CycleStatus::Error(_)    => Some("error".to_string()),
         CycleStatus::Running | CycleStatus::Converged => None,
     }
+}
+
+/// Stable machine-readable reason for a run that ended in a `CycleError`.
+fn reason_for_error(e: &clara_cycle::CycleError) -> &'static str {
+    match e {
+        clara_cycle::CycleError::MaxCyclesExceeded(_)  => "max_cycles",
+        clara_cycle::CycleError::ModuleDependency(_)   => "module_dependency",
+        _                                              => "error",
+    }
+}
+
+/// Load the run's Prolog program: module fragments first (in the order given), then the node clauses, in one
+/// `seed_prolog` call. With modules present the sources are first inspected and the run is refused on any missing
+/// module or predicate conflict; with none, this is exactly the old `seed_prolog`.
+fn load_prolog_program(
+    session:      &mut DeductionSession,
+    module_ids:   &[Uuid],
+    store:        Option<&clara_coire::CoireStore>,
+    node_clauses: Vec<String>,
+) -> Result<(), clara_cycle::CycleError> {
+    let dep = |e: ModuleError| clara_cycle::CycleError::ModuleDependency(e.to_string());
+    let modules = module_sources::resolve_module_sources(module_ids, store).map_err(dep)?;
+    if !modules.is_empty() {
+        let conflicts = module_sources::check_modules(
+            &session.prolog,
+            "node source",
+            &node_clauses.join("\n"),
+            &modules,
+        )
+        .map_err(dep)?;
+        if !conflicts.is_empty() {
+            return Err(dep(ModuleError::Conflicts(conflicts)));
+        }
+    }
+    session.seed_prolog(&module_sources::with_modules(&modules, node_clauses))
+}
+
+/// What a resume must reload. A source-id run's snapshot keeps only the request's *inline* clauses (empty), so the
+/// program is re-resolved from the registered source ids the snapshot recorded, falling back to the stored inline text.
+fn resolve_resume_sources(
+    snap:   &DeductionSnapshot,
+    store:  &clara_coire::CoireStore,
+    ttl_ms: i64,
+) -> (Vec<String>, Option<String>, Vec<String>) {
+    let (clauses, _) = resolve_prolog_source(snap.prolog_source_id, &snap.prolog_clauses, Some(store), ttl_ms);
+    let (clips_file, constructs, _) = resolve_clips_source(
+        snap.clips_source_id,
+        snap.clips_file.clone(),
+        &snap.clips_constructs,
+        Some(store),
+        ttl_ms,
+    );
+    (clauses, clips_file, constructs)
 }
 
 fn now_ms() -> i64 {
@@ -58,6 +112,7 @@ pub async fn start_deduce(
     let req_clips_src_id  = req.clips_source_id;
     let ritual_id_req     = req.ritual_id;
     let patience_req      = req.evaluator_patience_cycles;
+    let module_ids        = req.prolog_module_source_ids.clone();
     let deadline = match state.deadline_policy.resolve(req.deadline_ms) {
         Ok(d)    => d,
         Err(msg) => return HttpResponse::BadRequest().json(json!({ "error": msg })),
@@ -102,6 +157,7 @@ pub async fn start_deduce(
         let initial_goal_bg = initial_goal.clone();
         let context_bg      = context.clone();
         let snapshot_ttl_ms_bg = state_bg.snapshot_ttl_ms;
+        let module_ids_bg   = module_ids.clone();
 
         let bg_handle = tokio::task::spawn_blocking(move || {
             // ── Source resolution ─────────────────────────────────────────────
@@ -113,7 +169,7 @@ pub async fn start_deduce(
                 resolve_clips_source(req_clips_src_id, clips_file_bg, &constructs_bg, store_bg.as_ref(), snapshot_ttl_ms_bg);
 
             let mut session = DeductionSession::new()?;
-            session.seed_prolog(&effective_clauses)?;
+            load_prolog_program(&mut session, &module_ids_bg, store_bg.as_ref(), effective_clauses)?;
             if let Some(ref path) = effective_clips_file {
                 session.seed_clips_file(path)?;
             }
@@ -203,11 +259,9 @@ pub async fn start_deduce(
                         (t, *p_src, *c_src)
                     }
                     Ok(Err(ref e)) => {
+                        entry.reason = Some(reason_for_error(e).to_string());
                         if let clara_cycle::CycleError::MaxCyclesExceeded(n) = e {
                             entry.cycles = *n;
-                            entry.reason = Some("max_cycles".to_string());
-                        } else {
-                            entry.reason = Some("error".to_string());
                         }
                         entry.status = CycleStatus::Error(e.to_string());
                         (None, None, None)
@@ -264,6 +318,7 @@ pub async fn start_deduce(
                         ritual_id:         ritual_id_req,
                         performance_id:    final_performance_id,
                         deadline_ms:       deadline.map(|d| d.as_millis() as u64),
+                        prolog_module_source_ids: module_ids.clone(),
                     };
                     if let Err(e) = store.save_snapshot(&snap) {
                         log::warn!("deduce {}: failed to save snapshot: {}", deduction_id, e);
@@ -366,11 +421,15 @@ pub async fn resume_deduce(
     let prev_prolog_id  = snap.prolog_session_id;
     let prev_clips_id   = snap.clips_session_id;
 
-    // Clone seed fields for use inside spawn_blocking and for snapshot save.
-    let clauses      = snap.prolog_clauses.clone();
-    let constructs   = snap.clips_constructs.clone();
-    let clips_file   = snap.clips_file.clone();
+    // Clone seed fields for use inside spawn_blocking and for snapshot save. The program is re-resolved from the
+    // snapshot's registered source ids (see `resolve_resume_sources`), not just its stored inline text.
+    let (clauses, clips_file, constructs) =
+        resolve_resume_sources(&snap, &store, state.snapshot_ttl_ms);
     let initial_goal = snap.initial_goal.clone();
+    let module_ids   = snap.prolog_module_source_ids.clone();
+    let snap_inline_clauses    = snap.prolog_clauses.clone();
+    let snap_inline_constructs = snap.clips_constructs.clone();
+    let snap_inline_clips_file = snap.clips_file.clone();
 
     tokio::spawn(async move {
         let (ids_tx, ids_rx) = tokio::sync::oneshot::channel::<(Uuid, Uuid)>();
@@ -380,6 +439,7 @@ pub async fn resume_deduce(
         let constructs_bg = constructs.clone();
         let clips_file_bg = clips_file.clone();
         let context_bg    = context.clone();
+        let module_ids_bg = module_ids.clone();
 
         let snap_tableau = snap.tableau_entries.clone();
         let bg_handle = tokio::task::spawn_blocking(move || {
@@ -387,7 +447,7 @@ pub async fn resume_deduce(
             let prev_tableau: Vec<PredicateEntry> =
                 serde_json::from_value(snap_tableau).unwrap_or_default();
             let mut session = DeductionSession::new()?;
-            session.seed_prolog(&clauses_bg)?;
+            load_prolog_program(&mut session, &module_ids_bg, Some(&store_bg), clauses_bg)?;
             if let Some(ref path) = clips_file_bg {
                 session.seed_clips_file(path)?;
             }
@@ -441,11 +501,9 @@ pub async fn resume_deduce(
                         t
                     }
                     Ok(Err(ref e)) => {
+                        entry.reason = Some(reason_for_error(e).to_string());
                         if let clara_cycle::CycleError::MaxCyclesExceeded(n) = e {
                             entry.cycles = *n;
-                            entry.reason = Some("max_cycles".to_string());
-                        } else {
-                            entry.reason = Some("error".to_string());
                         }
                         entry.status = CycleStatus::Error(e.to_string());
                         None
@@ -472,11 +530,12 @@ pub async fn resume_deduce(
                     .as_deref()
                     .map(|t| serde_json::to_value(t).unwrap_or(serde_json::json!([])))
                     .unwrap_or(serde_json::json!([]));
+                // Keep the ORIGINAL inline text: the program itself is re-resolved from the source ids next time.
                 let new_snap = DeductionSnapshot {
                     deduction_id,
-                    prolog_clauses:    clauses,
-                    clips_constructs:  constructs,
-                    clips_file,
+                    prolog_clauses:    snap_inline_clauses,
+                    clips_constructs:  snap_inline_constructs,
+                    clips_file:        snap_inline_clips_file,
                     initial_goal,
                     max_cycles,
                     status:            final_status,
@@ -493,6 +552,7 @@ pub async fn resume_deduce(
                     ritual_id:         None,
                     performance_id:    None,
                     deadline_ms:       resume_deadline.map(|d| d.as_millis() as u64),
+                    prolog_module_source_ids: module_ids,
                 };
                 if let Err(e) = store.save_snapshot(&new_snap) {
                     log::warn!("resume {}: failed to save snapshot: {}", deduction_id, e);
@@ -821,4 +881,124 @@ pub async fn list_deductions(
 #[derive(serde::Deserialize)]
 pub struct ListDeductionsQuery {
     pub limit: Option<u32>,
+}
+
+#[cfg(test)]
+mod module_and_resume_tests {
+    use super::*;
+
+    fn temp_store() -> (clara_coire::CoireStore, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = clara_coire::CoireStore::open(dir.path().join("t.duckdb")).unwrap();
+        (store, dir)
+    }
+
+    fn snapshot(prolog_source_id: Option<Uuid>, inline: &[&str]) -> DeductionSnapshot {
+        DeductionSnapshot {
+            deduction_id: Uuid::new_v4(),
+            prolog_clauses: inline.iter().map(|s| s.to_string()).collect(),
+            clips_constructs: vec![],
+            clips_file: None,
+            initial_goal: None,
+            max_cycles: 10,
+            status: "expired".into(),
+            cycles_run: 1,
+            prolog_session_id: Uuid::new_v4(),
+            clips_session_id: Uuid::new_v4(),
+            created_at_ms: 0,
+            expires_at_ms: i64::MAX,
+            context: vec![],
+            tableau_entries: serde_json::json!([]),
+            prolog_source_id,
+            clips_source_id: None,
+            dot_artifact_id: None,
+            ritual_id: None,
+            performance_id: None,
+            deadline_ms: None,
+            prolog_module_source_ids: vec![],
+        }
+    }
+
+    /// The gap this fixes: a run started with a registered source id stores only its (empty) inline clauses, so a
+    /// resume used to come back with no Prolog program at all.
+    #[test]
+    fn resume_reloads_the_program_from_the_registered_source_id() {
+        let (store, _d) = temp_store();
+        let (sid, _) = store.sources.register("prolog", None, "a(1).\nb(X) :- a(X).", None).unwrap();
+
+        let (clauses, _, _) = resolve_resume_sources(&snapshot(Some(sid), &[]), &store, 60_000);
+        assert_eq!(clauses, vec!["a(1).".to_string(), "b(X) :- a(X).".to_string()]);
+    }
+
+    #[test]
+    fn resume_falls_back_to_stored_inline_clauses_without_a_source_id() {
+        let (store, _d) = temp_store();
+        let (clauses, _, _) = resolve_resume_sources(&snapshot(None, &["c(3)."]), &store, 60_000);
+        assert_eq!(clauses, vec!["c(3).".to_string()]);
+    }
+
+    #[test]
+    fn resume_falls_back_to_inline_when_the_source_was_swept() {
+        let (store, _d) = temp_store();
+        let ghost = Uuid::new_v4();
+        let (clauses, _, _) = resolve_resume_sources(&snapshot(Some(ghost), &["kept(1)."]), &store, 60_000);
+        assert_eq!(clauses, vec!["kept(1).".to_string()]);
+    }
+
+    #[test]
+    fn reasons_for_errors_are_stable_machine_strings() {
+        use clara_cycle::CycleError;
+        assert_eq!(reason_for_error(&CycleError::MaxCyclesExceeded(5)), "max_cycles");
+        assert_eq!(reason_for_error(&CycleError::ModuleDependency("x".into())), "module_dependency");
+        assert_eq!(reason_for_error(&CycleError::Clips("x".into())), "error");
+    }
+
+    fn session() -> DeductionSession {
+        DeductionSession::new().unwrap()
+    }
+
+    fn register_module(store: &clara_coire::CoireStore, label: &str, content: &str) -> Uuid {
+        store.sources.register(module_sources::MODULE_SOURCE_TYPE, Some(label), content, None).unwrap().0
+    }
+
+    /// The loader itself, against a real engine: modules load ahead of the node source and are callable from it.
+    #[test]
+    fn modules_load_ahead_of_the_node_source_and_are_callable() {
+        let (store, _d) = temp_store();
+        let m = register_module(&store, "greet@1.0.0", "greeting(hello).");
+        let mut s = session();
+        load_prolog_program(&mut s, &[m], Some(&store), vec!["say(X) :- greeting(X).".into()]).unwrap();
+        assert!(s.prolog.query_once("say(hello)").is_ok(), "the node rule reaches the module fact");
+    }
+
+    #[test]
+    fn a_conflict_refuses_the_run_before_anything_is_loaded() {
+        use clara_cycle::CycleError;
+        let (store, _d) = temp_store();
+        let m = register_module(&store, "dup@1.0.0", "shared(1).");
+        let mut s = session();
+        let err = load_prolog_program(&mut s, &[m], Some(&store), vec!["shared(2).".into()]).unwrap_err();
+        match err {
+            CycleError::ModuleDependency(msg) => assert!(msg.contains("shared/1"), "{msg}"),
+            other => panic!("expected ModuleDependency, got {other:?}"),
+        }
+        assert!(s.prolog.query_once("shared(_)").is_err(), "nothing was loaded");
+    }
+
+    #[test]
+    fn a_missing_module_refuses_the_run() {
+        use clara_cycle::CycleError;
+        let (store, _d) = temp_store();
+        let mut s = session();
+        let err = load_prolog_program(&mut s, &[Uuid::new_v4()], Some(&store), vec!["x(1).".into()]).unwrap_err();
+        assert!(matches!(err, CycleError::ModuleDependency(m) if m.contains("not found")));
+    }
+
+    #[test]
+    fn without_modules_the_node_source_loads_exactly_as_before() {
+        let mut s = session();
+        // Even a node source that redefines an overlay name is untouched when no modules are involved.
+        load_prolog_program(&mut s, &[], None, vec!["strip_think(A, A).".into()]).unwrap();
+        assert!(s.prolog.query_once("strip_think(x, x)").is_ok());
+    }
 }

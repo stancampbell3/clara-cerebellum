@@ -11,5 +11,6 @@ pub mod validation;
 pub mod subprocess;
 pub mod fierypit_registry;
 pub mod deadline;
+pub mod module_sources;
 
 pub use server::start_server;

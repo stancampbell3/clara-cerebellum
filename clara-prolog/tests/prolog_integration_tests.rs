@@ -942,3 +942,68 @@ fn test_leannan_sparks_degrades_failed_spark() {
 
     println!("=== leannan_sparks/5 degrade Test PASSED ===");
 }
+
+// ── source inspection (module-fragment collision checks) ─────────────────────
+
+/// `source_predicates` reports what a source WOULD define, using consult_string's own head extraction: rule heads
+/// and facts count (each once, first-seen order), directives and the load-family facts do not.
+#[test]
+fn test_source_predicates_lists_defined_predicates_once_in_order() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    let code = "\
+:- use_module(library(lists)).\n\
+:- dynamic seen/1.\n\
+greet(hello).\n\
+greet(world).\n\
+shout(X, Y) :- greet(X), upcase_atom(X, Y).\n\
+use_module(library(the_coire)).\n\
+helper(_, _, _).\n";
+    let preds = env.source_predicates(code).expect("source_predicates");
+    assert_eq!(preds, vec!["greet/1", "shout/2", "helper/3"]);
+}
+
+#[test]
+fn test_source_predicates_of_an_empty_or_directive_only_source_is_empty() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    assert!(env.source_predicates("").expect("empty").is_empty());
+    assert!(env.source_predicates(":- true.").expect("directive").is_empty());
+}
+
+#[test]
+fn test_source_predicates_survives_quotes_and_backslashes_in_the_source() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    let code = "say(\"a \\\"quoted\\\" word\").\nnote('it''s here').\n";
+    let preds = env.source_predicates(code).expect("quotes must not break the goal");
+    assert_eq!(preds, vec!["say/1", "note/1"]);
+}
+
+#[test]
+fn test_source_predicates_surfaces_a_syntax_error() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    assert!(env.source_predicates("broken( .").is_err(), "a syntax error must not be swallowed");
+}
+
+/// Nothing is loaded by inspecting: the engine's user namespace is unchanged.
+#[test]
+fn test_source_predicates_does_not_load_the_source() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    env.source_predicates("only_inspected(1).").expect("inspect");
+    assert!(env.query_once("only_inspected(1)").is_err(), "inspection must not define the predicate");
+}
+
+#[test]
+fn test_overlay_exports_include_the_promoted_and_core_predicates() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    let exports = env.overlay_exports().expect("overlay_exports");
+    for expected in [
+        "strip_think/2",        // the_coire (promoted in Approach B)
+        "caws_tristate/3",      // the_coire
+        "extract_hohi_response/2", // the_rabbit
+        "ponder_text/2",        // the_rabbit
+        "answer_step/9",        // the_cow
+        "ruminate_opts/3",      // the_cow
+    ] {
+        assert!(exports.iter().any(|e| e == expected), "{expected} missing from {exports:?}");
+    }
+    assert!(!exports.iter().any(|e| e == "sdp_read/3"), "internal helpers are not exports");
+}

@@ -71,6 +71,9 @@ pub struct DeductionSnapshot {
     /// reuses it unless the caller overrides.
     #[serde(default)]
     pub deadline_ms:       Option<u64>,
+    /// `prolog-module` sources loaded ahead of the node source, in order. A resume re-resolves them.
+    #[serde(default)]
+    pub prolog_module_source_ids: Vec<Uuid>,
 }
 
 /// Column list shared by every full-row snapshot read. Adding a column means
@@ -82,7 +85,7 @@ const SNAPSHOT_COLUMNS: &str =
      prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
      context, tableau_entries,
      prolog_source_id, clips_source_id, dot_artifact_id,
-     ritual_id, performance_id, deadline_ms";
+     ritual_id, performance_id, deadline_ms, prolog_module_source_ids";
 
 /// One `deduction_snapshots` row as read from DuckDB, before parsing.
 struct RawSnapshotRow {
@@ -106,6 +109,7 @@ struct RawSnapshotRow {
     ritual_id:         Option<String>,
     performance_id:    Option<String>,
     deadline_ms:       Option<i64>,
+    prolog_module_source_ids: Option<String>,
 }
 
 fn read_snapshot_row(row: &duckdb::Row<'_>) -> duckdb::Result<RawSnapshotRow> {
@@ -130,6 +134,7 @@ fn read_snapshot_row(row: &duckdb::Row<'_>) -> duckdb::Result<RawSnapshotRow> {
         ritual_id:         row.get(17)?,
         performance_id:    row.get(18)?,
         deadline_ms:       row.get(19)?,
+        prolog_module_source_ids: row.get(20)?,
     })
 }
 
@@ -155,6 +160,10 @@ fn snapshot_from_raw(r: RawSnapshotRow) -> CoireResult<DeductionSnapshot> {
         ritual_id:         r.ritual_id.and_then(|s| s.parse().ok()),
         performance_id:    r.performance_id.and_then(|s| s.parse().ok()),
         deadline_ms:       r.deadline_ms.map(|d| d as u64),
+        prolog_module_source_ids: r
+            .prolog_module_source_ids
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -311,6 +320,7 @@ impl CoireStore {
             ("ritual_id",        "ritual_id        VARCHAR"),
             ("performance_id",   "performance_id   VARCHAR"),
             ("deadline_ms",      "deadline_ms      BIGINT"),
+            ("prolog_module_source_ids", "prolog_module_source_ids VARCHAR"),
         ] {
             let exists: bool = conn
                 .query_row(
@@ -516,8 +526,8 @@ impl CoireStore {
                  prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
                  context, tableau_entries,
                  prolog_source_id, clips_source_id, dot_artifact_id,
-                 ritual_id, performance_id, deadline_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ritual_id, performance_id, deadline_ms, prolog_module_source_ids)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (deduction_id) DO UPDATE SET
                 prolog_clauses    = excluded.prolog_clauses,
                 clips_constructs  = excluded.clips_constructs,
@@ -537,7 +547,8 @@ impl CoireStore {
                 dot_artifact_id   = excluded.dot_artifact_id,
                 ritual_id         = excluded.ritual_id,
                 performance_id    = excluded.performance_id,
-                deadline_ms       = excluded.deadline_ms",
+                deadline_ms       = excluded.deadline_ms,
+                prolog_module_source_ids = excluded.prolog_module_source_ids",
             duckdb::params![
                 snap.deduction_id.to_string(),
                 clauses,
@@ -559,6 +570,7 @@ impl CoireStore {
                 snap.ritual_id.map(|u| u.to_string()),
                 snap.performance_id.map(|u| u.to_string()),
                 snap.deadline_ms.map(|d| d as i64),
+                serde_json::to_string(&snap.prolog_module_source_ids)?,
             ],
         )?;
         log::info!("CoireStore: saved snapshot {}", snap.deduction_id);
@@ -720,6 +732,7 @@ impl CoireStore {
                 ritual_id:         None,
                 performance_id:    None,
                 deadline_ms:       None,
+                prolog_module_source_ids: Vec::new(),
             });
         }
         Ok(snaps)
@@ -1193,6 +1206,7 @@ mod tests {
             ritual_id:         None,
             performance_id:    None,
             deadline_ms:       None,
+            prolog_module_source_ids: Vec::new(),
         };
         store.save_snapshot(&snap).unwrap();
         (snap, prolog_id, clips_id)
@@ -1276,12 +1290,14 @@ mod tests {
         snap.ritual_id      = Some(Uuid::new_v4());
         snap.performance_id = Some(Uuid::new_v4());
         snap.deadline_ms    = Some(90_000);
+        snap.prolog_module_source_ids = vec![Uuid::new_v4(), Uuid::new_v4()];
         store.save_snapshot(&snap).unwrap();
 
         let loaded = store.load_snapshot(snap.deduction_id).unwrap().unwrap();
         assert_eq!(loaded.ritual_id, snap.ritual_id);
         assert_eq!(loaded.performance_id, snap.performance_id);
         assert_eq!(loaded.deadline_ms, Some(90_000));
+        assert_eq!(loaded.prolog_module_source_ids, snap.prolog_module_source_ids, "module order is preserved");
 
         let listed = store.list_snapshots(None).unwrap();
         let from_list = listed.iter().find(|s| s.deduction_id == snap.deduction_id).unwrap();
@@ -1335,6 +1351,7 @@ mod tests {
         assert_eq!(loaded.ritual_id, None);
         assert_eq!(loaded.performance_id, None);
         assert_eq!(loaded.deadline_ms, None);
+        assert!(loaded.prolog_module_source_ids.is_empty());
 
         // And the migrated table accepts new-shape writes.
         let mut snap = loaded.clone();

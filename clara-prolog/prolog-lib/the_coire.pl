@@ -11,6 +11,8 @@
     caws_await/2,              % +CorrelationId, -Result
     caws_tristate/3,           % +CorrelationId, -State, -Result
     caws_consult/4,            % +TargetNodeId, +TopicPath, +Payload, -Result
+    source_defined_predicates/2, % +Code, -Indicators
+    overlay_exports/1,         % -Indicators
     strip_think/2,             % +Text, -Clean
     extract_caws_response/2,   % +Dict, -Response
     research_step/8,           % +Query, +MaxCrawls, +TopicPath, +IngestTopicPath, +TopicSubject, +IdleSeconds, +MaxWaitS, -R
@@ -231,6 +233,55 @@ caws_tristate(Cid, State, Raw) :-
 caws_consult(Target, Topic, Payload, Result) :-
     caws_offer(Target, Topic, Payload, Cid),
     caws_await(Cid, Result).
+
+% ── source inspection (module-fragment collision checks) ────────────────────
+%
+% The registered-source loader (consult_string, clara-prolog environment.rs) asserts every clause into one flat
+% namespace, so two sources defining the same Name/Arity would silently merge. These two predicates let clara-api
+% detect that BEFORE loading: which predicates a source defines (using the same head extraction as consult_string),
+% and which Name/Arity the compiled-in overlay libraries export.
+
+%!  source_defined_predicates(+Code, -Indicators)
+%
+%   Name/Arity of every clause head defined by the Prolog text Code, in first-seen order, each once. Directives
+%   and the load-family facts consult_string runs instead of asserting (use_module/1,2, consult/1, ...) are not
+%   definitions. A syntax error propagates, as it would when the source is loaded.
+source_defined_predicates(Code, Indicators) :-
+    setup_call_cleanup(open_string(Code, S), sdp_read(S, [], Rev), close(S)),
+    reverse(Rev, Indicators).
+
+sdp_read(S, Acc0, Acc) :-
+    read_term(S, T, []),
+    (   T == end_of_file
+    ->  Acc = Acc0
+    ;   sdp_indicator(T, FA)
+    ->  sdp_add(FA, Acc0, Acc1),
+        sdp_read(S, Acc1, Acc)
+    ;   sdp_read(S, Acc0, Acc)
+    ).
+
+sdp_indicator((:- _), _) :- !, fail.
+sdp_indicator((?- _), _) :- !, fail.
+sdp_indicator((Head :- _), F/A) :- !, callable(Head), functor(Head, F, A), \+ sdp_skipped(F/A).
+sdp_indicator(Head, F/A) :- callable(Head), functor(Head, F, A), \+ sdp_skipped(F/A).
+
+sdp_skipped(FA) :-
+    memberchk(FA, [consult/1, use_module/1, use_module/2, ensure_loaded/1, load_files/1, load_files/2]).
+
+sdp_add(FA, Acc, Acc) :- memberchk(FA, Acc), !.
+sdp_add(FA, Acc, [FA|Acc]).
+
+%!  overlay_exports(-Indicators)
+%
+%   Sorted, de-duplicated Name/Arity exported by the compiled-in overlay libraries (the list environment.rs loads).
+overlay_exports(Indicators) :-
+    findall(FA,
+            (   member(M, [the_coire, the_rabbit, the_cow, the_rat, the_leannan]),
+                catch(module_property(M, exports(L)), _, fail),
+                member(FA, L)
+            ),
+            Raw),
+    sort(Raw, Indicators).
 
 % ── shared analyst-ritual helpers ────────────────────────────────────────────
 %

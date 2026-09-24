@@ -193,6 +193,9 @@ services:
       - LILDAEMON_JWT_SECRET=${LILDAEMON_JWT_SECRET}
       - LILDAEMON_BASE_URL=http://lildaemon:6666
       - LILDAEMON_DB_PATH=/app/data/lildaemon.duc
+      # Where Ritual module fragments (goat/app/ritual_modules) are read from. Empty = the image's own directory;
+      # point it at a mounted path to add a module without rebuilding the image (see the Ritual properties spec, P4).
+      - RITUAL_MODULES_DIR=${RITUAL_MODULES_DIR:-}
       - LILDAEMON_OUTPUT_DIR=/app/output
       # Base directory python_tools.py's file-tool functions (read_file,
       # write_file, list_files, run_awk, run_sed, download_file) are

@@ -399,6 +399,37 @@ impl PrologEnvironment {
         self.query_once(&goal).map(|_| ())
     }
 
+    /// `Name/Arity` of every predicate the Prolog text `code` would define when loaded via
+    /// [`consult_string`](Self::consult_string), in first-seen order. Nothing is loaded. A syntax error
+    /// surfaces as an error, as it would on load.
+    pub fn source_predicates(&self, code: &str) -> PrologResult<Vec<String>> {
+        let escaped = code.replace("\\", "\\\\").replace("\"", "\\\"");
+        let goal = format!(
+            "atom_codes(Code, \"{escaped}\"), \
+             the_coire:source_defined_predicates(Code, L0), \
+             findall(S, (member(F/A, L0), format(atom(S), '~w/~w', [F, A])), L)"
+        );
+        Self::indicator_list(&self.query_with_bindings(&goal)?)
+    }
+
+    /// `Name/Arity` exported by the compiled-in overlay libraries (`the_coire`, `the_rabbit`, ...).
+    pub fn overlay_exports(&self) -> PrologResult<Vec<String>> {
+        let goal = "the_coire:overlay_exports(L0), \
+                    findall(S, (member(F/A, L0), format(atom(S), '~w/~w', [F, A])), L)";
+        Self::indicator_list(&self.query_with_bindings(goal)?)
+    }
+
+    /// Pull the `L` binding (a list of `"Name/Arity"` strings) out of a `query_with_bindings` JSON result.
+    fn indicator_list(json: &str) -> PrologResult<Vec<String>> {
+        let solutions: serde_json::Value = serde_json::from_str(json)?;
+        let list = solutions
+            .get(0)
+            .and_then(|s| s.get("L"))
+            .and_then(|l| l.as_array())
+            .ok_or_else(|| PrologError::QueryFailed("no predicate list returned".to_string()))?;
+        Ok(list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+    }
+
     /// Clear all user-defined predicates
     ///
     /// Keeps built-in predicates intact.

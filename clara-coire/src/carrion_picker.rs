@@ -447,6 +447,7 @@ mod tests {
             ritual_id:         None,
             performance_id:    None,
             deadline_ms:       None,
+            prolog_module_source_ids: Vec::new(),
         };
         store.save_snapshot(&snap).unwrap();
 
@@ -528,6 +529,7 @@ mod tests {
             ritual_id:         None,
             performance_id:    None,
             deadline_ms:       None,
+            prolog_module_source_ids: Vec::new(),
         };
         store.save_snapshot(&snap).unwrap();
 

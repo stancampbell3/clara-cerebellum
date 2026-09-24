@@ -219,6 +219,7 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 | `initial_goal` | `string \| null` | `null` | Prolog goal executed on cycle 0 only. Omit or set to `null` to run a no-op (`true`). |
 | `max_cycles` | `uint \| null` | `100` | Cycle budget. Exhausting it without convergence results in `error` status. |
 | `deadline_ms` | `uint \| null` | server default (3600000) | Wall-clock budget for the run in milliseconds, counted from the start of the cycle loop. On expiry the run ends `expired` (`reason: "deadline"`) at the next cycle boundary with its partial result; with `persist: true` it can be continued via `POST /deduce/resume`. The server ceiling (`deduction_max_deadline_seconds`, default 14400 s) clamps any value; `0` is rejected with `400`. **Cooperative**: a call blocked inside a Prolog/CLIPS FFI call overruns until it returns. |
+| `prolog_module_source_ids` | `uuid[]` | `[]` | `prolog-module` sources (`POST /source` with `source_type: "prolog-module"`) loaded, in this order, into the run's namespace **ahead of** the node source. A missing or wrongly typed id, a syntax error in a module, or a predicate defined by more than one source (or by a module and a compiled-in overlay export such as `strip_think/2`) ends the run `error` with `reason: "module_dependency"` before anything is loaded. Runs without modules are never checked. Persisted with `persist: true`, so a resume reloads them. |
 | `persist` | `bool` | `false` | When `true` and persistence is configured, save a full snapshot on completion for later resumption via `POST /deduce/resume`. |
 | `trace` | `bool` | `false` | When `true`, record a Dagda tableau snapshot after each relay phase. With a store configured, snapshots are written to `tableau_changes` and queryable via `GET /deduce/{id}/trace`. Without a store, the trace is returned inline in `DeductionResult.trace`. |
 | `context` | `object[]` | `[]` | Optional conversational context (external message history). Each element is a free-form JSON object — typically `{"role": "...", "content": "..."}`. Made available to Prolog rules via `current_context/1` and forwarded to LLM evaluate calls that accept a `context` field. |
@@ -356,7 +357,7 @@ underlying `CycleError` variant:
 
 `GET /deduce/{id}` also describes the run as a **Performance**: `ritual_id`, `performance_id` (the anonymous Performance minted when the run joined that Ritual), `max_cycles`, `deadline_ms` (resolved, after default and ceiling; absent = unbounded), `started_at_ms`, `completed_at_ms` (absent while running) and, for a resumed run, `resumed_from`. All are omitted when unset. `DELETE /deduce/{id}` only signals the run; polls report `interrupted` immediately while the entry itself stays `running` until the run finalizes it, and completed entries are evicted `deduction_entry_ttl_seconds` after **completion**, never while still running. `persist: true` snapshots store `ritual_id`, `performance_id` and `deadline_ms`, and `GET /deduce` lists them.
 
-Non-converged runs also carry a machine-readable `reason` on `GET /deduce/{id}`: `interrupted`, `deadline`, `max_cycles` or `error` (absent while running and on convergence). The `status` strings above are unchanged.
+Non-converged runs also carry a machine-readable `reason` on `GET /deduce/{id}`: `interrupted`, `deadline`, `max_cycles`, `module_dependency` or `error` (absent while running and on convergence). The `status` strings above are unchanged.
 
 **Response** `404 Not Found` — unknown `deduction_id`.
 
@@ -559,12 +560,19 @@ baloroptik replay snapshot.json changes.json --out-dir ./eye --format html
 
 ---
 
+### `POST /source/check-modules` — dry-run the module dependency check
+
+Body: `{"prolog_source_id": uuid?, "prolog_clauses": string[]?, "prolog_module_source_ids": uuid[]}`. Performs the same check a `/deduce` does before loading (every id registered as `prolog-module`; no predicate defined by more than one source, or by a module and an overlay export) without loading anything or starting a run. Always `200` with `{"ok": bool, "conflicts": [{"predicate": "f/1", "sources": ["a@1.0.0", "node source"]}], "errors": [string]}`; `503` when persistence is not configured. Lets a caller fail early, e.g. at Ritual activation.
+
 ### `POST /deduce/resume` — resume a persisted deduction
 
 Looks up the snapshot saved for `deduction_id`, re-seeds fresh engine instances
 from the stored knowledge (or the registered source if `prolog_source_id` /
-`clips_source_id` are set on the snapshot), restores pending Coire events, and
-runs the cycle again under a new `deduction_id`.
+`clips_source_id` are set on the snapshot, plus its `prolog_module_source_ids`),
+restores pending Coire events, and runs the cycle again under a new `deduction_id`.
+(Before 2026-09-24 the code reloaded only the snapshot's *inline* clauses, so a
+run started from a registered source resumed with no Prolog program; it now
+re-resolves the source ids as described here.)
 
 **Request body** (`application/json`)
 
