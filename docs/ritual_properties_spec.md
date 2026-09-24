@@ -142,7 +142,7 @@ Nothing composes a roster declaratively. Each caller does `dis_client.join_ritua
   with a renewed lease, released when idle (`ld/evaluators/custom/hermes_agent_evaluator.py`,
   `ld/ritual_space/scope.py:63`).
 
-## 7. Proposed target properties (for Stan to react to)
+## 7. Target properties (P1-P4 decided 2026-09-24; P5 proposed; ordering in §9)
 
 Each is a proposal, not a decision.
 
@@ -311,3 +311,52 @@ scope until P1-P5 settle.
    **Decided by Stan 2026-09-24:** child appears as one participant; owned by default, borrowed opt-in.
 
 _All four decisions are now made. The next planning step is an implementation-ordering pass across P1-P5._
+
+## 9. Implementation ordering (agreed 2026-09-24)
+
+Vertical slices, each built, tested, redeployed and **verified live** against the real stack before the next. Only S1 is
+fixed as first; the rest is the recommended order and is revisitable after S1.
+
+Dependencies: S1 -> S2 -> S3. S4, S5, S6 are independent of P1 and of each other. S7 needs S1-S4 and S6.
+
+| # | Slice | Repo / language | Depends on | Deploy |
+|---|---|---|---|---|
+| **S1** | **P1a: `deadline_ms`, `expired`, structured `reason`.** Request field; layered resolution (request > server default) with a server ceiling clamp (`clara-config`); check at the top of each cycle and beside the interrupt check; cap the 250 ms pacing sleep to the remaining budget; precedence converged > interrupted > expired; new `CycleStatus::Expired` (`request.rs`, `result.rs`, `controller.rs`, `deduce_handler.rs`, `clara-config/defaults.rs`) | clara-cerebellum / Rust | none | rebuild + redeploy `clara-api` on limbic |
+| **S2** | **P1b: observable Performance and hygiene.** `ritual_id`/`performance_id`/`max_cycles`/`deadline_ms`/`started_at` on `DeductionEntry` and the snapshot, returned by `GET /deduce/{id}`; reaper ages from completion; fix the DELETE-versus-task status race; `/deduce/resume` deadline override plus optional snapshot `deadline_ms` | Rust | S1 | redeploy `clara-api` |
+| **S3** | **P1c: client and config alignment.** `poll_deduction` sends `DELETE` when its budget lapses; Run and `assistant/runtime.py` pass a matching `deadline_ms`; RitualConfig `default_deadline_ms` column used by Run | lildaemon / Python | S1 | lildaemon image rebuild (image bakes `.env`: blank unset compose vars) |
+| **S4** | **P2: persistent RitualConfigs.** `persist` column, in-memory `runtime_state`, `resume_config`, background resume with retry/backoff and terminate fallback, `POST /ritual-config/{id}/resume`, shutdown leaves persistent configs `active`, Run gated on `live` | lildaemon / Python | none | lildaemon rebuild |
+| **S5** | **P4 Tier 1: module fragments.** Rust: ordered `prolog_module_source_ids` on `/deduce` and resume, hard error on a missing dependency, collision check (same `F/A` across sources, or against overlay exports). lildaemon: `ritual_modules/`, lockfile and hash-drift test, no-expiry registration, `prologModules` on nodes through activation. The slice's own plan must decide where the collision check lives (`consult_string`'s `$cs_seen` versus a pre-parse) | both | none (batch the Rust deploy with S1/S2 if timing allows) | redeploy `clara-api` + lildaemon rebuild |
+| **S6** | **P3a: composition data model.** `ritual_config_children` table; `ritual-group` `ritualConfigId` + `ownership` validated at save; DAG check; owned-child activate/terminate/rollback cascade, releasing remote joins on rollback. No `RitualEvaluator` yet | lildaemon / Python | none | lildaemon rebuild |
+| **S7** | **P3b: `RitualEvaluator`.** Wrap a child config as one participant; start a Performance on its entry node; Hohi/Tabu mapping; deadline = min(offer, parent's remaining); cancel the in-flight child on parent expire/interrupt; recursive resume (children first); `degraded` propagation | lildaemon / Python | S1, S2, S4, S6 | lildaemon rebuild |
+| **S8** | **Cobbler.** Group creation sets `ritualConfigId`; ownership control in the properties panel | dagda / TypeScript | S6 | cobbler build |
+
+**Recommended order:** S1, S2, S3, S4, S5, S6, S7, S8. P1 first for safety; then the cheap Python-only durability slice;
+then the consolidation-value slice; composition last because it depends on nearly everything.
+
+**Not scheduled:** P5 declarative roster (proposed in §7, not among the four decisions; revisit after S7); P4 Tier 2;
+a `terminated -> draft` reset; the `free_c_string` interface review; preserving in-flight deductions beyond
+snapshot/resume.
+
+**Definition of done, every slice.**
+1. Unit tests plus a real-Dis integration test (the `tests/test_*_promotion.py` pattern). Rust slices keep
+   `cargo clippy --workspace --all-targets` clean (a blocking CI job) and `cargo test --workspace` green.
+2. Rebuild and redeploy on limbic, live-verify against the real stack (ComfyUI off if anything touches the GPU), then
+   run the full suites of the touched repos.
+3. Update this spec's status and memory; commit each repo separately; push only when asked.
+
+**Exit checks ("verified live").**
+- **S1:** a `/deduce` with a tiny `deadline_ms` on a run that would otherwise loop returns `expired` with a partial
+  result and `reason: deadline`; an oversized request is clamped to the ceiling; converged runs are unaffected.
+- **S2:** `GET /deduce/{id}` returns `performance_id`, `ritual_id` and the limits; a finished long run's entry survives
+  its TTL counted from completion; interrupt-then-finish no longer clobbers the final status; resume after `expired`
+  continues.
+- **S3:** an abandoned poll now stops the server-side run; Run and assistant deductions carry a deadline.
+- **S4:** restart lildaemon with a `persist` config active: same `ritual_id`, Run works once `live`; non-persistent
+  configs still terminate; peer-down retry and then fallback are exercised.
+- **S5:** two nodes load a shared module via the lockfile with no clara-cerebellum rebuild; collision and
+  missing-dependency cases fail loudly.
+- **S6/S7:** parent activation cascades and rolls back; a parent Performance drives a child and cancels it on expiry.
+
+**Risks.** FFI calls can overrun a deadline (cooperative only). Rust redeploys interleave with S5, so batch where
+possible. lildaemon rebuilds must blank unset compose vars. DuckDB `ALTER TABLE` migrations (S3, S4, S6) need an
+idempotent-migration test. S7 is the riskiest slice and gets its own design pass first.
