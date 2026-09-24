@@ -142,6 +142,27 @@ pub struct DeduceStatusResponse {
     /// or `error`. Absent while running and on convergence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Ritual this run was attached to, if it was started with a `ritual_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ritual_id: Option<Uuid>,
+    /// Anonymous Performance minted when the run joined that Ritual.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub performance_id: Option<Uuid>,
+    /// Cycle budget the run was started with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cycles: Option<u32>,
+    /// Resolved wall-clock budget in ms (after default and ceiling); absent = unbounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+    /// Wall-clock start, unix ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// Wall-clock completion, unix ms; absent while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<i64>,
+    /// For a resumed run, the deduction it continues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_from: Option<Uuid>,
 }
 
 /// Response for DELETE /deduce/{id} — confirms interrupt was requested.

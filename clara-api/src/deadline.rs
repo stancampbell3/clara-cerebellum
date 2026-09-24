@@ -39,6 +39,20 @@ impl DeadlinePolicy {
         let clamped = if self.max_ms > 0 { chosen.min(self.max_ms) } else { chosen };
         Ok(Some(Duration::from_millis(clamped)))
     }
+
+    /// Resolve the deadline for a resumed run: the request's override, else
+    /// the budget stored in the snapshot, else the server default; then the
+    /// same ceiling clamp. `Some(0)` from the request is rejected.
+    pub fn resolve_resume(
+        &self,
+        requested_ms: Option<u64>,
+        stored_ms:    Option<u64>,
+    ) -> Result<Option<Duration>, String> {
+        if requested_ms == Some(0) {
+            return Err("deadline_ms must be greater than 0 (omit it to reuse the stored budget)".into());
+        }
+        self.resolve(requested_ms.or(stored_ms))
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +96,20 @@ mod tests {
     fn from_seconds_converts_and_zero_disables() {
         assert_eq!(DeadlinePolicy::from_seconds(3600, 14400), policy());
         assert_eq!(DeadlinePolicy::from_seconds(0, 0), DeadlinePolicy::disabled());
+    }
+
+    #[test]
+    fn resume_prefers_request_then_stored_then_default() {
+        let p = policy();
+        assert_eq!(p.resolve_resume(Some(2_000), Some(9_000)).unwrap(), Some(Duration::from_millis(2_000)));
+        assert_eq!(p.resolve_resume(None, Some(9_000)).unwrap(), Some(Duration::from_millis(9_000)));
+        assert_eq!(p.resolve_resume(None, None).unwrap(), Some(Duration::from_millis(3_600_000)));
+    }
+
+    #[test]
+    fn resume_clamps_to_the_ceiling_and_rejects_zero() {
+        let p = policy();
+        assert_eq!(p.resolve_resume(Some(u64::MAX / 2), None).unwrap(), Some(Duration::from_millis(14_400_000)));
+        assert!(p.resolve_resume(Some(0), Some(9_000)).is_err());
     }
 }

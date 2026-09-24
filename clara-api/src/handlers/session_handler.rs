@@ -35,10 +35,88 @@ pub struct DeductionEntry {
     pub cycles:            u32,
     pub interrupt:         Arc<AtomicBool>,
     pub created_at:        std::time::Instant,
+    /// Ritual the run was attached to (`ritual_id` on the request), if any.
+    pub ritual_id:         Option<Uuid>,
+    /// The anonymous Performance minted when the run joined that Ritual.
+    /// Written from the blocking task right after `join` succeeds; `None` for
+    /// runs without a Ritual, a failed join, and resumed runs (resume does not
+    /// re-join).
+    pub performance_id:    Option<Uuid>,
+    /// Cycle budget the run was started with.
+    pub max_cycles:        u32,
+    /// Resolved (clamped) wall-clock budget in ms; `None` = unbounded.
+    pub deadline_ms:       Option<u64>,
+    /// Wall-clock start, for the API (`created_at` is monotonic, for the reaper).
+    pub started_at_ms:     i64,
+    /// Set by the finishing task, the single writer of the final state. The
+    /// reaper ages terminal entries from here, not from `created_at`.
+    pub completed_at:      Option<std::time::Instant>,
+    pub completed_at_ms:   Option<i64>,
+    /// For a resumed run: the deduction it continues.
+    pub resumed_from:      Option<Uuid>,
     /// Set as soon as the `DeductionSession` is created inside `spawn_blocking`,
     /// before `run()` starts. Used to track live sessions in `active_coire_sessions`.
     pub prolog_session_id: Option<Uuid>,
     pub clips_session_id:  Option<Uuid>,
+}
+
+fn wall_clock_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+impl DeductionEntry {
+    /// A freshly started run: `Running`, nothing completed yet.
+    pub fn new_running(
+        interrupt:    Arc<AtomicBool>,
+        ritual_id:    Option<Uuid>,
+        max_cycles:   u32,
+        deadline_ms:  Option<u64>,
+        resumed_from: Option<Uuid>,
+    ) -> Self {
+        Self {
+            status:            CycleStatus::Running,
+            reason:            None,
+            result:            None,
+            cycles:            0,
+            interrupt,
+            created_at:        std::time::Instant::now(),
+            ritual_id,
+            performance_id:    None,
+            max_cycles,
+            deadline_ms,
+            started_at_ms:     wall_clock_ms(),
+            completed_at:      None,
+            completed_at_ms:   None,
+            resumed_from,
+            prolog_session_id: None,
+            clips_session_id:  None,
+        }
+    }
+
+    /// Stamp completion. Called once by the finishing task after it has
+    /// written the final `status`/`reason`/`result`.
+    pub fn mark_completed(&mut self) {
+        self.completed_at    = Some(std::time::Instant::now());
+        self.completed_at_ms = Some(wall_clock_ms());
+    }
+
+    /// The status a poll should report. `DELETE /deduce/{id}` only sets the
+    /// interrupt flag (it no longer rewrites `status`), so a still-running
+    /// entry whose flag is set is reported as `interrupted` here — the same
+    /// immediate answer callers always got — while `status` itself stays
+    /// `Running` until the task, the single writer, finalizes it.
+    pub fn effective_status(&self) -> CycleStatus {
+        if matches!(self.status, CycleStatus::Running)
+            && self.interrupt.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            CycleStatus::Interrupted
+        } else {
+            self.status.clone()
+        }
+    }
 }
 
 /// Application state
@@ -144,8 +222,11 @@ fn reap_deductions(
     let mut map = deductions.write().unwrap();
     let before = map.len();
     map.retain(|_id, entry| {
-        let terminal = !matches!(entry.status, CycleStatus::Running);
-        !(terminal && entry.created_at.elapsed() >= ttl)
+        // Aged from completion, never from creation, and only once the task
+        // has stamped it: a run still in flight (even an interrupted one whose
+        // task has not finished) is never evicted.
+        let expired = entry.completed_at.map_or(false, |t| t.elapsed() >= ttl);
+        !expired
     });
     before - map.len()
 }
@@ -501,17 +582,15 @@ mod tests {
         assert!(formatted.contains("2024-10-23"));
     }
 
+    /// An entry whose completion (if terminal) happened `age` ago.
     fn make_entry(status: CycleStatus, age: Duration) -> DeductionEntry {
-        DeductionEntry {
-            reason: None,
-            status,
-            result: None,
-            cycles: 0,
-            interrupt: Arc::new(AtomicBool::new(false)),
-            created_at: Instant::now() - age,
-            prolog_session_id: None,
-            clips_session_id: None,
+        let mut e = DeductionEntry::new_running(Arc::new(AtomicBool::new(false)), None, 10, None, None);
+        e.created_at = Instant::now() - age;
+        if !matches!(status, CycleStatus::Running) {
+            e.completed_at = Some(Instant::now() - age);
         }
+        e.status = status;
+        e
     }
 
     #[test]
@@ -575,5 +654,57 @@ mod tests {
 
         assert_eq!(evicted, 2);
         assert!(deductions.read().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_reap_ages_from_completion_not_creation() {
+        // Created long ago but finished just now: must survive its TTL.
+        let deductions = Arc::new(RwLock::new(HashMap::new()));
+        let mut e = make_entry(CycleStatus::Converged, Duration::from_secs(0));
+        e.created_at = Instant::now() - Duration::from_secs(7200);
+        deductions.write().unwrap().insert(Uuid::new_v4(), e);
+
+        assert_eq!(reap_deductions(&deductions, Duration::from_secs(60)), 0);
+        assert_eq!(deductions.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_reap_keeps_an_interrupted_entry_whose_task_has_not_finished() {
+        // DELETE only sets the flag; status stays Running and there is no
+        // completed_at, so the entry must never be evicted mid-flight.
+        let deductions = Arc::new(RwLock::new(HashMap::new()));
+        let e = make_entry(CycleStatus::Running, Duration::from_secs(7200));
+        e.interrupt.store(true, std::sync::atomic::Ordering::SeqCst);
+        deductions.write().unwrap().insert(Uuid::new_v4(), e);
+
+        assert_eq!(reap_deductions(&deductions, Duration::from_secs(60)), 0);
+        assert_eq!(deductions.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_effective_status_reports_interrupted_without_mutating_status() {
+        let e = make_entry(CycleStatus::Running, Duration::from_secs(0));
+        assert_eq!(e.effective_status(), CycleStatus::Running);
+        e.interrupt.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(e.effective_status(), CycleStatus::Interrupted);
+        assert_eq!(e.status, CycleStatus::Running, "status itself is left to the task");
+    }
+
+    #[test]
+    fn test_effective_status_does_not_override_a_final_status() {
+        let mut e = make_entry(CycleStatus::Converged, Duration::from_secs(0));
+        e.interrupt.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(e.effective_status(), CycleStatus::Converged);
+        e.status = CycleStatus::Expired;
+        assert_eq!(e.effective_status(), CycleStatus::Expired);
+    }
+
+    #[test]
+    fn test_mark_completed_stamps_both_clocks() {
+        let mut e = make_entry(CycleStatus::Running, Duration::from_secs(0));
+        assert!(e.completed_at.is_none() && e.completed_at_ms.is_none());
+        e.mark_completed();
+        assert!(e.completed_at.is_some());
+        assert!(e.completed_at_ms.unwrap() >= e.started_at_ms);
     }
 }

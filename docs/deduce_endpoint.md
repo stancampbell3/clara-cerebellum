@@ -354,6 +354,8 @@ underlying `CycleError` variant:
 | `expired` | Yes | Yes | The wall-clock `deadline_ms` elapsed before convergence. Partial result returned; resumable when persisted. Precedence at a cycle boundary: converged > interrupted > expired. |
 | `error: <msg>` | Yes | No | Unrecoverable failure or `max_cycles` exceeded. |
 
+`GET /deduce/{id}` also describes the run as a **Performance**: `ritual_id`, `performance_id` (the anonymous Performance minted when the run joined that Ritual), `max_cycles`, `deadline_ms` (resolved, after default and ceiling; absent = unbounded), `started_at_ms`, `completed_at_ms` (absent while running) and, for a resumed run, `resumed_from`. All are omitted when unset. `DELETE /deduce/{id}` only signals the run; polls report `interrupted` immediately while the entry itself stays `running` until the run finalizes it, and completed entries are evicted `deduction_entry_ttl_seconds` after **completion**, never while still running. `persist: true` snapshots store `ritual_id`, `performance_id` and `deadline_ms`, and `GET /deduce` lists them.
+
 Non-converged runs also carry a machine-readable `reason` on `GET /deduce/{id}`: `interrupted`, `deadline`, `max_cycles` or `error` (absent while running and on convergence). The `status` strings above are unchanged.
 
 **Response** `404 Not Found` — unknown `deduction_id`.
@@ -580,6 +582,7 @@ runs the cycle again under a new `deduction_id`.
 |---|---|---|---|
 | `deduction_id` | UUID | required | The `deduction_id` from the original run |
 | `max_cycles` | `uint \| null` | snapshot value | Override the cycle budget for this run |
+| `deadline_ms` | `uint \| null` | snapshot value, else server default | Override the wall-clock budget (ms). The budget starts fresh at resume (it is not the remainder of the original); the server ceiling clamps it; `0` is rejected with `400`. |
 | `persist` | `bool` | `false` | Save a new snapshot at completion to allow further chained resumes |
 | `trace` | `bool` | `false` | Enable per-phase tableau recording for this resumed run |
 | `context` | `object[] \| null` | snapshot value | Override the conversational context; uses the snapshot's context if omitted |

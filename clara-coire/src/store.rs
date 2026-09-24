@@ -61,6 +61,101 @@ pub struct DeductionSnapshot {
     /// Populated on the first trace request if not set at deduction time.
     #[serde(default)]
     pub dot_artifact_id:   Option<Uuid>,
+    /// Ritual the run was attached to, when it was started with a `ritual_id`.
+    #[serde(default)]
+    pub ritual_id:         Option<Uuid>,
+    /// The anonymous Performance minted when the run joined that Ritual.
+    #[serde(default)]
+    pub performance_id:    Option<Uuid>,
+    /// Resolved (clamped) wall-clock budget the run was given, in ms. A resume
+    /// reuses it unless the caller overrides.
+    #[serde(default)]
+    pub deadline_ms:       Option<u64>,
+}
+
+/// Column list shared by every full-row snapshot read. Adding a column means
+/// touching this, [`RawSnapshotRow`], `read_snapshot_row` and
+/// `snapshot_from_raw` — and nothing else on the read side.
+const SNAPSHOT_COLUMNS: &str =
+    "deduction_id, prolog_clauses, clips_constructs, clips_file,
+     initial_goal, max_cycles, status, cycles_run,
+     prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
+     context, tableau_entries,
+     prolog_source_id, clips_source_id, dot_artifact_id,
+     ritual_id, performance_id, deadline_ms";
+
+/// One `deduction_snapshots` row as read from DuckDB, before parsing.
+struct RawSnapshotRow {
+    deduction_id:      String,
+    clauses:           String,
+    constructs:        String,
+    clips_file:        Option<String>,
+    initial_goal:      Option<String>,
+    max_cycles:        i64,
+    status:            String,
+    cycles_run:        i64,
+    prolog_session_id: String,
+    clips_session_id:  String,
+    created_at_ms:     i64,
+    expires_at_ms:     i64,
+    context:           String,
+    tableau:           String,
+    prolog_source_id:  Option<String>,
+    clips_source_id:   Option<String>,
+    dot_artifact_id:   Option<String>,
+    ritual_id:         Option<String>,
+    performance_id:    Option<String>,
+    deadline_ms:       Option<i64>,
+}
+
+fn read_snapshot_row(row: &duckdb::Row<'_>) -> duckdb::Result<RawSnapshotRow> {
+    Ok(RawSnapshotRow {
+        deduction_id:      row.get(0)?,
+        clauses:           row.get(1)?,
+        constructs:        row.get(2)?,
+        clips_file:        row.get(3)?,
+        initial_goal:      row.get(4)?,
+        max_cycles:        row.get(5)?,
+        status:            row.get(6)?,
+        cycles_run:        row.get(7)?,
+        prolog_session_id: row.get(8)?,
+        clips_session_id:  row.get(9)?,
+        created_at_ms:     row.get(10)?,
+        expires_at_ms:     row.get(11)?,
+        context:           row.get(12)?,
+        tableau:           row.get(13)?,
+        prolog_source_id:  row.get(14)?,
+        clips_source_id:   row.get(15)?,
+        dot_artifact_id:   row.get(16)?,
+        ritual_id:         row.get(17)?,
+        performance_id:    row.get(18)?,
+        deadline_ms:       row.get(19)?,
+    })
+}
+
+fn snapshot_from_raw(r: RawSnapshotRow) -> CoireResult<DeductionSnapshot> {
+    Ok(DeductionSnapshot {
+        deduction_id:      Uuid::parse_str(&r.deduction_id).unwrap(),
+        prolog_clauses:    serde_json::from_str(&r.clauses)?,
+        clips_constructs:  serde_json::from_str(&r.constructs)?,
+        clips_file:        r.clips_file,
+        initial_goal:      r.initial_goal,
+        max_cycles:        r.max_cycles as u32,
+        status:            r.status,
+        cycles_run:        r.cycles_run as u32,
+        prolog_session_id: Uuid::parse_str(&r.prolog_session_id).unwrap(),
+        clips_session_id:  Uuid::parse_str(&r.clips_session_id).unwrap(),
+        created_at_ms:     r.created_at_ms,
+        expires_at_ms:     r.expires_at_ms,
+        context:           serde_json::from_str(&r.context).unwrap_or_default(),
+        tableau_entries:   serde_json::from_str(&r.tableau).unwrap_or_default(),
+        prolog_source_id:  r.prolog_source_id.and_then(|s| s.parse().ok()),
+        clips_source_id:   r.clips_source_id.and_then(|s| s.parse().ok()),
+        dot_artifact_id:   r.dot_artifact_id.and_then(|s| s.parse().ok()),
+        ritual_id:         r.ritual_id.and_then(|s| s.parse().ok()),
+        performance_id:    r.performance_id.and_then(|s| s.parse().ok()),
+        deadline_ms:       r.deadline_ms.map(|d| d as u64),
+    })
 }
 
 /// A single row from the `tableau_changes` table — one snapshot of the
@@ -213,6 +308,9 @@ impl CoireStore {
             ("prolog_source_id", "prolog_source_id VARCHAR"),
             ("clips_source_id",  "clips_source_id  VARCHAR"),
             ("dot_artifact_id",  "dot_artifact_id  VARCHAR"),
+            ("ritual_id",        "ritual_id        VARCHAR"),
+            ("performance_id",   "performance_id   VARCHAR"),
+            ("deadline_ms",      "deadline_ms      BIGINT"),
         ] {
             let exists: bool = conn
                 .query_row(
@@ -417,8 +515,9 @@ impl CoireStore {
                  initial_goal, max_cycles, status, cycles_run,
                  prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
                  context, tableau_entries,
-                 prolog_source_id, clips_source_id, dot_artifact_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 prolog_source_id, clips_source_id, dot_artifact_id,
+                 ritual_id, performance_id, deadline_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (deduction_id) DO UPDATE SET
                 prolog_clauses    = excluded.prolog_clauses,
                 clips_constructs  = excluded.clips_constructs,
@@ -435,7 +534,10 @@ impl CoireStore {
                 tableau_entries   = excluded.tableau_entries,
                 prolog_source_id  = excluded.prolog_source_id,
                 clips_source_id   = excluded.clips_source_id,
-                dot_artifact_id   = excluded.dot_artifact_id",
+                dot_artifact_id   = excluded.dot_artifact_id,
+                ritual_id         = excluded.ritual_id,
+                performance_id    = excluded.performance_id,
+                deadline_ms       = excluded.deadline_ms",
             duckdb::params![
                 snap.deduction_id.to_string(),
                 clauses,
@@ -454,6 +556,9 @@ impl CoireStore {
                 snap.prolog_source_id.map(|u| u.to_string()),
                 snap.clips_source_id.map(|u| u.to_string()),
                 snap.dot_artifact_id.map(|u| u.to_string()),
+                snap.ritual_id.map(|u| u.to_string()),
+                snap.performance_id.map(|u| u.to_string()),
+                snap.deadline_ms.map(|d| d as i64),
             ],
         )?;
         log::info!("CoireStore: saved snapshot {}", snap.deduction_id);
@@ -464,63 +569,13 @@ impl CoireStore {
     pub fn load_snapshot(&self, deduction_id: Uuid) -> CoireResult<Option<DeductionSnapshot>> {
         let conn = self.conn.lock().unwrap();
         let did  = deduction_id.to_string();
-        let mut stmt = conn.prepare(
-            "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
-                    initial_goal, max_cycles, status, cycles_run,
-                    prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
-                    context, tableau_entries,
-                    prolog_source_id, clips_source_id, dot_artifact_id
-             FROM deduction_snapshots
-             WHERE deduction_id = ?",
-        )?;
-        let mut rows = stmt.query_map(duckdb::params![did], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, String>(9)?,
-                row.get::<_, i64>(10)?,
-                row.get::<_, i64>(11)?,
-                row.get::<_, String>(12)?,
-                row.get::<_, String>(13)?,
-                row.get::<_, Option<String>>(14)?,
-                row.get::<_, Option<String>>(15)?,
-                row.get::<_, Option<String>>(16)?,
-            ))
-        })?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {SNAPSHOT_COLUMNS} FROM deduction_snapshots WHERE deduction_id = ?"
+        ))?;
+        let mut rows = stmt.query_map(duckdb::params![did], read_snapshot_row)?;
         match rows.next() {
-            None => Ok(None),
-            Some(row) => {
-                let (did, clauses_s, constructs_s, clips_file, initial_goal,
-                     max_cycles, status, cycles_run, prolog_sid, clips_sid,
-                     created_at_ms, expires_at_ms, context_s, tableau_s,
-                     prolog_source_id_s, clips_source_id_s, dot_artifact_id_s) = row?;
-                Ok(Some(DeductionSnapshot {
-                    deduction_id:      Uuid::parse_str(&did).unwrap(),
-                    prolog_clauses:    serde_json::from_str(&clauses_s)?,
-                    clips_constructs:  serde_json::from_str(&constructs_s)?,
-                    clips_file,
-                    initial_goal,
-                    max_cycles:        max_cycles as u32,
-                    status,
-                    cycles_run:        cycles_run as u32,
-                    prolog_session_id: Uuid::parse_str(&prolog_sid).unwrap(),
-                    clips_session_id:  Uuid::parse_str(&clips_sid).unwrap(),
-                    created_at_ms,
-                    expires_at_ms,
-                    context:           serde_json::from_str(&context_s).unwrap_or_default(),
-                    tableau_entries:   serde_json::from_str(&tableau_s).unwrap_or_default(),
-                    prolog_source_id:  prolog_source_id_s.and_then(|s| s.parse().ok()),
-                    clips_source_id:   clips_source_id_s.and_then(|s| s.parse().ok()),
-                    dot_artifact_id:   dot_artifact_id_s.and_then(|s| s.parse().ok()),
-                }))
-            }
+            None      => Ok(None),
+            Some(row) => Ok(Some(snapshot_from_raw(row?)?)),
         }
     }
 
@@ -532,73 +587,23 @@ impl CoireStore {
     pub fn list_snapshots(&self, limit: Option<u32>) -> CoireResult<Vec<DeductionSnapshot>> {
         let conn = self.conn.lock().unwrap();
         let sql = match limit {
-            Some(_) => "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
-                                initial_goal, max_cycles, status, cycles_run,
-                                prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
-                                context, tableau_entries,
-                                prolog_source_id, clips_source_id, dot_artifact_id
-                         FROM deduction_snapshots
-                         ORDER BY created_at_ms DESC
-                         LIMIT ?",
-            None    => "SELECT deduction_id, prolog_clauses, clips_constructs, clips_file,
-                                initial_goal, max_cycles, status, cycles_run,
-                                prolog_session_id, clips_session_id, created_at_ms, expires_at_ms,
-                                context, tableau_entries,
-                                prolog_source_id, clips_source_id, dot_artifact_id
-                         FROM deduction_snapshots
-                         ORDER BY created_at_ms DESC",
+            Some(_) => format!(
+                "SELECT {SNAPSHOT_COLUMNS} FROM deduction_snapshots
+                 ORDER BY created_at_ms DESC LIMIT ?"
+            ),
+            None => format!(
+                "SELECT {SNAPSHOT_COLUMNS} FROM deduction_snapshots
+                 ORDER BY created_at_ms DESC"
+            ),
         };
-        let mut stmt = conn.prepare(sql)?;
-        let map_row = |row: &duckdb::Row<'_>| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, String>(8)?,
-                row.get::<_, String>(9)?,
-                row.get::<_, i64>(10)?,
-                row.get::<_, i64>(11)?,
-                row.get::<_, String>(12)?,
-                row.get::<_, String>(13)?,
-                row.get::<_, Option<String>>(14)?,
-                row.get::<_, Option<String>>(15)?,
-                row.get::<_, Option<String>>(16)?,
-            ))
-        };
+        let mut stmt = conn.prepare(&sql)?;
         let rows = match limit {
-            Some(n) => stmt.query_map(duckdb::params![n as i64], map_row)?,
-            None    => stmt.query_map([], map_row)?,
+            Some(n) => stmt.query_map(duckdb::params![n as i64], read_snapshot_row)?,
+            None    => stmt.query_map([], read_snapshot_row)?,
         };
         let mut snaps = Vec::new();
         for row in rows {
-            let (did, clauses_s, constructs_s, clips_file, initial_goal,
-                 max_cycles, status, cycles_run, prolog_sid, clips_sid,
-                 created_at_ms, expires_at_ms, context_s, tableau_s,
-                 prolog_source_id_s, clips_source_id_s, dot_artifact_id_s) = row?;
-            snaps.push(DeductionSnapshot {
-                deduction_id:      Uuid::parse_str(&did).unwrap(),
-                prolog_clauses:    serde_json::from_str(&clauses_s)?,
-                clips_constructs:  serde_json::from_str(&constructs_s)?,
-                clips_file,
-                initial_goal,
-                max_cycles:        max_cycles as u32,
-                status,
-                cycles_run:        cycles_run as u32,
-                prolog_session_id: Uuid::parse_str(&prolog_sid).unwrap(),
-                clips_session_id:  Uuid::parse_str(&clips_sid).unwrap(),
-                created_at_ms,
-                expires_at_ms,
-                context:           serde_json::from_str(&context_s).unwrap_or_default(),
-                tableau_entries:   serde_json::from_str(&tableau_s).unwrap_or_default(),
-                prolog_source_id:  prolog_source_id_s.and_then(|s| s.parse().ok()),
-                clips_source_id:   clips_source_id_s.and_then(|s| s.parse().ok()),
-                dot_artifact_id:   dot_artifact_id_s.and_then(|s| s.parse().ok()),
-            });
+            snaps.push(snapshot_from_raw(row?)?);
         }
         Ok(snaps)
     }
@@ -712,6 +717,9 @@ impl CoireStore {
                 prolog_source_id:  None,
                 clips_source_id:   None,
                 dot_artifact_id:   None,
+                ritual_id:         None,
+                performance_id:    None,
+                deadline_ms:       None,
             });
         }
         Ok(snaps)
@@ -1182,6 +1190,9 @@ mod tests {
             prolog_source_id:  None,
             clips_source_id:   None,
             dot_artifact_id:   None,
+            ritual_id:         None,
+            performance_id:    None,
+            deadline_ms:       None,
         };
         store.save_snapshot(&snap).unwrap();
         (snap, prolog_id, clips_id)
@@ -1256,6 +1267,83 @@ mod tests {
         assert!(found.is_empty(), "active session must be skipped");
         // The snapshot itself should still be in the store
         assert!(store.load_snapshot(snap.deduction_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn snapshot_round_trips_performance_fields() {
+        let (store, _f) = tmp_store();
+        let (mut snap, _, _) = make_snapshot(&store, 9_999_999_999);
+        snap.ritual_id      = Some(Uuid::new_v4());
+        snap.performance_id = Some(Uuid::new_v4());
+        snap.deadline_ms    = Some(90_000);
+        store.save_snapshot(&snap).unwrap();
+
+        let loaded = store.load_snapshot(snap.deduction_id).unwrap().unwrap();
+        assert_eq!(loaded.ritual_id, snap.ritual_id);
+        assert_eq!(loaded.performance_id, snap.performance_id);
+        assert_eq!(loaded.deadline_ms, Some(90_000));
+
+        let listed = store.list_snapshots(None).unwrap();
+        let from_list = listed.iter().find(|s| s.deduction_id == snap.deduction_id).unwrap();
+        assert_eq!(from_list.performance_id, snap.performance_id);
+        assert_eq!(from_list.deadline_ms, Some(90_000));
+    }
+
+    /// A store created before these columns existed is migrated on open, and
+    /// its old rows load with `None` for the new fields.
+    #[test]
+    fn old_schema_store_is_migrated_and_old_rows_load() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.duckdb");
+        let sid  = Uuid::new_v4();
+        {
+            // Old-shape table: no ritual_id / performance_id / deadline_ms.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE deduction_snapshots (
+                    deduction_id      VARCHAR NOT NULL PRIMARY KEY,
+                    prolog_clauses    VARCHAR NOT NULL,
+                    clips_constructs  VARCHAR NOT NULL,
+                    clips_file        VARCHAR,
+                    initial_goal      VARCHAR,
+                    max_cycles        INTEGER NOT NULL,
+                    status            VARCHAR NOT NULL,
+                    cycles_run        INTEGER NOT NULL,
+                    prolog_session_id VARCHAR NOT NULL,
+                    clips_session_id  VARCHAR NOT NULL,
+                    created_at_ms     BIGINT  NOT NULL,
+                    expires_at_ms     BIGINT  NOT NULL,
+                    context           VARCHAR NOT NULL DEFAULT '[]',
+                    tableau_entries   VARCHAR NOT NULL DEFAULT '[]',
+                    prolog_source_id  VARCHAR,
+                    clips_source_id   VARCHAR,
+                    dot_artifact_id   VARCHAR
+                );",
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO deduction_snapshots
+                    (deduction_id, prolog_clauses, clips_constructs, max_cycles, status,
+                     cycles_run, prolog_session_id, clips_session_id, created_at_ms, expires_at_ms)
+                 VALUES (?, '[]', '[]', 10, 'converged', 2, ?, ?, 1, 9999999999)",
+                duckdb::params![sid.to_string(), Uuid::new_v4().to_string(), Uuid::new_v4().to_string()],
+            ).unwrap();
+        }
+
+        let store = CoireStore::open(&path).unwrap(); // runs the migrations
+        let loaded = store.load_snapshot(sid).unwrap().expect("old row must still load");
+        assert_eq!(loaded.status, "converged");
+        assert_eq!(loaded.ritual_id, None);
+        assert_eq!(loaded.performance_id, None);
+        assert_eq!(loaded.deadline_ms, None);
+
+        // And the migrated table accepts new-shape writes.
+        let mut snap = loaded.clone();
+        snap.performance_id = Some(Uuid::new_v4());
+        store.save_snapshot(&snap).unwrap();
+        assert_eq!(
+            store.load_snapshot(sid).unwrap().unwrap().performance_id,
+            snap.performance_id
+        );
     }
 
     #[test]

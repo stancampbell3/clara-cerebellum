@@ -74,16 +74,13 @@ pub async fn start_deduce(
         let mut deductions = state.deductions.write().unwrap();
         deductions.insert(
             deduction_id,
-            DeductionEntry {
-                reason:            None,
-                status:            CycleStatus::Running,
-                result:            None,
-                cycles:            0,
-                interrupt:         interrupt.clone(),
-                created_at:        std::time::Instant::now(),
-                prolog_session_id: None,
-                clips_session_id:  None,
-            },
+            DeductionEntry::new_running(
+                interrupt.clone(),
+                ritual_id_req,
+                max_cycles,
+                deadline.map(|d| d.as_millis() as u64),
+                None,
+            ),
         );
     }
 
@@ -91,6 +88,7 @@ pub async fn start_deduce(
     let coire_store        = state.coire_store.clone();
     let active_sessions    = state.active_coire_sessions.clone();
     let ritual_registry_bg = state.ritual_registry.clone();
+    let state_perf         = state.clone();
 
     tokio::spawn(async move {
         // Channel: blocking thread sends session UUIDs as soon as they exist,
@@ -140,6 +138,11 @@ pub async fn start_deduce(
                                 "start_deduce: deduction {} joined ritual {} (performance {})",
                                 deduction_id, rid, handle.performance_id
                             );
+                            if let Some(entry) =
+                                state_perf.deductions.write().unwrap().get_mut(&deduction_id)
+                            {
+                                entry.performance_id = Some(handle.performance_id);
+                            }
                             c.with_ritual(handle)
                         }
                         Err(e) => {
@@ -216,11 +219,19 @@ pub async fn start_deduce(
                         (None, None, None)
                     }
                 };
+                entry.mark_completed();
                 (entry.status.to_string(), entry.cycles, tableau, prolog_src, clips_src)
             } else {
                 (CycleStatus::Error("entry missing".into()).to_string(), 0, None, None, None)
             }
         };
+
+        let final_performance_id = state_bg
+            .deductions
+            .read()
+            .unwrap()
+            .get(&deduction_id)
+            .and_then(|e| e.performance_id);
 
         // Save snapshot if requested and store is configured.
         if persist {
@@ -250,6 +261,9 @@ pub async fn start_deduce(
                         prolog_source_id:  final_prolog_src_id,
                         clips_source_id:   final_clips_src_id,
                         dot_artifact_id:   None,
+                        ritual_id:         ritual_id_req,
+                        performance_id:    final_performance_id,
+                        deadline_ms:       deadline.map(|d| d.as_millis() as u64),
                     };
                     if let Err(e) = store.save_snapshot(&snap) {
                         log::warn!("deduce {}: failed to save snapshot: {}", deduction_id, e);
@@ -320,9 +334,15 @@ pub async fn resume_deduce(
     // Inherit source IDs from the snapshot being resumed.
     let snap_prolog_src_id = snap.prolog_source_id;
     let snap_clips_src_id  = snap.clips_source_id;
-    // A resumed run is bounded by the server default/ceiling too; a request
-    // override for resume is a later slice (S2).
-    let resume_deadline = state.deadline_policy.resolve(None).unwrap_or(None);
+    // Request override, else the budget stored in the snapshot, else the server
+    // default; always clamped to the ceiling. The budget starts fresh here.
+    let resume_deadline = match state
+        .deadline_policy
+        .resolve_resume(req.deadline_ms, snap.deadline_ms)
+    {
+        Ok(d)    => d,
+        Err(msg) => return HttpResponse::BadRequest().json(json!({ "error": msg })),
+    };
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
     let interrupt_bg  = interrupt.clone();
@@ -331,16 +351,13 @@ pub async fn resume_deduce(
         let mut deductions = state.deductions.write().unwrap();
         deductions.insert(
             deduction_id,
-            DeductionEntry {
-                reason:            None,
-                status:            CycleStatus::Running,
-                result:            None,
-                cycles:            0,
-                interrupt:         interrupt.clone(),
-                created_at:        std::time::Instant::now(),
-                prolog_session_id: None,
-                clips_session_id:  None,
-            },
+            DeductionEntry::new_running(
+                interrupt.clone(),
+                None,
+                max_cycles,
+                resume_deadline.map(|d| d.as_millis() as u64),
+                Some(snap.deduction_id),
+            ),
         );
     }
 
@@ -418,6 +435,7 @@ pub async fn resume_deduce(
                     Ok(Ok(ref r)) => {
                         entry.cycles = r.cycles;
                         entry.status = r.status.clone();
+                        entry.reason = reason_for_status(&entry.status);
                         let t = r.tableau.clone();
                         entry.result = Some(r.clone());
                         t
@@ -425,6 +443,9 @@ pub async fn resume_deduce(
                     Ok(Err(ref e)) => {
                         if let clara_cycle::CycleError::MaxCyclesExceeded(n) = e {
                             entry.cycles = *n;
+                            entry.reason = Some("max_cycles".to_string());
+                        } else {
+                            entry.reason = Some("error".to_string());
                         }
                         entry.status = CycleStatus::Error(e.to_string());
                         None
@@ -432,9 +453,11 @@ pub async fn resume_deduce(
                     Err(ref join_err) => {
                         entry.status =
                             CycleStatus::Error(format!("spawn_blocking panicked: {}", join_err));
+                        entry.reason = Some("error".to_string());
                         None
                     }
                 };
+                entry.mark_completed();
                 (entry.status.to_string(), entry.cycles, tableau)
             } else {
                 (CycleStatus::Error("entry missing".into()).to_string(), 0, None)
@@ -467,6 +490,9 @@ pub async fn resume_deduce(
                     prolog_source_id:  snap_prolog_src_id,
                     clips_source_id:   snap_clips_src_id,
                     dot_artifact_id:   None,
+                    ritual_id:         None,
+                    performance_id:    None,
+                    deadline_ms:       resume_deadline.map(|d| d.as_millis() as u64),
                 };
                 if let Err(e) = store.save_snapshot(&new_snap) {
                     log::warn!("resume {}: failed to save snapshot: {}", deduction_id, e);
@@ -573,12 +599,30 @@ pub async fn poll_deduce(
                 .as_ref()
                 .map(|r| serde_json::to_value(r).unwrap_or(json!(null)));
 
+            // DELETE only sets the interrupt flag; report it immediately even
+            // though the task has not finalized the entry yet.
+            let status = entry.effective_status();
+            let reason = if status == CycleStatus::Interrupted
+                && matches!(entry.status, CycleStatus::Running)
+            {
+                Some("interrupted".to_string())
+            } else {
+                entry.reason.clone()
+            };
+
             HttpResponse::Ok().json(DeduceStatusResponse {
-                deduction_id: id,
-                status:       entry.status.to_string(),
-                result:       result_json,
-                cycles:       entry.cycles,
-                reason:       entry.reason.clone(),
+                deduction_id:    id,
+                status:          status.to_string(),
+                result:          result_json,
+                cycles:          entry.cycles,
+                reason,
+                ritual_id:       entry.ritual_id,
+                performance_id:  entry.performance_id,
+                max_cycles:      Some(entry.max_cycles),
+                deadline_ms:     entry.deadline_ms,
+                started_at_ms:   Some(entry.started_at_ms),
+                completed_at_ms: entry.completed_at_ms,
+                resumed_from:    entry.resumed_from,
             })
         }
     }
@@ -598,11 +642,10 @@ pub async fn interrupt_deduce(
     match deductions.get_mut(&id) {
         None => HttpResponse::NotFound().json(json!({ "error": "deduction not found" })),
         Some(entry) => {
+            // Only signal. `status` stays `Running` until the task, the single
+            // writer, finalizes it; polls report `interrupted` immediately via
+            // `DeductionEntry::effective_status`.
             entry.interrupt.store(true, Ordering::SeqCst);
-            // Optimistically mark interrupted; the background task will confirm.
-            if matches!(entry.status, CycleStatus::Running) {
-                entry.status = CycleStatus::Interrupted;
-            }
             HttpResponse::Ok().json(DeduceInterruptResponse {
                 deduction_id: id,
                 status:       "interrupted".to_string(),
@@ -763,6 +806,9 @@ pub async fn list_deductions(
                     "cycles_run":    s.cycles_run,
                     "initial_goal":  s.initial_goal,
                     "created_at_ms": s.created_at_ms,
+                    "ritual_id":      s.ritual_id,
+                    "performance_id": s.performance_id,
+                    "deadline_ms":    s.deadline_ms,
                 }))
                 .collect();
             HttpResponse::Ok().json(json!({ "deductions": items }))

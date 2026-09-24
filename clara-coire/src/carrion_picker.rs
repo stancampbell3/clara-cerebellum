@@ -444,6 +444,9 @@ mod tests {
             prolog_source_id:  None,
             clips_source_id:   None,
             dot_artifact_id:   None,
+            ritual_id:         None,
+            performance_id:    None,
+            deadline_ms:       None,
         };
         store.save_snapshot(&snap).unwrap();
 
@@ -522,6 +525,9 @@ mod tests {
             prolog_source_id:  None,
             clips_source_id:   None,
             dot_artifact_id:   None,
+            ritual_id:         None,
+            performance_id:    None,
+            deadline_ms:       None,
         };
         store.save_snapshot(&snap).unwrap();
 

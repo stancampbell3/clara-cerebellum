@@ -206,6 +206,12 @@ pub struct DeduceResumeRequest {
     /// in the snapshot.
     #[serde(default)]
     pub max_cycles: Option<u32>,
+    /// Override the wall-clock budget (ms) for this run. Defaults to the
+    /// budget stored in the snapshot, else the server default; the server
+    /// ceiling clamps any value. The budget starts fresh at resume, it is not
+    /// the remainder of the original. Must be greater than 0.
+    #[serde(default)]
+    pub deadline_ms: Option<u64>,
     /// When `true`, save a new snapshot of this resumed run at completion,
     /// enabling further chained resumes.
     #[serde(default)]
