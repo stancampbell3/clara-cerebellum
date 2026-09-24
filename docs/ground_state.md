@@ -1,7 +1,7 @@
 # Ground state: a known baseline for Edgequake and the stack around it
 
-*Status: tooling built and tested 2026-09-24; not yet run against the live workspace (Stan's ingest was in progress). Nothing here has been
-deployed.*
+*Status: built, tested and run live 2026-09-24. Baseline v1 (13 design documents, 67 MB) is captured, curated and verified; a full reset-and-restore cycle was run on
+`assistant.general` and `verify` passed 14/14. The G1 workspace-slug change is committed but NOT yet deployed (clara-api rebuild pending).*
 
 ## Why
 
@@ -23,9 +23,14 @@ the Kafka shape, all in one directory that can be captured, restored and verifie
 5. **Edgequake's delete leaves data behind.** After the manual drop, `assistant.general`'s vector table still held **12,281 rows for 230 deleted
    documents** (and ~495 key/value rows). The graph was clean (0 orphans). Retrieval can therefore cite text from documents that are gone.
    Detect with `ground_state_pg.py orphans`; clear with `clean-orphans`.
-6. **Postgres gotcha:** the `edgequake` schema (the DB user's own, first in the search path) holds compatibility *views* with fewer columns
+6. **Residue is wider than vectors.** Besides orphaned vector and kv rows, Edgequake leaves (a) **stale content-hash dedup entries**
+   (`doc:hash:<workspace>:<sha>` pointing at deleted documents, which can make re-ingested identical content look like a duplicate of a
+   deleted one) and (b) **entity vectors with no document id and no graph node**. Its bulk delete is also **asynchronous**: it returns while documents
+   are still listed, so a cleanup right after it finds nothing. `reset` now waits until the workspace is really empty, then cleans; `orphans` reports all
+   four kinds. A baseline captured before these were detected carried 113 stale hash entries, which is why `verify` checks for them.
+7. **Postgres gotcha:** the `edgequake` schema (the DB user's own, first in the search path) holds compatibility *views* with fewer columns
    (documents, chunks, entities, relationships, tasks). Unqualified table names read the view. The snapshot tool schema-qualifies everything as `public.`.
-7. **DuckDB allows one process per file.** Anything that opens `lildaemon.duc` needs the lildaemon service stopped (the tool does it and restarts it).
+8. **DuckDB allows one process per file.** Anything that opens `lildaemon.duc` needs the lildaemon service stopped (the tool does it and restarts it).
    Do not run it while an ingest that goes through lildaemon is in flight.
 
 ## What a baseline is
@@ -53,7 +58,11 @@ the Postgres layer exists: `restore` brings the workspace back byte for byte. Us
     scripts/ground_state.sh restore --from DIR [--components pg,bookkeeping,kafka,duckdb] [--dry-run]
     scripts/ground_state.sh seed    --from DIR
     scripts/ground_state.sh verify  --baseline DIR
+    scripts/ground_state.sh curate  --baseline DIR --keep-users a,b --empty table1,table2
     scripts/ground_state.sh queue   status | expire-stuck --older-than 6h | archive --to DIR | export --to DIR | reset-coupled --to DIR | promote ...
+
+`curate` makes a *captured* baseline a clean one (a capture records whatever accumulated: 65 users, 43 draft/terminated ritual configs, topics that say
+"researched" for documents that are not there): it keeps only the named users and empties the named tables in the baseline's DuckDB layer and bookkeeping files.
 
 The pieces: `ground_state.py` (host orchestrator), `ground_state_pg.py` (Postgres), `ground_state_kafka.py` (Kafka), and, in lildaemon,
 `goat/app/assistant/ground_state.py` (Edgequake content, bookkeeping, DuckDB) and `maintenance.py` (research queue). The container-side modules run

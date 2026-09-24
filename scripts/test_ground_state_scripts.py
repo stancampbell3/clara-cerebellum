@@ -148,3 +148,10 @@ def test_export_refuses_while_documents_are_still_ingesting(tmp_path):
 
     with pytest.raises(gp.PgError, match="still ingesting"):
         gp.export(FakePg(), WS, tmp_path)
+
+
+def test_stale_hash_index_and_entity_vector_predicates_are_scoped_to_the_workspace():
+    h = gp._stale_hash_index_sql(WS)
+    assert f"doc:hash:{WS}:%" in h and "NOT EXISTS" in h and "public.documents" in h
+    e = gp._stale_entity_vectors_sql(WS)
+    assert "v.document_id IS NULL" in e and f"{WS}::" in e and "NOT EXISTS" in e and gp.GRAPH in e

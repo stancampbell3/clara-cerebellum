@@ -165,6 +165,24 @@ def busy_documents(pg: Pg, workspace_id: str) -> List[str]:
     return [r for r in rows if not is_terminal_status(r.rsplit("[", 1)[-1].rstrip("]"))]
 
 
+def _stale_hash_index_sql(ws: str) -> str:
+    """kv rows of the content-hash dedup index (`doc:hash:<ws>:<sha>` -> "<document id>") whose document no longer exists. Left behind,
+    they make Edgequake treat re-ingested identical content as a duplicate of a deleted document."""
+    return (
+        f"k.key LIKE {q('doc:hash:' + ws + ':%')} AND NOT EXISTS "
+        f"(SELECT 1 FROM public.documents d WHERE d.id::text = trim(both '\"' from k.value::text))"
+    )
+
+
+def _stale_entity_vectors_sql(ws: str) -> str:
+    """Entity vectors carry no document id, so the document-based check cannot see them: they are stale when the workspace's graph
+    holds no node for the entity (node ids are `<workspace>::<entity name>`)."""
+    return (
+        f"v.document_id IS NULL AND v.id LIKE 'entity:%' AND NOT EXISTS "
+        f"(SELECT 1 FROM {GRAPH}.\"Node\" n WHERE n.eq_node_id = {q(ws + '::')} || substr(v.id, 8))"
+    )
+
+
 def orphans(pg: Pg, workspace_id: str) -> Dict:
     """Rows that belong to documents which no longer exist in this workspace: leftovers of an earlier delete.
 
@@ -193,13 +211,19 @@ def orphans(pg: Pg, workspace_id: str) -> Dict:
         f"{AGE_PRE} select count(*) from {GRAPH}.\"Node\" n where {_graph_filter(ws)} and not exists "
         f"(select 1 from public.documents d where d.id::text = n.properties::jsonb->>'source_document_id')"
     ).splitlines()[-1]
+    hash_rows = int(pg.scalar(f"select count(*) from {pub(KV)} k where {_stale_hash_index_sql(ws)}"))
+    entity_vecs = int(
+        pg.scalar(f"{AGE_PRE} select count(*) from {vt} v where {_stale_entity_vectors_sql(ws)}").splitlines()[-1]
+    )
     return {
         "workspace_id": ws,
         "orphan_document_ids": len(ids),
         "vector_rows": vec_rows,
         "kv_rows": kv_rows,
+        "stale_hash_index_rows": hash_rows,
+        "entity_vectors_without_node": entity_vecs,
         "graph_nodes_without_document": int(graph),
-        "clean": vec_rows == 0 and kv_rows == 0 and int(graph) == 0,
+        "clean": vec_rows == 0 and kv_rows == 0 and hash_rows == 0 and entity_vecs == 0 and int(graph) == 0,
         "_ids": ids,
     }
 
@@ -210,12 +234,15 @@ def clean_orphans(pg: Pg, workspace_id: str, dry_run: bool = False) -> Dict:
     report = orphans(pg, ws)
     ids = report.pop("_ids")
     report["dry_run"] = dry_run
-    if dry_run or not ids:
+    if dry_run or report["clean"]:
         return report
     arr = "ARRAY[" + ",".join(q(i) for i in ids) + "]::text[]"
     vt = pub(vectors_table(ws))
     pg.run_script(
         "\\set ON_ERROR_STOP on\nBEGIN;\n"
+        f"{AGE_PRE}\n"
+        f"DELETE FROM {pub(KV)} k WHERE {_stale_hash_index_sql(ws)};\n"
+        f"DELETE FROM {vt} v WHERE {_stale_entity_vectors_sql(ws)};\n"
         f"DELETE FROM {vt} WHERE document_id = ANY({arr});\n"
         f"DELETE FROM {pub(KV)} k WHERE (k.key LIKE {q('wsdoc:' + ws + ':%')} AND split_part(k.key, ':', 3) = ANY({arr})) "
         f"OR EXISTS (SELECT 1 FROM unnest({arr}) AS d(id) WHERE k.key LIKE d.id || '-%' OR k.key LIKE 'staging:' || d.id || '-%');\n"

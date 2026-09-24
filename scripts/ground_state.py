@@ -18,6 +18,7 @@ A baseline is ONE directory holding every layer, so that "the state we test agai
     ground_state.py restore --from DIR [--components pg,bookkeeping,kafka,duckdb] [--dry-run]
     ground_state.py seed    --from DIR
     ground_state.py verify  --baseline DIR
+    ground_state.py curate  --baseline DIR --keep-users a,b --empty table1,table2
     ground_state.py queue   <status|expire-stuck|archive|export|reset-coupled|promote ...>
 
 Everything destructive archives first (`--no-archive` must be explicit), names the workspace by slug (default assistant.general), and
@@ -160,6 +161,23 @@ def workspace_id_of(archive: Path) -> str:
 # ── commands ────────────────────────────────────────────────────────────────
 
 
+def terminate_dis_rituals() -> List[str]:
+    """Terminate every Ritual Dis still lists as active (DELETE /ritual/{id}). Test debris accumulates there: every lildaemon start
+    leaves its assistant standing Ritual behind, and Dis never reaps an active Ritual on its own."""
+    import urllib.request
+
+    ids = gk.live_ritual_ids(DIS_URL)
+    done = []
+    for rid in ids:
+        req = urllib.request.Request(f"{DIS_URL.rstrip('/')}/ritual/{rid}", method="DELETE")
+        try:
+            urllib.request.urlopen(req, timeout=15).read()
+            done.append(rid)
+        except Exception as exc:  # noqa: BLE001
+            print(f"warning: could not terminate ritual {rid}: {exc}", file=sys.stderr)
+    return done
+
+
 def cmd_status(args) -> int:
     out: Dict[str, Any] = {"kafka": gk.status(gk.Kafka(), DIS_URL)}
     ws = args.workspace_id
@@ -235,6 +253,8 @@ def cmd_reset(args) -> int:
             plan["edgequake"] = gs(["reset", "--dry-run"])["result"]
         if "kafka" in comps:
             plan["kafka"] = gk.reset(gk.Kafka(), DIS_URL, args.all_kafka, dry_run=True)
+        if "dis" in comps:
+            plan["dis"] = {"would_terminate_rituals": len(gk.live_ritual_ids(DIS_URL))}
         print(json.dumps(plan, indent=2, default=str))
         return 0
     _confirm(f"This will empty Edgequake workspace '{slug_from_env()}' (archived first unless --no-archive), clear the assistant's "
@@ -250,11 +270,15 @@ def cmd_reset(args) -> int:
         ws = ws or plan["edgequake"].get("workspace_id")
         if ws:
             plan["orphans_cleaned"] = gp.clean_orphans(pg_handle(), ws)
+    if "dis" in comps:
+        # Terminate first, so the Kafka step below sees them as not live. lildaemon caches its standing Ritual in memory, so it is
+        # restarted afterwards to create a fresh one.
+        plan["dis"] = {"terminated_rituals": len(terminate_dis_rituals())}
+        if container_running(LILDAEMON_CONTAINER):
+            _run(["docker", "restart", LILDAEMON_CONTAINER], stdout=subprocess.DEVNULL)
+            plan["dis"]["lildaemon"] = "restarted"
     if "kafka" in comps:
         plan["kafka"] = gk.reset(gk.Kafka(), DIS_URL, args.all_kafka, dry_run=False)
-    if "dis" in comps:
-        _run(["docker", "restart", CLARA_API_CONTAINER], stdout=subprocess.DEVNULL)
-        plan["dis"] = "clara-api restarted"
     print(json.dumps(plan, indent=2, default=str))
     return 0
 
@@ -316,6 +340,12 @@ def cmd_verify(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_curate(args) -> int:
+    r = gs(["curate", "--baseline", to_container(Path(args.baseline)), "--keep-users", args.keep_users, "--empty", args.empty])
+    print(json.dumps(r["result"], indent=2, default=str))
+    return r["returncode"]
+
+
 def cmd_queue(args) -> int:
     r = maintenance(args.rest)
     print(json.dumps(r["result"], indent=2, default=str))
@@ -347,10 +377,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     sd.add_argument("--from", dest="src", required=True)
     v = sub.add_parser("verify")
     v.add_argument("--baseline", required=True)
+    cu = sub.add_parser("curate", help="make a captured baseline clean: keep only these users, empty these tables")
+    cu.add_argument("--baseline", required=True)
+    cu.add_argument("--keep-users", default="")
+    cu.add_argument("--empty", default="")
     q = sub.add_parser("queue")
     q.add_argument("rest", nargs=argparse.REMAINDER)
     args = p.parse_args(argv)
-    fn = {"status": cmd_status, "capture": cmd_capture, "reset": cmd_reset, "restore": cmd_restore, "seed": cmd_seed, "verify": cmd_verify, "queue": cmd_queue}[args.cmd]
+    fn = {"status": cmd_status, "capture": cmd_capture, "reset": cmd_reset, "restore": cmd_restore, "seed": cmd_seed, "verify": cmd_verify, "queue": cmd_queue, "curate": cmd_curate}[args.cmd]
     try:
         return fn(args)
     except (gp.PgError, gk.KafkaError) as exc:
