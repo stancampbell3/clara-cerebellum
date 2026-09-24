@@ -13,7 +13,7 @@ Paths: `cc/` = `clara-cerebellum/`, `ld/` = `lildaemon/goat/`.
 | **Dis Ritual** | `Active`, `Terminated` (`cc/clara-ritual/src/ritual.rs:6-9`) | Write-through to the CoireStore (DuckDB) `rituals` table, incl. participants map (`cc/clara-ritual/src/registry.rs`) | Yes if a store is configured; `restore_from_store` reloads on boot and re-ensures Kafka topics for active rituals (`registry.rs:252`). Memory-only without a store |
 | **Performance** | **No state machine.** A `performance_id` is minted per join, idempotent per participant key (`registry.rs:111-139`); anonymous joins aren't recorded | Keyed joins only | Ids stable across boot only for keyed joins |
 | **Deduction** (nearest thing to a "run") | `Running`, `Converged`, `Interrupted`, `Error` (`cc/clara-cycle/src/result.rs:22`) | In-memory `AppState.deductions`; durable only with `persist:true` (a `DeductionSnapshot`) | No, unless `persist:true` and a store is configured (silently ignored otherwise) |
-| **RitualConfig** (lildaemon) | `draft` -> `active` -> `terminated`; **no way back to draft** (`ld/app/ritual_configs/store.py`) | DuckDB `ritual_configs` table | Definition yes; runtime no (see §3) |
+| **RitualConfig** (lildaemon) | `draft` -> `active` -> `terminated`; **no way back to draft** (`ld/app/ritual_configs/store.py`) | DuckDB `ritual_configs` table | Definition yes; runtime no, and restart also kills the Dis ritual (§3) |
 | **Participant / seat** | Joined imperatively; `RitualManager` holds `(ritual_id, node_id)` participants in a plain dict (`ld/models/RitualManager.py`) | Memory | No |
 
 ## 2. Reaping and TTLs
@@ -28,10 +28,35 @@ Paths: `cc/` = `clara-cerebellum/`, `ld/` = `lildaemon/goat/`.
 ## 3. Definition durability vs runtime durability
 
 A RitualConfig's *definition* is durable, but its *runtime* is not. On lildaemon startup, every config still
-`active` is force-terminated because its in-memory participants are gone; shutdown does the same
-(`ld/app/main.py:374-393`, `:566-584`). Reactivation is a manual step, and the state machine has no
-`terminated -> draft` edge. For a long-lived analyst Ritual (the goal of A) this is the main gap: a restart
-silently ends the partner.
+`active` is force-terminated, and shutdown does the same (`ld/app/main.py:374-393`, `:566-584`), both through
+`terminate_config` (`ld/app/ritual_configs/lifecycle.py:28-70`). That call **also deletes the Dis ritual**
+(`delete_ritual` -> `registry.terminate()`, `cc/clara-ritual/src/registry.rs:179-194`), and a terminated Dis ritual
+**rejects joins** (`registry.rs:123-128`), so the old `ritual_id` can never be reused. `terminated` has no exit: the
+DB CHECK allows only `draft/active/terminated` (`ld/app/ritual_configs/store.py:32-33`) and activation is allowed only
+from `draft` (`ld/app/ritual_configs/router.py:302-306`). For a long-lived analyst Ritual (the goal of A) a restart
+therefore silently ends the partner, and its `ritual_id` with it.
+
+What is *already* durable, if we simply stop terminating (verified):
+- **Dis side.** A keyed `join` is idempotent and reuses the same `performance_id` (`registry.rs:115-160`);
+  `restore_from_store` reloads rituals and the participants map and re-ensures topics (`registry.rs:245-310`, called at
+  `cc/clara-api/src/server.rs:142`; test `keyed_join_performance_id_survives_restart`, `registry.rs:529`).
+- **Python participants.** Consumer group `ritual-{ritual_id}-{node_id}`, `auto.offset.reset=earliest`, auto-commit
+  (`ld/models/RitualParticipant.py:182-184`): a re-join with the same ids resumes from the last committed offset, so
+  delivery is at-least-once and messages published while down are picked up.
+- **Everything needed to rebuild a config's runtime is in its row:** `graph_layout` (nodes, `evaluatorName`,
+  local/remote split, participant keys `self_url#node_id`, entry node), the `kafka_bootstrap`/`eval_timeout_s`
+  columns, and the retained `ritual_id`.
+
+What is *not* durable or not reusable today:
+- **Activation is not idempotent**: 409 unless `draft`, a new Dis ritual per call, and `RitualManager.join` raises on a
+  duplicate `(ritual_id, node_id)` key (`ld/models/RitualManager.py:58`). Only the entry node's source ids are
+  persisted; per-node ids are not.
+- **Remote peers**: re-joining a peer that is still up returns 409 "already joined"
+  (`ld/app/ritual/router.py:113`); a peer that restarted has lost its state. There is no `leave_remote`.
+- **Hermes seats** start lazily on first evaluate, are bound to one Ritual, and are reaped if their lease lapses
+  (`lildaemon/seat_launcher/seats.py:347-349`); session continuity is keyed by ritual id
+  (`lildaemon/seat_launcher/continuity.py`). _(Not traced end to end; to verify.)_
+- **In-flight deductions/Performances and outstanding offers** live in memory and are lost (see §1, §4).
 
 ## 4. Bounds on a run
 
@@ -100,10 +125,38 @@ Each is a proposal, not a decision.
 `max_cycles` and patience. "One-shot" = small cycles, short deadline; "long, bounded" = huge cycles, long deadline.
 Same fields, no special cases, and a deduction that outlives its deadline becomes `expired` rather than eternal.
 
-**P2. Separate definition durability from runtime durability.** Keep RitualConfig definitions durable (already true).
-Add a runtime story: on boot, *re-activate* configs marked to persist instead of force-terminating them (or add a
-`terminated -> draft` edge and let an operator/worker re-activate). Open: which configs opt in, and whether Hermes
-seats (which hold leases) re-attach or are recreated.
+**P2. Persistent RitualConfigs survive a restart (decided 2026-09-24).** Separate definition durability from runtime
+durability by re-attaching, not re-creating. Two decisions from Stan: an **opt-in per-config flag, default off**, and
+**eager background resume on boot plus a manual operator endpoint**.
+
+- **`persist` flag.** A new boolean column (default false) added through `_MIGRATIONS` (`store.py:51-55`), exposed on
+  the config model and API. It follows the per-request `persist:true` precedent on `/deduce`
+  (`ld/app/assistant/runtime.py:785-794`). Non-persistent configs keep today's terminate-on-restart behavior unchanged.
+- **Shutdown and boot converge.** For a persistent config, shutdown **does not** delete the Dis ritual and leaves the
+  row `active`; a crash leaves the same state. Graceful restart and crash then share one recovery path. Shutdown only
+  stops local consumers.
+- **`runtime_state` in memory, `status` unchanged.** Add `resuming | live | degraded`, surfaced by GET and enforced by
+  Run (refuse with 409/503 unless `live`). This keeps the DB CHECK constraint and needs no migration on `status`.
+- **`resume_config(id)`** (new, in `lifecycle.py`, distinct from activation). Requires `status=active` and `persist`;
+  **reuses the stored `ritual_id`** (required for Dis participant ids, Kafka offsets and Hermes session continuity).
+  Per local node: re-`join_ritual` (idempotent, same key and `performance_id`), re-`spawn_evaluator`, `manager.join`.
+  Per remote node: `join_ritual` + `join_remote`, treating **409 already-joined as attached**. Re-register node sources
+  (content-addressed, so idempotent; do not rely on sources surviving a clara-api restart, which is unverified). If Dis
+  reports the ritual terminated or missing, fall back to today's `terminate_config` and mark the config `terminated`.
+- **Eager background resume.** On boot, spawn a background task (never block startup: today the reconcile loop is
+  awaited inline, `main.py:380-392`) that resumes each persistent active config with per-config try/except and
+  bounded retry with backoff, since remote peers have no compose ordering
+  (`cc/docker/docker-compose.yml:288-290` only orders `lildaemon` after `clara-api`). When retries are exhausted it
+  falls back to `terminate_config`. Non-persistent active configs are terminated exactly as today.
+- **Manual endpoint.** `POST /ritual-config/{id}/resume` runs the same `resume_config` for operators.
+- **What resume does not preserve.** In-flight deductions/Performances (that is P1's `persist:true` snapshot and
+  `/deduce/resume`); outstanding offers are redelivered at-least-once; a Hermes seat is recreated lazily on the next
+  evaluate, and its continuity holds only because the ritual id is preserved.
+- **Tests needed.** `tests/test_ritual_config_lifecycle.py` covers `terminate_config` only and nothing exercises the
+  `main.py` startup loop. Resume needs: idempotent re-join, 409-as-attached, terminated-Dis fallback, peer-down retry,
+  and a startup-loop test.
+- **Deliberately left out:** a `terminated -> draft` reset for non-persistent configs. It remains a separate small
+  question; resume avoids needing it.
 
 **P3. Rituals of Rituals by reference.** Make `ritual-group` functional: a group node references a child
 RitualConfig, activation activates the child, and the parent sees it as one participant with its own edge
@@ -162,7 +215,9 @@ scope until P1-P5 settle.
 
 1. ~~P4: confirm Tier 1 (flat fragments + lockfile + collision check) as the first step, with Tier 2 deferred?~~
    **Confirmed by Stan 2026-09-24:** Tier 1 first; Tier 2 deferred.
-2. P2: which Ritual configs should survive a restart, and is re-activation automatic or operator-driven?
+2. ~~P2: which Ritual configs should survive a restart, and is re-activation automatic or operator-driven?~~
+   **Decided by Stan 2026-09-24:** per-config `persist` flag (default off); eager background resume on boot plus a
+   manual resume endpoint.
 3. P1: is `expired` a terminal state distinct from `interrupted`, and who owns the deadline (caller, config default,
    or server ceiling)?
 4. P3: should child Ritual lifecycle be tied to the parent's?
