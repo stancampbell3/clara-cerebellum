@@ -15,6 +15,18 @@ use crate::models::{
     DeduceStartResponse, DeduceStatusResponse,
 };
 
+/// Why a finished run did not converge, as a stable machine-readable string.
+/// `None` for `Running` and `Converged`. Max-cycles and other errors arrive as
+/// `Err` from the controller and are tagged at the call site.
+fn reason_for_status(status: &CycleStatus) -> Option<String> {
+    match status {
+        CycleStatus::Interrupted => Some("interrupted".to_string()),
+        CycleStatus::Expired     => Some("deadline".to_string()),
+        CycleStatus::Error(_)    => Some("error".to_string()),
+        CycleStatus::Running | CycleStatus::Converged => None,
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -46,6 +58,10 @@ pub async fn start_deduce(
     let req_clips_src_id  = req.clips_source_id;
     let ritual_id_req     = req.ritual_id;
     let patience_req      = req.evaluator_patience_cycles;
+    let deadline = match state.deadline_policy.resolve(req.deadline_ms) {
+        Ok(d)    => d,
+        Err(msg) => return HttpResponse::BadRequest().json(json!({ "error": msg })),
+    };
     let self_node_id_req  = req.self_node_id.clone();
     let initial_offering_req = req.initial_offering.clone();
 
@@ -59,6 +75,7 @@ pub async fn start_deduce(
         deductions.insert(
             deduction_id,
             DeductionEntry {
+                reason:            None,
                 status:            CycleStatus::Running,
                 result:            None,
                 cycles:            0,
@@ -110,7 +127,7 @@ pub async fn start_deduce(
                 let c = CycleController::new(session, max_cycles, initial_goal_bg, interrupt_bg)
                     .with_deduction_id(deduction_id);
                 let c = if let Some(store) = store_bg { c.with_store(store) } else { c };
-                let c = c.with_trace(trace);
+                let c = c.with_trace(trace).with_deadline(deadline);
                 let c = if let Some(p) = patience_req { c.with_evaluator_patience(p) } else { c };
                 let c = c.with_self_node_id(self_node_id_req)
                          .with_initial_offering(initial_offering_req);
@@ -177,6 +194,7 @@ pub async fn start_deduce(
                         let (deduction_result, p_src, c_src) = triple;
                         entry.cycles = deduction_result.cycles;
                         entry.status = deduction_result.status.clone();
+                        entry.reason = reason_for_status(&entry.status);
                         let t = deduction_result.tableau.clone();
                         entry.result = Some(deduction_result.clone());
                         (t, *p_src, *c_src)
@@ -184,6 +202,9 @@ pub async fn start_deduce(
                     Ok(Err(ref e)) => {
                         if let clara_cycle::CycleError::MaxCyclesExceeded(n) = e {
                             entry.cycles = *n;
+                            entry.reason = Some("max_cycles".to_string());
+                        } else {
+                            entry.reason = Some("error".to_string());
                         }
                         entry.status = CycleStatus::Error(e.to_string());
                         (None, None, None)
@@ -191,6 +212,7 @@ pub async fn start_deduce(
                     Err(ref join_err) => {
                         entry.status =
                             CycleStatus::Error(format!("spawn_blocking panicked: {}", join_err));
+                        entry.reason = Some("error".to_string());
                         (None, None, None)
                     }
                 };
@@ -298,6 +320,9 @@ pub async fn resume_deduce(
     // Inherit source IDs from the snapshot being resumed.
     let snap_prolog_src_id = snap.prolog_source_id;
     let snap_clips_src_id  = snap.clips_source_id;
+    // A resumed run is bounded by the server default/ceiling too; a request
+    // override for resume is a later slice (S2).
+    let resume_deadline = state.deadline_policy.resolve(None).unwrap_or(None);
     let deduction_id = Uuid::new_v4();
     let interrupt     = Arc::new(AtomicBool::new(false));
     let interrupt_bg  = interrupt.clone();
@@ -307,6 +332,7 @@ pub async fn resume_deduce(
         deductions.insert(
             deduction_id,
             DeductionEntry {
+                reason:            None,
                 status:            CycleStatus::Running,
                 result:            None,
                 cycles:            0,
@@ -354,7 +380,8 @@ pub async fn resume_deduce(
             let mut controller = CycleController::new(session, max_cycles, None, interrupt_bg)
                 .with_deduction_id(deduction_id)
                 .with_store(store_bg.clone())
-                .with_trace(trace);
+                .with_trace(trace)
+                .with_deadline(resume_deadline);
             controller.restore_from(&store_bg, prev_prolog_id, prev_clips_id, &prev_tableau)?;
             controller.run()
         });
@@ -551,6 +578,7 @@ pub async fn poll_deduce(
                 status:       entry.status.to_string(),
                 result:       result_json,
                 cycles:       entry.cycles,
+                reason:       entry.reason.clone(),
             })
         }
     }

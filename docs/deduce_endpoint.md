@@ -218,6 +218,7 @@ Returns `202 Accepted` immediately. The cycle executes in the background.
 | `clips_source_id` | `uuid \| null` | `null` | Pre-registered CLIPS source from `POST /source`. When set, `clips_file` and `clips_constructs` are ignored. |
 | `initial_goal` | `string \| null` | `null` | Prolog goal executed on cycle 0 only. Omit or set to `null` to run a no-op (`true`). |
 | `max_cycles` | `uint \| null` | `100` | Cycle budget. Exhausting it without convergence results in `error` status. |
+| `deadline_ms` | `uint \| null` | server default (3600000) | Wall-clock budget for the run in milliseconds, counted from the start of the cycle loop. On expiry the run ends `expired` (`reason: "deadline"`) at the next cycle boundary with its partial result; with `persist: true` it can be continued via `POST /deduce/resume`. The server ceiling (`deduction_max_deadline_seconds`, default 14400 s) clamps any value; `0` is rejected with `400`. **Cooperative**: a call blocked inside a Prolog/CLIPS FFI call overruns until it returns. |
 | `persist` | `bool` | `false` | When `true` and persistence is configured, save a full snapshot on completion for later resumption via `POST /deduce/resume`. |
 | `trace` | `bool` | `false` | When `true`, record a Dagda tableau snapshot after each relay phase. With a store configured, snapshots are written to `tableau_changes` and queryable via `GET /deduce/{id}/trace`. Without a store, the trace is returned inline in `DeductionResult.trace`. |
 | `context` | `object[]` | `[]` | Optional conversational context (external message history). Each element is a free-form JSON object — typically `{"role": "...", "content": "..."}`. Made available to Prolog rules via `current_context/1` and forwarded to LLM evaluate calls that accept a `context` field. |
@@ -350,7 +351,10 @@ underlying `CycleError` variant:
 | `running` | No | No | Background task is active. |
 | `converged` | Yes | Yes | Both engines reached stable state — happy path. |
 | `interrupted` | Yes | Yes (once task exits) | Cancelled via `DELETE /deduce/{id}`. |
+| `expired` | Yes | Yes | The wall-clock `deadline_ms` elapsed before convergence. Partial result returned; resumable when persisted. Precedence at a cycle boundary: converged > interrupted > expired. |
 | `error: <msg>` | Yes | No | Unrecoverable failure or `max_cycles` exceeded. |
+
+Non-converged runs also carry a machine-readable `reason` on `GET /deduce/{id}`: `interrupted`, `deadline`, `max_cycles` or `error` (absent while running and on convergence). The `status` strings above are unchanged.
 
 **Response** `404 Not Found` — unknown `deduction_id`.
 
@@ -418,6 +422,7 @@ Returns an empty `trace: []` if the run completed without `trace: true`.
 | `"clips_to_prolog"` | After each CLIPS → Prolog relay |
 | `"final_converged"` | At convergence |
 | `"final_interrupted"` | When interrupted |
+| `"final_expired"` | When the wall-clock deadline elapses |
 | `"final_max_cycles"` | When the cycle budget is exhausted |
 
 ---

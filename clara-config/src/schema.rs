@@ -119,7 +119,7 @@ pub struct PersistenceConfig {
     /// CoireStore-backed entries above (only written when a request sets
     /// `persist: true`), this map grows unconditionally for every deduction,
     /// forever, with no prior eviction at all. Only terminal-status entries
-    /// (Converged/Interrupted/Error, never Running) older than this TTL are
+    /// (Converged/Interrupted/Expired/Error, never Running) older than this TTL are
     /// evicted, by a small dedicated sweep task in clara-api (not the
     /// CarrionPicker above, which is scoped to CoireStore/DuckDB and
     /// shouldn't depend on clara-api's own AppState type). Default: 3600
@@ -135,11 +135,25 @@ pub struct PersistenceConfig {
     /// `deduction_entry_ttl_seconds` is 0.
     #[serde(default = "default_deduction_entry_sweep_interval_seconds")]
     pub deduction_entry_sweep_interval_seconds: u64,
+    /// Wall-clock budget applied to a `/deduce` that does not send its own
+    /// `deadline_ms`, in seconds. On expiry the run ends `expired` at the next
+    /// cycle boundary (cooperative: a call blocked in Prolog/CLIPS FFI
+    /// overruns until it returns). Default: 3600 (1 hour). 0 = no default
+    /// deadline. Sits here beside the other deduction-lifetime knobs.
+    #[serde(default = "default_deduction_default_deadline_seconds")]
+    pub deduction_default_deadline_seconds: u64,
+    /// Ceiling that clamps every deadline, whether from the request or the
+    /// default above, so no run is eternal. Default: 14400 (4 hours). 0 = no
+    /// ceiling.
+    #[serde(default = "default_deduction_max_deadline_seconds")]
+    pub deduction_max_deadline_seconds: u64,
 }
 
 fn default_evaluate_cache_ttl_seconds() -> u64 { 14400 }
 fn default_deduction_entry_ttl_seconds() -> u64 { 3600 }
 fn default_deduction_entry_sweep_interval_seconds() -> u64 { 300 }
+fn default_deduction_default_deadline_seconds() -> u64 { 3600 }
+fn default_deduction_max_deadline_seconds() -> u64 { 14400 }
 
 /// Observability configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub struct InMemoryTraceEntry {
     pub cycle_num:      u32,
     /// Lifecycle phase: `"initial"`, `"prolog_to_clips"`, `"clips_to_prolog"`,
-    /// `"final_converged"`, `"final_interrupted"`, or `"final_max_cycles"`.
+    /// `"final_converged"`, `"final_interrupted"`, `"final_expired"`, or `"final_max_cycles"`.
     pub phase:          String,
     pub recorded_at_ms: i64,
     pub entries:        Vec<PredicateEntry>,
@@ -23,6 +23,9 @@ pub enum CycleStatus {
     Running,
     Converged,
     Interrupted,
+    /// The wall-clock deadline elapsed before convergence. Distinct from
+    /// `Interrupted` (an explicit caller cancel); resumable from a snapshot.
+    Expired,
     Error(String),
 }
 
@@ -32,6 +35,7 @@ impl std::fmt::Display for CycleStatus {
             CycleStatus::Running     => write!(f, "running"),
             CycleStatus::Converged   => write!(f, "converged"),
             CycleStatus::Interrupted => write!(f, "interrupted"),
+            CycleStatus::Expired     => write!(f, "expired"),
             CycleStatus::Error(e)   => write!(f, "error: {}", e),
         }
     }

@@ -28,6 +28,9 @@ pub struct CachedToken {
 /// In-flight or completed deduction run tracked in `AppState::deductions`.
 pub struct DeductionEntry {
     pub status:            CycleStatus,
+    /// Why a non-converged run ended: `interrupted`, `deadline`, `max_cycles`
+    /// or `error`. `None` while running and on convergence.
+    pub reason:            Option<String>,
     pub result:            Option<DeductionResult>,
     pub cycles:            u32,
     pub interrupt:         Arc<AtomicBool>,
@@ -54,6 +57,9 @@ pub struct AppState {
     /// TTL in milliseconds for [`DeductionSnapshot`] entries. Used when
     /// saving a snapshot after a `persist: true` deduction request.
     pub snapshot_ttl_ms: i64,
+    /// Wall-clock deadline resolution for `/deduce` (request > server default,
+    /// clamped to the server ceiling).
+    pub deadline_policy: crate::deadline::DeadlinePolicy,
     /// Registry of all active Rituals. Initialized with `InMemoryBroker` until
     /// Phase 5 wires in the real `RsKafkaClient`.
     pub ritual_registry: Arc<RitualRegistry>,
@@ -497,6 +503,7 @@ mod tests {
 
     fn make_entry(status: CycleStatus, age: Duration) -> DeductionEntry {
         DeductionEntry {
+            reason: None,
             status,
             result: None,
             cycles: 0,

@@ -25,6 +25,7 @@ fn create_test_state() -> web::Data<AppState> {
         coire_store: None,
         active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
         snapshot_ttl_ms: 604_800_000,
+        deadline_policy: clara_api::deadline::DeadlinePolicy::disabled(),
         ritual_registry: Arc::new(RitualRegistry::new(
             "dis.test",
             Arc::new(InMemoryBroker::new()),

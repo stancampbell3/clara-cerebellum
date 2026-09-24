@@ -67,6 +67,8 @@ pub fn default_persistence_config() -> PersistenceConfig {
         evaluate_cache_ttl_seconds: 14400,
         deduction_entry_ttl_seconds: 3600,
         deduction_entry_sweep_interval_seconds: 300,
+        deduction_default_deadline_seconds: 3600,
+        deduction_max_deadline_seconds: 14400,
     }
 }
 

@@ -118,7 +118,7 @@ pub fn run(args: WatchArgs) {
 
         // 5. Exit on terminal status.
         let s = &status.status;
-        if s == "converged" || s == "interrupted" || s.starts_with("error:") {
+        if s == "converged" || s == "interrupted" || s == "expired" || s.starts_with("error:") {
             eprintln!(); // newline after the status line
             println!(
                 "\nDone. Deduction {} ({} phases written)",

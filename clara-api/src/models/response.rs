@@ -138,6 +138,10 @@ pub struct DeduceStatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     pub cycles: u32,
+    /// Why a non-converged run ended: `interrupted`, `deadline`, `max_cycles`
+    /// or `error`. Absent while running and on convergence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Response for DELETE /deduce/{id} — confirms interrupt was requested.

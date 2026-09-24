@@ -86,6 +86,13 @@ pub struct CycleController {
     initial_goal:  Option<String>,
     /// Set to `true` from outside to request early termination.
     interrupt:     Arc<AtomicBool>,
+    /// Optional wall-clock budget, counted from the start of `run()`. When it
+    /// elapses the run ends with `CycleStatus::Expired` at the next cycle
+    /// boundary. Cooperative: a call blocked inside a Prolog/CLIPS FFI call
+    /// overruns until it returns.
+    deadline_budget: Option<std::time::Duration>,
+    /// Absolute form of `deadline_budget`, resolved at the top of `run()`.
+    deadline_at:   Option<std::time::Instant>,
     /// Optional persistent store. When set, both mailboxes are saved on every
     /// exit from `run()` (converged, interrupted, or max-cycles exceeded).
     store:         Option<clara_coire::CoireStore>,
@@ -134,6 +141,17 @@ pub struct CycleController {
     /// behavior.
     #[cfg(feature = "ritual")]
     self_node_id: Option<String>,
+}
+
+/// The pacing sleep, capped to the time left before the deadline (if any).
+fn capped_wait(
+    base:      std::time::Duration,
+    remaining: Option<std::time::Duration>,
+) -> std::time::Duration {
+    match remaining {
+        Some(r) => base.min(r),
+        None    => base,
+    }
 }
 
 /// A synthetic incoming Offering handed to the controller by the caller
@@ -201,6 +219,8 @@ impl CycleController {
             max_cycles,
             initial_goal,
             interrupt,
+            deadline_budget: None,
+            deadline_at: None,
             store: None,
             final_solutions: None,
             trace_mode: false,
@@ -216,6 +236,20 @@ impl CycleController {
             #[cfg(feature = "ritual")]
             self_node_id: None,
         }
+    }
+
+    /// Bound the run by a wall-clock budget counted from the start of `run()`.
+    /// On expiry the run returns `Ok` with `CycleStatus::Expired` and its
+    /// partial result. `None` (the default) leaves the run unbounded.
+    pub fn with_deadline(mut self, budget: Option<std::time::Duration>) -> Self {
+        self.deadline_budget = budget;
+        self
+    }
+
+    /// Time left before the deadline; `None` when no deadline is set.
+    fn deadline_remaining(&self) -> Option<std::time::Duration> {
+        self.deadline_at
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
     }
 
     /// Inject a synthetic incoming Offering (as a `ritual/offering` Coire
@@ -327,10 +361,15 @@ impl CycleController {
         // cache entry produced during this run is tagged with `deduction_id`.
         let _ctx = clara_toolbox::ffi::deduction_context(self.deduction_id);
 
+        self.deadline_at = self
+            .deadline_budget
+            .map(|budget| std::time::Instant::now() + budget);
+
         log::info!(
-            "CycleController: starting (max_cycles={}, goal={:?})",
+            "CycleController: starting (max_cycles={}, goal={:?}, deadline={:?})",
             self.max_cycles,
-            self.initial_goal
+            self.initial_goal,
+            self.deadline_budget
         );
 
         let mut prev_snapshot = self.snapshot();
@@ -439,6 +478,29 @@ impl CycleController {
                 });
             } else {
                 log::debug!("... no interrupt signal");
+            }
+
+            // 8. Deadline check. Placed after the convergence and interrupt
+            // checks so precedence is converged > interrupted > expired.
+            if matches!(self.deadline_remaining(), Some(d) if d.is_zero()) {
+                log::info!("CycleController: deadline expired after {} cycle(s)", cycle + 1);
+                let tableau = self.export_tableau();
+                let goal_bindings = self.root_goal_bindings(&agenda);
+                let solutions = self.final_solutions.take().or(initial_solutions);
+                self.record_tableau("final_expired", cycle);
+                self.save_to_store();
+                self.evict_coire_sessions();
+                return Ok(DeductionResult {
+                    status:            CycleStatus::Expired,
+                    cycles:            cycle + 1,
+                    prolog_session_id: self.session.prolog_id,
+                    clips_session_id:  self.session.clips_id,
+                    prolog_solutions:  solutions,
+                    goal_bindings,
+                    tableau:           Some(tableau),
+                    explanation:       None,
+                    trace:             self.take_trace_log(),
+                });
             }
         }
 
@@ -633,7 +695,14 @@ impl CycleController {
         //    slowing active flows. Runs on the dedicated blocking thread.
         if !self.pending_offers.is_empty() && !ingested_any {
             const EVALUATOR_WAIT_MS: u64 = 250;
-            std::thread::sleep(std::time::Duration::from_millis(EVALUATOR_WAIT_MS));
+            // Never sleep past the deadline: cap to what is left.
+            let wait = capped_wait(
+                std::time::Duration::from_millis(EVALUATOR_WAIT_MS),
+                self.deadline_remaining(),
+            );
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
         }
     }
 
@@ -2525,6 +2594,117 @@ mod ritual_tests {
             !solutions.contains("forty_two"),
             "silent peer must not produce an answer; solutions={solutions}"
         );
+    }
+
+    // ── wall-clock deadline (ritual_properties_spec.md, S1) ─────────────────
+
+    /// Build a controller whose goal waits on an offer nobody answers, with a
+    /// patience so large the offer never times out on its own — only the
+    /// deadline (or interrupt) can end the run.
+    fn silent_peer_ctrl(
+        interrupt: Arc<AtomicBool>,
+        goal: &str,
+    ) -> CycleController {
+        setup_coire();
+        let broker    = Arc::new(InMemoryBroker::new());
+        let registry  = RitualRegistry::new("dis.test", broker.clone());
+        let ritual_id = registry
+            .create(RitualConfig { name: "deadline".into(), participants: vec![] })
+            .unwrap();
+        let cc_handle = registry.join(ritual_id, Some("cc")).unwrap();
+
+        let mut session = DeductionSession::new().unwrap();
+        session.seed_prolog(&[
+            ":- use_module(library(the_coire)).".into(),
+            "peer_answer(Q, A) :- \
+                caws_consult(n2, 'dis.test/consults/e1', _{prompt: Q}, R), \
+                get_dict(response, R, A).".into(),
+            "quick_fact(yes).".into(),
+        ]).expect("seed_prolog failed");
+
+        CycleController::new(session, 100_000, Some(goal.into()), interrupt)
+            .with_ritual(cc_handle)
+            .with_evaluator_patience(1_000_000)
+    }
+
+    #[test]
+    fn deadline_expires_a_run_that_would_never_converge() {
+        let mut ctrl = silent_peer_ctrl(
+            Arc::new(AtomicBool::new(false)),
+            "peer_answer(hello, Answer)",
+        )
+        .with_deadline(Some(std::time::Duration::from_millis(600)));
+
+        let started = std::time::Instant::now();
+        let result = ctrl.run().expect("expiry is an Ok result, not an error");
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.status, crate::result::CycleStatus::Expired);
+        assert!(result.cycles >= 1, "at least one cycle ran");
+        assert!(result.tableau.is_some(), "partial result carries the tableau");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "run must stop promptly after the deadline, took {elapsed:?}"
+        );
+    }
+
+    /// The 250 ms pacing sleep is capped to the remaining budget. Tested on
+    /// the pure helper: an end-to-end timing assertion is unreliable because
+    /// a cycle's own duration varies with parallel tests sharing the global
+    /// Coire.
+    #[test]
+    fn deadline_caps_the_pacing_sleep() {
+        use std::time::Duration;
+        let base = Duration::from_millis(250);
+        assert_eq!(capped_wait(base, None), base, "no deadline: full sleep");
+        assert_eq!(
+            capped_wait(base, Some(Duration::from_millis(80))),
+            Duration::from_millis(80),
+            "less than a sleep left: capped to what remains"
+        );
+        assert_eq!(
+            capped_wait(base, Some(Duration::from_secs(10))),
+            base,
+            "plenty left: full sleep"
+        );
+        assert_eq!(capped_wait(base, Some(Duration::ZERO)), Duration::ZERO, "none left: no sleep");
+    }
+
+    /// Precedence at a cycle boundary: converged wins over an elapsed deadline.
+    #[test]
+    fn converged_wins_over_an_elapsed_deadline() {
+        let mut ctrl = silent_peer_ctrl(Arc::new(AtomicBool::new(false)), "quick_fact(X)")
+            .with_deadline(Some(std::time::Duration::from_nanos(1)));
+
+        let result = ctrl.run().expect("run");
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
+    }
+
+    /// Precedence at a cycle boundary: an explicit interrupt wins over expiry.
+    #[test]
+    fn interrupt_wins_over_an_elapsed_deadline() {
+        let mut ctrl = silent_peer_ctrl(
+            Arc::new(AtomicBool::new(true)),
+            "peer_answer(hello, Answer)",
+        )
+        .with_deadline(Some(std::time::Duration::from_nanos(1)));
+
+        let result = ctrl.run().expect("run");
+        assert_eq!(result.status, crate::result::CycleStatus::Interrupted);
+    }
+
+    #[test]
+    fn no_deadline_leaves_behavior_unchanged() {
+        // The caws_await_times_out_to_false shape, without a deadline: converges
+        // through the per-offer patience timeout exactly as before.
+        let mut ctrl = silent_peer_ctrl(
+            Arc::new(AtomicBool::new(false)),
+            "peer_answer(hello, Answer)",
+        )
+        .with_evaluator_patience(2);
+
+        let result = ctrl.run().expect("run");
+        assert_eq!(result.status, crate::result::CycleStatus::Converged);
     }
 
     // ── sequential dependent caws chains (docs/dis_sequential_caws_await_bug.md)

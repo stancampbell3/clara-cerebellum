@@ -175,6 +175,10 @@ pub async fn start_server(
         coire_store,
         active_coire_sessions,
         snapshot_ttl_ms,
+        deadline_policy: crate::deadline::DeadlinePolicy::from_seconds(
+            config.persistence.deduction_default_deadline_seconds,
+            config.persistence.deduction_max_deadline_seconds,
+        ),
         ritual_registry,
         dis_domain,
         kafka_bootstrap,
@@ -226,6 +230,7 @@ mod tests {
             coire_store: None,
             active_coire_sessions: Arc::new(RwLock::new(HashSet::new())),
             snapshot_ttl_ms: 604_800_000,
+            deadline_policy: crate::deadline::DeadlinePolicy::disabled(),
             ritual_registry,
             dis_domain: "dis.test".to_string(),
             kafka_bootstrap: None,

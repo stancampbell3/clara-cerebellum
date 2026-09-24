@@ -182,6 +182,15 @@ pub struct DeduceRequest {
     /// that started the run, not just for peer-published Offerings.
     #[serde(default)]
     pub initial_offering: Option<clara_cycle::InitialOffering>,
+    /// Wall-clock budget for this run in milliseconds, counted from the start
+    /// of the cycle loop. On expiry the run ends `expired` (reason
+    /// `deadline`) at the next cycle boundary with its partial result; with
+    /// `persist: true` it can be continued via `POST /deduce/resume`.
+    /// Omit to use the server default; the server ceiling clamps any value.
+    /// Must be greater than 0. Cooperative: a call blocked inside a
+    /// Prolog/CLIPS FFI call overruns until it returns.
+    #[serde(default)]
+    pub deadline_ms: Option<u64>,
 }
 
 /// Request to resume a previously persisted deduction.

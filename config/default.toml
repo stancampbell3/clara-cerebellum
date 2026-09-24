@@ -47,6 +47,10 @@ evaluate_cache_ttl_seconds = 30       # 30 seconds; set to 0 to disable TTL evic
 # TTL than deduction_snapshot_ttl_seconds, not the durable archive.
 deduction_entry_ttl_seconds = 3600            # 1 hour; set to 0 to disable this sweep
 deduction_entry_sweep_interval_seconds = 300  # sweep every 5 minutes
+# Wall-clock bound on a /deduce (ritual_properties_spec.md P1). A request's own
+# deadline_ms wins over the default, and the ceiling clamps both. 0 disables.
+deduction_default_deadline_seconds = 3600     # 1 hour when a request sets none
+deduction_max_deadline_seconds = 14400        # 4 hour ceiling on any deadline
 
 [observability]
 log_level = "info"

@@ -330,6 +330,8 @@ Dependencies: S1 -> S2 -> S3. S4, S5, S6 are independent of P1 and of each other
 | **S7** | **P3b: `RitualEvaluator`.** Wrap a child config as one participant; start a Performance on its entry node; Hohi/Tabu mapping; deadline = min(offer, parent's remaining); cancel the in-flight child on parent expire/interrupt; recursive resume (children first); `degraded` propagation | lildaemon / Python | S1, S2, S4, S6 | lildaemon rebuild |
 | **S8** | **Cobbler.** Group creation sets `ritualConfigId`; ownership control in the properties panel | dagda / TypeScript | S6 | cobbler build |
 
+**Status (2026-09-24):** **S1 built and live-verified** (uncommitted at time of writing): `deadline_ms`, `expired`, `reason`, sleep cap, layered policy (defaults 3600 s / ceiling 14400 s in `PersistenceConfig`, `0` disables), resume bounded by the server default. Live: a 1.5 s deadline on a never-answered offer ended `expired`/`deadline` in 1.81 s with a partial result; `deadline_ms: 0` -> 400; converging runs unaffected; an expired persisted run accepted by `/deduce/resume`. Controller tests: expiry, sleep-cap helper, converged > interrupted > expired precedence. Note: an end-to-end timing assertion for the sleep cap was unreliable under parallel tests (cycle time varies with the shared Coire), so the cap is tested on the pure `capped_wait` helper.
+
 **Recommended order:** S1, S2, S3, S4, S5, S6, S7, S8. P1 first for safety; then the cheap Python-only durability slice;
 then the consolidation-value slice; composition last because it depends on nearly everything.
 
