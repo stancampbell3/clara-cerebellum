@@ -19,6 +19,7 @@
     ruminate_answer/2,
     ruminate_citations/2,
     ruminate_and_assert_citations/3,
+    assistant_workspace_slug/1,
     cite/2,
     citation/8,
     cites/2,
@@ -39,6 +40,18 @@
 % deduction call that asserted them and never leak into the next.
 :- thread_local citation/8.
 :- thread_local cites/2.
+
+%% assistant_workspace_slug/1 - the Edgequake workspace the assistant works from, by slug (never by a default).
+%%   Reads ASSISTANT_WORKSPACE_SLUG (set on clara-api; ruleset getenv/2 tunables live there, not on lildaemon) and
+%%   falls back to 'assistant.general' -- the same default lildaemon's background paths use, so the synchronous analyst
+%%   tiers and the background research/answer legs read and write ONE workspace. Pass the result to the edgequake tool
+%%   as `workspace_slug`; the tool resolves it to an id and caches it. Example:
+%%     assistant_workspace_slug(WS), ruminate_opts(Q, _{workspace_slug: WS, mode: hybrid}, R)
+assistant_workspace_slug(Slug) :-
+    (   getenv('ASSISTANT_WORKSPACE_SLUG', S), S \== ''
+    ->  Slug = S
+    ;   Slug = 'assistant.general'
+    ).
 
 %% ruminate/2 - Query Edgequake's RAG API with default (hybrid) retrieval mode.
 ruminate(Query, Result) :-

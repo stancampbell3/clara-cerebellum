@@ -100,6 +100,13 @@ services:
       # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
       - EDGEQUAKE_DEFAULT_TENANT=${EDGEQUAKE_DEFAULT_TENANT:-}
       - EDGEQUAKE_DEFAULT_WORKSPACE=${EDGEQUAKE_DEFAULT_WORKSPACE:-}
+      # The assistant works from ONE Edgequake workspace, named by slug (the_cow.pl's assistant_workspace_slug/1; the tool
+      # resolves it to an id). Read by ruleset getenv/2, so it must be set here on clara-api, not on lildaemon.
+      - ASSISTANT_WORKSPACE_SLUG=${ASSISTANT_WORKSPACE_SLUG:-assistant.general}
+      # true = a workspace-scoped edgequake call that names no workspace is an error, and EDGEQUAKE_DEFAULT_WORKSPACE is
+      # ignored, so nothing reads the "Default Workspace" by accident. Off by default; turn on once every caller names its
+      # workspace (see docs/ground_state.md).
+      - EDGEQUAKE_REQUIRE_EXPLICIT_WORKSPACE=${EDGEQUAKE_REQUIRE_EXPLICIT_WORKSPACE:-false}
       # Dagda model (fasttext) supporting the "classify" tool
       - DAGDA_MODEL_PATH=${DAGDA_MODEL_PATH:-/etc/clara/models/dagda-0.2.bin}
       # id_analyst.pl's leannan_sidhe brainstorm tuning

@@ -122,13 +122,22 @@ impl ToolboxManager {
         let edgequake_default_workspace = std::env::var("EDGEQUAKE_DEFAULT_WORKSPACE")
             .ok()
             .filter(|s| !s.is_empty());
-        log::info!("Registering edgequake tool with base URL: {}", edgequake_url);
+        // When set, workspace-scoped calls must name their workspace (`workspace` or `workspace_slug`); the default
+        // above is not consulted. Off unless asked for, so existing deployments keep their behavior.
+        let require_explicit_workspace = std::env::var("EDGEQUAKE_REQUIRE_EXPLICIT_WORKSPACE")
+            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        log::info!(
+            "Registering edgequake tool with base URL: {} (explicit workspace required: {})",
+            edgequake_url,
+            require_explicit_workspace
+        );
         mgr.register_tool(Arc::new(ClaraEdgequakeTool::new(
             edgequake_url,
             edgequake_api_key,
             edgequake_default_tenant,
             edgequake_default_workspace,
-        )));
+        ).with_require_explicit_workspace(require_explicit_workspace)));
 
         // Register classify tool with model from environment (optional)
         if let Ok(model_path) = std::env::var("DAGDA_MODEL_PATH") {

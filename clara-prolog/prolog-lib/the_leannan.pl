@@ -107,6 +107,7 @@
 :- use_module(library(http/json)).
 :- use_module(library(the_rabbit), [dict_to_json/2]).
 :- use_module(library(the_cow), [
+    assistant_workspace_slug/1,
     ruminate_opts/3,
     ruminate_and_assert_citations/3,
     ruminate_citations/2,
@@ -153,10 +154,14 @@ leannan_dispatch(Json, Dict) :-
     ).
 
 %% leannan_workspace_opt/3 - merge a `workspace` key into an arguments/opts
-%%   dict when WorkspaceId is bound to a real id; `none` leaves the dict
-%%   untouched so the edgequake tool falls back to its own configured
-%%   default (see module doc comment's Tier 3 addendum).
-leannan_workspace_opt(none, Args, Args) :- !.
+%%   dict when WorkspaceId is bound to a real id. `none` no longer means "the
+%%   edgequake tool's configured default" (a silent choice, and the wrong
+%%   workspace on a deployment whose default differs from the assistant's): it
+%%   names the assistant's workspace by slug via the_cow:assistant_workspace_slug/1,
+%%   which the tool resolves to an id, so every caller reads one workspace.
+leannan_workspace_opt(none, Args, Args2) :- !,
+    assistant_workspace_slug(Slug),
+    Args2 = Args.put(workspace_slug, Slug).
 leannan_workspace_opt(WorkspaceId, Args, Args2) :-
     Args2 = Args.put(workspace, WorkspaceId).
 

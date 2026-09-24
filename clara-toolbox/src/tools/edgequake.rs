@@ -9,6 +9,8 @@ use reqwest::blocking::Client;
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 /// Operations supported by the Edgequake tool
@@ -51,6 +53,11 @@ pub struct EdgequakeArgs {
     pub tenant: Option<String>,
     #[serde(default)]
     pub workspace: Option<String>,
+    /// Name the workspace by its slug (for example `assistant.general`) instead of its id. Resolved through
+    /// `GET /tenants/{tenant}/workspaces/by-slug/{slug}` and cached per process, so it survives a workspace
+    /// being dropped and recreated (the id changes, the slug does not). Ignored when `workspace` is set.
+    #[serde(default)]
+    pub workspace_slug: Option<String>,
 
     // Query
     #[serde(default)]
@@ -133,6 +140,11 @@ pub struct EdgequakeClient {
     api_key: Option<String>,
     default_tenant: Option<String>,
     default_workspace: Option<String>,
+    /// When true, a workspace-scoped operation must name its workspace (`workspace` or `workspace_slug`); the
+    /// configured default is not consulted and Edgequake's own default is never reached silently.
+    require_explicit_workspace: bool,
+    /// `tenant|slug` -> workspace id, for `workspace_slug` resolution.
+    slug_cache: Mutex<HashMap<String, String>>,
     http: Client,
 }
 
@@ -148,6 +160,8 @@ impl EdgequakeClient {
             api_key,
             default_tenant,
             default_workspace,
+            require_explicit_workspace: false,
+            slug_cache: Mutex::new(HashMap::new()),
             // Explicit generous timeout — confirmed live (2026-08-20) that
             // reqwest's default is too short for a hybrid-mode query
             // against a large/growing workspace (e.g. goat/app/assistant/'s
@@ -164,6 +178,68 @@ impl EdgequakeClient {
         }
     }
 
+    /// Refuse to fall back to a default workspace: every workspace-scoped call must name one.
+    pub fn with_require_explicit_workspace(mut self, require: bool) -> Self {
+        self.require_explicit_workspace = require;
+        self
+    }
+
+    /// Decide which workspace id a workspace-scoped call runs against.
+    ///
+    /// Precedence: an explicit `workspace` id, then a `workspace_slug` (resolved and cached), then the configured
+    /// default. With `require_explicit_workspace` the default is skipped and having none is an error, so a caller
+    /// that forgot to say which workspace it means fails loudly instead of quietly reading the wrong one.
+    fn resolve_workspace(
+        &self,
+        workspace: Option<&str>,
+        slug: Option<&str>,
+        tenant: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        if let Some(w) = workspace.filter(|w| !w.is_empty()) {
+            return Ok(Some(w.to_string()));
+        }
+        if let Some(slug) = slug.filter(|s| !s.is_empty()) {
+            return self.workspace_id_for_slug(slug, tenant).map(Some);
+        }
+        if self.require_explicit_workspace {
+            return Err(
+                "no workspace specified: pass `workspace` (id) or `workspace_slug` \
+                 (this deployment does not fall back to a default workspace)"
+                    .to_string(),
+            );
+        }
+        Ok(None)
+    }
+
+    fn workspace_id_for_slug(&self, slug: &str, tenant: Option<&str>) -> Result<String, String> {
+        let tenant_id = self.resolved_tenant(tenant).ok_or_else(|| {
+            "workspace_slug needs a tenant (pass `tenant` or configure EDGEQUAKE_DEFAULT_TENANT)"
+                .to_string()
+        })?;
+        let key = format!("{tenant_id}|{slug}");
+        if let Some(id) = self.slug_cache.lock().unwrap().get(&key) {
+            return Ok(id.clone());
+        }
+        let body = self
+            .request(
+                Method::GET,
+                &format!("/api/v1/tenants/{tenant_id}/workspaces/by-slug/{slug}"),
+                &[],
+                None,
+                Some(tenant_id),
+                None,
+            )
+            .map_err(|e| format!("could not resolve workspace slug '{slug}': {e}"))?;
+        let id = body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("workspace slug '{slug}' resolved to a response with no id"))?
+            .to_string();
+        self.slug_cache.lock().unwrap().insert(key, id.clone());
+        Ok(id)
+    }
+
     /// Resolve a per-call tenant override against the client's configured
     /// default. `None` means "no tenant scoping" — Edgequake falls back to
     /// its own default tenant/workspace in that case.
@@ -172,6 +248,9 @@ impl EdgequakeClient {
     }
 
     fn resolved_workspace<'a>(&'a self, workspace: Option<&'a str>) -> Option<&'a str> {
+        if self.require_explicit_workspace {
+            return workspace;
+        }
         workspace.or(self.default_workspace.as_deref())
     }
 
@@ -411,9 +490,27 @@ impl ClaraEdgequakeTool {
         }
     }
 
+    /// Refuse to fall back to a default workspace (see `EdgequakeClient::with_require_explicit_workspace`).
+    pub fn with_require_explicit_workspace(mut self, require: bool) -> Self {
+        self.client = self.client.with_require_explicit_workspace(require);
+        self
+    }
+
     fn execute_operation(&self, args: EdgequakeArgs) -> Result<Value, ToolError> {
         let t = args.tenant.as_deref();
-        let w = args.workspace.as_deref();
+        // Only workspace-scoped operations name a workspace; the cross-tenant listings never do.
+        let scoped = !matches!(
+            args.operation,
+            Operation::ListTenants | Operation::ListWorkspaces | Operation::ListModels
+        );
+        let resolved_ws = if scoped {
+            self.client
+                .resolve_workspace(args.workspace.as_deref(), args.workspace_slug.as_deref(), t)
+                .map_err(ToolError::ExecutionFailed)?
+        } else {
+            None
+        };
+        let w = resolved_ws.as_deref();
 
         match args.operation {
             Operation::Query => {
@@ -624,5 +721,106 @@ mod tests {
         let client = EdgequakeClient::new("http://localhost:8082", None, None, None);
         let err = client.list_workspaces(None).unwrap_err();
         assert!(err.contains("requires a tenant"));
+    }
+
+    // -- workspace resolution (G1: analysts name their workspace) ----------------------------------------------
+
+    /// A one-connection-at-a-time fake Edgequake: answers every request with `body`, records request lines.
+    fn fake_edgequake(body: &'static str, hits: usize) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        std::thread::spawn(move || {
+            for _ in 0..hits {
+                let (mut sock, _) = match listener.accept() {
+                    Ok(x) => x,
+                    Err(_) => return,
+                };
+                let mut buf = [0u8; 4096];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                seen2.lock().unwrap().push(req.lines().next().unwrap_or("").to_string());
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        (url, seen)
+    }
+
+    #[test]
+    fn workspace_slug_arg_parses() {
+        let json = r#"{"operation": "query", "query": "hi", "workspace_slug": "assistant.general"}"#;
+        let args: EdgequakeArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.workspace_slug.as_deref(), Some("assistant.general"));
+    }
+
+    #[test]
+    fn an_explicit_workspace_id_wins_and_needs_no_lookup() {
+        let c = EdgequakeClient::new("http://127.0.0.1:1", None, Some("t1".into()), Some("dflt".into()));
+        let ws = c.resolve_workspace(Some("ws-1"), Some("ignored.slug"), None).unwrap();
+        assert_eq!(ws.as_deref(), Some("ws-1"));
+    }
+
+    #[test]
+    fn without_strict_mode_nothing_specified_keeps_the_old_default_behavior() {
+        let c = EdgequakeClient::new("http://127.0.0.1:1", None, None, Some("dflt".into()));
+        assert_eq!(c.resolve_workspace(None, None, None).unwrap(), None); // request() then applies the default
+        assert_eq!(c.resolved_workspace(None), Some("dflt"));
+    }
+
+    #[test]
+    fn strict_mode_refuses_a_call_that_names_no_workspace_and_ignores_the_default() {
+        let c = EdgequakeClient::new("http://127.0.0.1:1", None, None, Some("dflt".into()))
+            .with_require_explicit_workspace(true);
+        let err = c.resolve_workspace(None, None, None).unwrap_err();
+        assert!(err.contains("no workspace specified"), "{err}");
+        assert_eq!(c.resolved_workspace(None), None, "the default must not be consulted in strict mode");
+        assert_eq!(c.resolved_workspace(Some("ws-9")), Some("ws-9"));
+    }
+
+    #[test]
+    fn a_slug_resolves_through_the_by_slug_endpoint_and_is_cached() {
+        let (url, seen) = fake_edgequake(r#"{"id":"e2fd2658","slug":"assistant.general"}"#, 1);
+        let c = EdgequakeClient::new(url, None, Some("tenant-1".into()), None).with_require_explicit_workspace(true);
+        let first = c.resolve_workspace(None, Some("assistant.general"), None).unwrap();
+        assert_eq!(first.as_deref(), Some("e2fd2658"));
+        // Second call is served from the cache: the fake only answers one request, so a second lookup would hang or fail.
+        let second = c.resolve_workspace(None, Some("assistant.general"), None).unwrap();
+        assert_eq!(second.as_deref(), Some("e2fd2658"));
+        let lines = seen.lock().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with("GET /api/v1/tenants/tenant-1/workspaces/by-slug/assistant.general "),
+            "{}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn a_slug_needs_a_tenant_and_a_missing_workspace_is_a_clear_error() {
+        let c = EdgequakeClient::new("http://127.0.0.1:1", None, None, None);
+        assert!(c.resolve_workspace(None, Some("x"), None).unwrap_err().contains("needs a tenant"));
+        // Nothing listens on port 1: the lookup fails, and the error names the slug.
+        let c = EdgequakeClient::new("http://127.0.0.1:1", None, Some("t".into()), None);
+        let err = c.resolve_workspace(None, Some("ghost"), None).unwrap_err();
+        assert!(err.contains("could not resolve workspace slug 'ghost'"), "{err}");
+    }
+
+    #[test]
+    fn a_strict_tool_call_without_a_workspace_fails_before_any_network_call() {
+        let tool = ClaraEdgequakeTool::new("http://127.0.0.1:1", None, Some("t".into()), Some("dflt".into()))
+            .with_require_explicit_workspace(true);
+        let err = tool.execute(serde_json::json!({"operation": "query", "query": "hi"})).unwrap_err();
+        assert!(err.to_string().contains("no workspace specified"), "{err}");
+        // Cross-tenant listings are not workspace-scoped, so strict mode does not touch them (they fail on the
+        // dead port, not on the workspace rule).
+        let err = tool.execute(serde_json::json!({"operation": "list_tenants"})).unwrap_err();
+        assert!(!err.to_string().contains("no workspace specified"), "{err}");
     }
 }
