@@ -190,22 +190,52 @@ Verified: `cargo test --workspace` 0 failed (clara-cerebellum), full lildaemon s
 skipped/1 flaky-unrelated (passed standalone, an Ollama-dependent test unrelated to this work). Rebuilt +
 redeployed `docker-clara-api-1` on limbic (prolog-lib is embedded at Rust build time).
 
-## Open questions
+## Open questions and decisions (reviewed by Stan 2026-09-22/24)
 
-- Does the unification vision (A) match what Clara and the team actually want next, or is it too big a
-  lift right now relative to the tactical fixes (B/C/D)?
-- Do deliberation and brainstorming fold into the same unified partner, or stay separate, explicitly-
-  invoked Rituals?
-- ~~Does the Cobbler graph/transduction vocabulary already express what these analysts do, or would it
-  need extending first?~~ **Answered by the 2026-09-22 spike below: no, it would need new node types
-  first — the lifecycle itself works, the graph-native expression doesn't yet.**
-- If analysts become `RitualConfig`s, what's the right Ritual lifecycle — per turn, per session, per user?
-- Should `caws_tristate/3` promotion be bundled with the upcoming `approve_action/4` work as already
-  recommended, or decoupled and done sooner?
-- Does a canonical `strip_think/2` need to preserve the "unterminated think block → placeholder" behavior
-  (the majority implementation), or is `superego_gate.pl`'s simpler cut an acceptable new standard?
-- Is the `progressive_research.pl` bug urgent enough to ship as its own small fix immediately, independent
-  of everything else here?
+Original questions kept; each now carries its resolution. Stan's notes are quoted verbatim.
+
+- **Does the unification vision (A) match what the team wants next?** **Decided: A is the goal.** The
+  spec it aims at is a graph of evaluators/daemons/nodes, their communication edges with augmented
+  metadata, and — for "devil" nodes (backed by `/deduce`, e.g. `clara_mind_splinter`, not just an LLM) —
+  their application code. Prolog plus generated CLIPS for now; a typed/sugared Prolog superset later.
+  Prerequisite: pin down Ritual durability, persistence and lifecycle — see `ritual_properties_spec.md`.
+  > [STAN] A is absolutely what we're aiming for.  We need to nail down some properties about rituals, their durability, persistence, and life-cycle but we should have a starting point given the recent lifecycle work.  We're looking to (eventually) define a specification which consists of a graph showing the evaluators/daemons/nodes, their communication edges with augmented metadata, and with respect to the "devil" nodes (the ones backed by not just an llm but /deduce as in a clara_mind_splinter) their specific application code.  Currently, we're expressing this in Prolog but we'll be introducing a Prolog superset which includes some syntactic sugar plus typing.  We'll stick to Prolog and generated CLIPS for now.
+
+- **Do deliberation and brainstorming fold into the unified partner, or stay separate Rituals?**
+  **Direction: compose.** Rituals compose into Rituals of Rituals, so they need not be either/or. This
+  raises how shared predicates/modules are defined and loaded when a composed Ritual's nodes depend on
+  common behavior — today there is no mechanism beyond the compiled-in library overlay (spec §5).
+  > [STAN] The concept is being able to compose Rituals into Rituals of Rituals.  So, we may need to think about how this is defined when we load, say, Prolog modules which depend on shared predicates/functions/behavior.
+
+- ~~**Does the Cobbler graph/transduction vocabulary already express what these analysts do?**~~
+  **Answered by the 2026-09-22 spike: no, it needs new node types first.** Confirmed by Stan.
+  > [STAN] Confirmed. Cobbler is our current experiment using Cytoscape to realize a graphical composer for Rituals.
+
+- **What is the right Ritual lifecycle — per turn, per session, per user?** **Direction: not per-anything.**
+  Id/Ego/Superego basics are provided natively by Clara or by Hermes (`HermesAgentEvaluator`); ad hoc
+  Rituals reference resources not known in advance, and a *Performance* assembles the participants it
+  needs. A Performance is either one-shot/short-cycle, or long-running with a bounded (not eternal)
+  timeout and a very large cycle limit. Gap found: there is no wall-clock deadline field today, and
+  participant assembly is imperative (spec §3, §6).
+  > [STAN] I think some of the basic analyst behavior (Id, Ego, Superego) is provided by the Clara system natively or by Hermes (in HermesAgentEvaluator), however ad-hoc rituals will be defined which reference resources we don't know now.  The performance brings together the needed participants.  That performance can be one shot, short cycle count or a long (not eternal) timeout with reasonably huge cycle limits.
+
+- **Bundle `caws_tristate/3` promotion with `approve_action/4`, or decouple and do sooner?**
+  **Done, decoupled and sooner** — promoted into `the_coire.pl` 2026-09-22 (clara-cerebellum@8294732).
+  The bundling premise was stale: Phase 2 shipped `approve_action_from_context/3`, which never used it.
+  > [STAN] Let's do the caws_tristate/3 promotion sooner if we can.  It's fairly central to some of our logic, and it may reduce confusion if it's done sooner.
+
+- **Must a canonical `strip_think/2` keep the "unterminated think block -> placeholder" behavior?**
+  **Done: yes.** Canonicalized to the majority (most defensive) variant across all rulesets
+  (lildaemon@fe37af4), then promoted into `the_coire.pl` (Approach B). `superego_gate.pl`'s simpler
+  single-cut variant was the outlier and was replaced; regression coverage in
+  `tests/test_strip_think_canonicalization.py`.
+  > [STAN]  This may need more research.
+
+- **Is the `progressive_research.pl` bug urgent enough to ship on its own?** **Done, and it *is* the think
+  block issue**: that file's caws leg never called `strip_think/2` (it had no definition at all), so a
+  thinking model's `<think>...</think>` leaked into `tier_groq/9`'s combine prompts. Fixed in the same
+  change as the canonicalization.
+  > [STAN] This is also related to the think block?  Let's discuss.
 
 ## Related
 
