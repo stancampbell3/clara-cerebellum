@@ -54,6 +54,24 @@ silently ends the partner.
   is **presentation-only**.
 - **One flat source per node.** Edge snippets plus the authored `prologSource` are joined and registered as a single
   content-addressed source via `register_source` (`router.py:158-190`).
+- **The registry** (`cc/clara-api/src/handlers/source_handler.rs`, `cc/clara-coire/src/source.rs`, table at
+  `cc/clara-coire/src/store.rs:173-183`) is a DuckDB `source_registry`, content-addressed by SHA-256 of the content
+  only (the label is not hashed), unique on `(content_hash, source_type)`. `source_type` is **not validated**, so a
+  new type needs no server change to be stored. A duplicate registration returns the existing id and **does not
+  refresh its TTL**; rows with a NULL expiry are never reaped (CarrionPicker pass 4, `carrion_picker.rs:226`).
+- **How a source is loaded** (`cc/clara-api/src/handlers/deduce_handler.rs:596-639` -> `cc/clara-cycle/src/session.rs:72`
+  -> `consult_string`, `cc/clara-prolog/src/backend/ffi/environment.rs:363-400`): a `read_term` loop that `assertz`s
+  each clause into module **`user`**, declaring each `F/A` `thread_local` and `retractall`ing it on first sight. Loaded
+  code is therefore **per-engine isolated but lives in one flat namespace**. The same `F/A` arriving from a later
+  source in the *same* call **silently merges** (clauses append); a *separate* call would `retractall` the earlier
+  one. `:- G` directives run as `ignore(call(G))`, so **`:- module(...)` is swallowed** (no module is created) and
+  `use_module`/`consult` facts also run via `ignore(call(...))`.
+- **A missing `prolog_source_id` only logs a warning** and falls back to inline clauses (`deduce_handler.rs`).
+  Acceptable for a node's own source; wrong for a dependency.
+- **Only singular `prolog_source_id`/`clips_source_id` exist on `/deduce`**; nothing lists several sources.
+- **Cost:** each deduction builds a fresh engine and re-reads and re-parses its sources; there is no cache.
+- **Real SWI modules are process-global** (non-`thread_local` predicates are shared across engines), and all `PL_call`
+  must run on the main-engine thread (`environment.rs:59-62`), so loading true modules is safe only for stateless code.
 - **Shared libraries are a hardcoded list**: `["the_coire","the_rabbit","the_cow","the_rat","the_leannan"]`
   (`cc/clara-prolog/src/backend/ffi/environment.rs:115`), copied into SWI's library dir by `build.rs`. Authored
   source may `use_module(library(...))` only what that overlay ships. There is **no per-Ritual or per-node module
@@ -92,16 +110,44 @@ RitualConfig, activation activates the child, and the parent sees it as one part
 metadata. Open: does the child's lifecycle follow the parent's (activate/terminate together), and how does a
 Performance on the parent fan out to the child?
 
-**P4. Module dependencies — the fork to decide.**
+**P4. Ritual-scoped module dependencies.** Requirements: no clara-cerebellum rebuild per shared predicate;
+**version-controlled and testable**; specified before graph or lifecycle work is instantiated. The design is
+two-tier; build Tier 1 first.
 
-| Option | How | For | Against |
-|---|---|---|---|
-| (a) grow the compiled-in overlay | keep adding to `prolog-lib/` | simple, fast, already works | every shared predicate is a cross-repo rebuild+redeploy; unsuitable for ad hoc Rituals whose needs aren't known in advance |
-| (b) **Dis-registered module sources** | register module source content-addressed; a RitualConfig/node declares dependencies; Dis loads them before the node's source | no rebuild, Ritual-scoped, fits ad hoc and composed Rituals, mirrors the existing content-addressed `register_source` | new server work; need module isolation/versioning so two Rituals' same-named modules don't collide |
-| (c) inline-bundle at activation | concatenate dependency source into each node's flat source | no server change | duplicates source per node — recreates today's copy-paste problem, just generated |
+*Tier 1 - flat "module fragments" (recommended first step).* A module is a registered source of a new type
+`prolog-module`, whose clauses are loaded into the node's own namespace **before** the node source, in declared order.
+This fits how loading already works (§5) and needs no FFI change.
 
-Recommendation: **(b)** for ad hoc and composed Rituals, keeping **(a)** for the stable core libs
-(`the_coire`, `the_rabbit`, ...). A typed Prolog superset could later compile *to* (b)'s module declarations.
+- **Declaration.** A RitualConfig node (optionally with a Ritual-level default) carries
+  `prologModules: [{name, version, sha256}]`. lildaemon registers each module and `/deduce` gains an ordered
+  `prolog_module_source_ids`. **Name-to-hash pinning lives in the RitualConfig/manifest, not in Dis**: Dis's label is
+  neither unique nor hashed, so Dis stays a plain content store.
+- **Version control.** Module sources live in git (lildaemon, e.g. a `ritual_modules/` directory) beside a checked-in
+  **lockfile** of `name, version, sha256`; a test fails if a file's hash drifts from the lock. Pinning by content hash
+  makes a Ritual reproducible, and each version immutable.
+- **Collision rule (the key hazard).** Same-`F/A` clauses merge silently in one namespace, so loading must **fail**
+  when two dependencies, or a dependency and the node source, define the same `F/A`, or when a dependency redefines a
+  name the compiled-in overlay exports, unless the node source explicitly opts in to an override.
+- **A missing dependency is a hard error**, not today's warn-and-fall-back.
+- **TTL.** Register module sources with no expiry (or refresh on activation): a duplicate registration will not extend
+  an existing row's TTL, and the sweeper would otherwise delete a live dependency.
+- **Rituals of Rituals.** Each node deduces on its own engine, so a child Ritual's modules cannot collide with the
+  parent's; collisions exist only inside one node's dependency set. Composition needs no cross-Ritual module logic.
+- **Coexistence.** The compiled-in overlay stays the always-present core (`the_coire`, `the_rabbit`, ...); registered
+  modules are additive and Ritual-scoped. Nothing is superseded.
+- **Testability.** Test a module with a harness that registers *only* that module plus a probe clause and asserts its
+  predicates resolve (the pattern of `lildaemon/tests/test_approach_b_promotion.py`). Authoring rule: modules are
+  clause-only; directives are limited to `use_module` of overlay libraries; no `:- module`.
+
+*Tier 2 - true hash-named modules (deferred).* Load pure, stateless modules once per process on the main engine as
+`m_<hash>` and import their exports into `user`. This adds real namespacing and caching (removing the per-deduction
+re-parse) but needs main-engine marshalling and a stateless-only rule. Pursue only if flat-namespace collisions or
+parse cost prove painful.
+
+_Assembly brainstorm (2026-09-24, input only, not a decision):_ run past Clara's deliberative assembly, it mostly
+restated this doc. Two points were kept: the module mechanism must be versioned and testable, and it should be
+specified before graph/lifecycle instantiation. Its suggestion to supersede the compiled-in overlay was not adopted;
+the overlay stays as the core (above).
 
 **P5. Declarative roster.** Replace per-caller imperative joins with a roster on the RitualConfig that a Performance
 resolves ("bring together the needed participants"), covering native Clara evaluators, Hermes seats and remote
@@ -114,7 +160,8 @@ scope until P1-P5 settle.
 
 ## 8. Decisions needed
 
-1. P4: (a)/(b)/(c), or (b) plus (a) as recommended?
+1. ~~P4: confirm Tier 1 (flat fragments + lockfile + collision check) as the first step, with Tier 2 deferred?~~
+   **Confirmed by Stan 2026-09-24:** Tier 1 first; Tier 2 deferred.
 2. P2: which Ritual configs should survive a restart, and is re-activation automatic or operator-driven?
 3. P1: is `expired` a terminal state distinct from `interrupted`, and who owns the deadline (caller, config default,
    or server ceiling)?
