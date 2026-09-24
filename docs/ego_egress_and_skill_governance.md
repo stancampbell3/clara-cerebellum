@@ -63,14 +63,28 @@ run (0 seat containers). So the gate's structure held: deterministic path approv
 
 ### 1c. Findings that qualify the good news
 
-1. **The free-form path was not really exercised.** Both free-form actions were denied because the reviewer produced no answer, not
-   because it judged them. The script joins its reviewer node (`clara_mind_splinter_lite`) on pineal's own FieryPit, and that
-   reviewer never answered (denial came in about a second). The documented arrangement is the reviewer on limbic's 27B via
-   `EGO_SUPEREGO_LOCAL=1`, which this script cannot set up. So we have confirmed *fail-closed*, not *good judgment*. Open: why the
-   pineal-local reviewer stayed silent (not investigated).
-2. **The harness is host-coupled.** The script's evidence step needs the `mcp` package on the host running it; pineal's system Python
-   lacks it (`No module named 'mcp.server.mcpserver'`), so the first run crashed after the ritual finished. The second run used
-   `--no-evidence` and the ledger was read straight from the shared filesystem instead.
+1. **The reviewer path was failing closed for a Dis-side reason (root-caused later the same night).** Both free-form actions were
+   denied with "the reviewer gave no answer", and the pineal-local reviewer *had* answered (a Hohi in ~0.3 s; pineal's model answers
+   `SAFE: yes` correctly when asked directly). The gate's Prolog (`judge_text/2`) calls `strip_think/2`, and in the running Dis that
+   predicate was **defined locally in `user` and failing** (`strip_think("hello",X)` returned no solution), so every reply was
+   treated as no answer and denied. This is the process-wide `thread_local` shadowing hazard from S5 (a source defining a
+   library-exported name shadows the shared library for every later deduction until `clara-api` restarts).
+   Confirmed by a live replay on limbic: with the real `PrologActionGate` and a reviewer node, **`create_diagram` (the vetted SVG
+   action) was denied "the content reviewer gave no answer"** while the shadow was present, and after restarting `clara-api` it was
+   **approved** ("content reviewed as safe") and `send_email` **escalated** ("irreversible, uncontained or uncertain; the user must
+   decide"), i.e. the reviewer works and judges. **So the review is not broken; Dis state poisoned it. It fails closed, which is
+   why nothing unsafe happened, but it also blocks legitimate actions until Dis is restarted.** The poisoning source was not
+   identified: `grep` finds `strip_think(` defined only in `the_coire.pl`, and the window was between the 06:26 `clara-api` redeploy
+   and the 06:52 test (live scenarios and a full test-suite run against this Dis happened in that window).
+   Follow-ups: (a) find the source that shadows it; (b) implement the S5 follow-up (always check node sources against the overlay
+   exports, or reject at config acceptance, per your earlier idea); (c) give the gate/example script a cheap self-test
+   (`strip_think("x",X)` and a canned `judge_text`) so a poisoned Dis is reported as such instead of as "no answer"; (d) note the
+   existing gate tests use a *mocked* Dis, so nothing exercised this round trip live.
+2. **Harness run with the wrong interpreter (fixed).** The first run used pineal's *system* Python (`mcp` 1.28.1) instead of the
+   checkout's `.venv`, and crashed in the evidence step (`No module named 'mcp.server.mcpserver'`; the project needs `mcp>=2.2,<3`).
+   The `.venv` itself was stale too (`mcp` 1.27.1, older than `pyproject.toml`). Fixed on 2026-09-24 with
+   `pip install -e .` in that venv (`mcp` 2.2.0, `pip check` clean, ego_gate imports). Run the example with
+   `.venv/bin/python`, not `python3`. The second run had used `--no-evidence` and read the ledger from the shared filesystem.
 3. **Deploy hygiene slip found on the way:** pineal's `~/widebody` checkouts had not actually been fast-forwarded (a `git merge`
    aborted on an identical untracked file). Fixed; lildaemon there is now at `626b1e1`. Not a security issue, but "verify the
    checkout, not the log tail" applies.
@@ -122,8 +136,8 @@ Independent of the choice:
 
 ## 5. Enabling superego by default (later)
 
-Preconditions: section 3 holds; the reviewer arrangement is the real one (limbic 27B) and has been shown to *judge*, not merely
-fail closed (1c.1); someone answers the frontdesk escalation bell; the outbox/ritual-space write paths are as intended (one writing
+Preconditions: section 3 holds; the reviewer arrangement is the real one (limbic 27B) and has been shown to *judge* (shown
+against limbic's Dis after the restart in 1c.1, not yet with the 27B or through a real seat); someone answers the frontdesk escalation bell; the outbox/ritual-space write paths are as intended (one writing
 host per ritual on the shared NFS). Then flip the compose default; until then the override is per-session.
 
 ---
@@ -175,7 +189,7 @@ safe to start at all; fitness and the GA machinery (3, 4) come after there is a 
 2. Is the seat allowed to run as root inside its container for now, or should non-root be a requirement of the lockdown?
 3. Do we want research seats behind an allowlist proxy (C) at all in the first cut, or start with offline-only seats?
 4. Section 6: who owns the promotion decision at the final tier, and is per-user isolation a hard requirement for anything pooled?
-5. Should investigating the silent pineal-local reviewer (1c.1) happen before or after the lockdown work?
+5. Finding the source that poisons `strip_think/2` in Dis (1c.1): before enabling superego anywhere, or alongside the lockdown work?
 
 ## Appendix: reproduce
 
