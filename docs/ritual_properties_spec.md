@@ -11,8 +11,8 @@ Paths: `cc/` = `clara-cerebellum/`, `ld/` = `lildaemon/goat/`.
 | Object | States today | Persisted where | Survives a restart? |
 |---|---|---|---|
 | **Dis Ritual** | `Active`, `Terminated` (`cc/clara-ritual/src/ritual.rs:6-9`) | Write-through to the CoireStore (DuckDB) `rituals` table, incl. participants map (`cc/clara-ritual/src/registry.rs`) | Yes if a store is configured; `restore_from_store` reloads on boot and re-ensures Kafka topics for active rituals (`registry.rs:252`). Memory-only without a store |
-| **Performance** | **No state machine.** A `performance_id` is minted per join, idempotent per participant key (`registry.rs:111-139`); anonymous joins aren't recorded | Keyed joins only | Ids stable across boot only for keyed joins |
-| **Deduction** (nearest thing to a "run") | `Running`, `Converged`, `Interrupted`, `Error` (`cc/clara-cycle/src/result.rs:22`) | In-memory `AppState.deductions`; durable only with `persist:true` (a `DeductionSnapshot`) | No, unless `persist:true` and a store is configured (silently ignored otherwise) |
+| **Performance** | **No state machine, and not observable:** the `performance_id` minted at join is never stored on the deduction entry or snapshot (`cc/clara-api/src/handlers/deduce_handler.rs:119-136`). A `performance_id` is minted per join, idempotent per participant key (`registry.rs:111-139`); anonymous joins aren't recorded | Keyed joins only | Ids stable across boot only for keyed joins |
+| **Deduction** (nearest thing to a "run") | `Running`, `Converged`, `Interrupted`, `Error` (`cc/clara-cycle/src/result.rs:22-27`); max-cycles exhaustion is only the string `"error: Max cycles (N) exceeded..."` (`deduce_handler.rs:184-189`); no `pending` (start returns 202 "running") and no `expired` | In-memory `AppState.deductions`; durable only with `persist:true` (a `DeductionSnapshot`) | No, unless `persist:true` and a store is configured (silently ignored otherwise) |
 | **RitualConfig** (lildaemon) | `draft` -> `active` -> `terminated`; **no way back to draft** (`ld/app/ritual_configs/store.py`) | DuckDB `ritual_configs` table | Definition yes; runtime no, and restart also kills the Dis ritual (§3) |
 | **Participant / seat** | Joined imperatively; `RitualManager` holds `(ritual_id, node_id)` participants in a plain dict (`ld/models/RitualManager.py`) | Memory | No |
 
@@ -60,16 +60,25 @@ What is *not* durable or not reusable today:
 
 ## 4. Bounds on a run
 
-- `max_cycles` defaults to 100 (`cc/clara-api/src/handlers/deduce_handler.rs:41`); **no server-side maximum**.
-  Exceeding it returns `MaxCyclesExceeded`.
-- `evaluator_patience_cycles` defaults to 10 and is **per offer**; expiry injects a `ritual/tabu-timeout`
-  (`cc/clara-cycle/src/controller.rs:1179-1206`). Cycles are paced at 250 ms only while offers are outstanding.
+- **Run loop** (`cc/clara-cycle/src/controller.rs:324-453`): `for cycle in 0..max_cycles`; each cycle runs the Prolog
+  pass, relay, CLIPS pass, relay, evaluator pass, then the convergence check. The interrupt flag is read **only at the
+  end of a cycle** (`controller.rs:421`), and `converged` wins if both hold. `max_cycles` (default 100,
+  `deduce_handler.rs:41`, no server-side maximum) is enforced by the loop bound alone.
+- **Pacing:** a blocking 250 ms `std::thread::sleep` (`controller.rs:634-637`) runs only while offers are pending and
+  nothing was ingested; it has no cancel check.
+- `evaluator_patience_cycles` defaults to 10 and is **per offer**, not a run bound; expiry injects a
+  `ritual/tabu-timeout` (`controller.rs:1179-1206`).
 - Callers already pick very different points: RitualConfig Run uses `max_cycles` 100 with
-  `patience = max(10, eval_timeout_s/0.25)` (`ld/app/ritual_configs/router.py:633-634`); the assistant deliberation
-  uses patience 3500 and `max_cycles` 4000 (`ld/app/assistant/runtime.py:216-217`).
-- **There is no wall-clock deadline.** A deduction is interruptible (AtomicBool) but never times out on its own,
-  so "a long, *not eternal* timeout with huge cycle limits" (Stan) cannot be expressed today except indirectly
-  through cycle counts.
+  `patience = max(10, eval_timeout_s/0.25)` (`ld/app/ritual_configs/router.py:620-655`); the assistant deliberation
+  uses patience 3500 and `max_cycles` 4000 (`ld/app/assistant/runtime.py:212-226`).
+- **There is no wall-clock deadline anywhere in the deduction path.** The only durations are the 250 ms sleep and
+  actix's 30 s connection timeout (`cc/clara-api/src/server.rs:186-201`). A deduction blocked inside a Prolog/CLIPS FFI
+  call cannot be interrupted until it returns (no timeout/cancel hook found by grep; FFI internals not read).
+- `interrupted` today means only an explicit `DELETE /deduce/{id}` (`deduce_handler.rs:563-584`), which optimistically
+  flips the entry before the run confirms; the background task later overwrites the final status (`:172-201`).
+- **Nothing reaps a `Running` entry.** The reaper (`session_handler.rs:107-146`) evicts only non-running entries, aged
+  from *creation*. A client that abandons a poll (`ld/app/dis_client.py:226-`: `poll_deduction` returns
+  `timed_out` and never cancels) leaves the run going until it converges or exhausts `max_cycles`.
 
 ## 5. Composition and shared code
 
@@ -120,10 +129,41 @@ Nothing composes a roster declaratively. Each caller does `dis_client.join_ritua
 
 Each is a proposal, not a decision.
 
-**P1. One Performance model, two presets.** Give Performance a first-class state
-(`pending / running / converged / interrupted / failed / expired`) and a wall-clock `deadline_ms` alongside
-`max_cycles` and patience. "One-shot" = small cycles, short deadline; "long, bounded" = huge cycles, long deadline.
-Same fields, no special cases, and a deduction that outlives its deadline becomes `expired` rather than eternal.
+**P1. A bounded, observable Performance (decided 2026-09-24).** Two decisions from Stan: **`expired` is a distinct,
+resumable terminal state**, and **the deadline is layered: request > RitualConfig default > server ceiling**.
+
+- **State set.** `running`, `converged`, `interrupted`, `error`, **`expired`**. `pending` is dropped (there is no queue)
+  and the wire string stays `error` rather than being renamed `failed` (a rename breaks clients for no gain). Replace
+  the stringly-typed max-cycles error with a structured **`reason`** on non-converged results (`max_cycles`,
+  `deadline`, `interrupted`, `error:<msg>`), keeping today's human string for compatibility.
+- **`deadline_ms`.** An optional wall-clock budget from deduction start on `DeduceRequest`
+  (`cc/clara-api/src/models/request.rs:105-185`). Resolution: the request value, else the RitualConfig
+  `default_deadline_ms` (new column via `_MIGRATIONS`, used by Run), else a server default; a configured
+  **`max_deduction_deadline_ms` ceiling clamps every case**, so no run is eternal. Presets: one-shot = small cycles +
+  short deadline; long = huge cycles + long deadline.
+- **Enforcement is cooperative.** Check the deadline at the top of each cycle and beside the interrupt check, and
+  **cap the 250 ms pacing sleep to the remaining budget**. Precedence at a cycle boundary: `converged` >
+  `interrupted` (explicit) > `expired`. State plainly that a call stuck inside Prolog/CLIPS FFI overruns until it
+  returns, so the effective bound is the deadline plus the longest single call plus one pacing sleep.
+- **`expired` semantics.** Stops at the next cycle boundary and returns the partial result. With `persist:true` it
+  saves a snapshot so **`/deduce/resume` continues it** (`deduce_handler.rs:259-455` already overrides `max_cycles`;
+  add a `deadline_ms` override, and an optional `#[serde(default)]` `deadline_ms` on `DeductionSnapshot`,
+  `cc/clara-coire/src/store.rs:21-64`; its `status` is a free string, so the new state needs no schema change). A later
+  optimistic flip must not clobber the final status; fix the DELETE-versus-task race when implementing.
+- **Make a Performance observable.** Store `ritual_id`, `performance_id`, `max_cycles`, `deadline_ms` and `started_at`
+  on `DeductionEntry` (`session_handler.rs:29-38`) and the snapshot, and return them from `GET /deduce/{id}`. This is
+  the smallest step to a first-class Performance without inventing a new object.
+- **Reaper.** Measure a terminal entry's age from **completion**, not creation (today it can evict a long run's entry
+  soon after it finishes). Running entries are bounded by the deadline ceiling instead.
+- **Client alignment.** Callers pass a `deadline_ms` matched to their own poll budget (Run: derived from
+  `eval_timeout_s`; assistant runtime: per-mode constants), and `poll_deduction` should send `DELETE` when its budget
+  lapses so an abandoned poll stops the server-side run.
+- **Compatibility.** Every addition is optional and additive. `expired` is a new terminal status that existing callers
+  already treat as non-converged (they check for `converged`).
+- **Would touch:** `request.rs`, `DeductionEntry`, `controller.rs` (deadline + sleep cap), `deduce_handler.rs` (layered
+  resolution, status/reason, resume override), `store.rs`, `clara-config` (default and ceiling), `session_handler.rs`,
+  lildaemon `dis_client.py`, `ritual_configs/{store,router}.py`, `assistant/runtime.py`. Tests needed: expiry at a
+  cycle boundary, sleep cap, precedence, resume-after-expired, ceiling clamp, reaper-from-completion.
 
 **P2. Persistent RitualConfigs survive a restart (decided 2026-09-24).** Separate definition durability from runtime
 durability by re-attaching, not re-creating. Two decisions from Stan: an **opt-in per-config flag, default off**, and
@@ -218,6 +258,7 @@ scope until P1-P5 settle.
 2. ~~P2: which Ritual configs should survive a restart, and is re-activation automatic or operator-driven?~~
    **Decided by Stan 2026-09-24:** per-config `persist` flag (default off); eager background resume on boot plus a
    manual resume endpoint.
-3. P1: is `expired` a terminal state distinct from `interrupted`, and who owns the deadline (caller, config default,
-   or server ceiling)?
+3. ~~P1: is `expired` a terminal state distinct from `interrupted`, and who owns the deadline?~~
+   **Decided by Stan 2026-09-24:** `expired` is distinct and resumable; deadline layered request > RitualConfig
+   default > server ceiling.
 4. P3: should child Ritual lifecycle be tied to the parent's?
