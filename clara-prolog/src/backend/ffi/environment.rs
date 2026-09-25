@@ -69,7 +69,7 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
             ] {
                 let goal = CString::new(*goal_str).unwrap();
                 let term = PL_new_term_ref();
-                if PL_chars_to_term(goal.as_ptr(), term) != 0 {
+                if goal_text_to_term(&goal, term) != 0 {
                     if PL_call(term, std::ptr::null_mut()) != 0 {
                         log::info!("{} loaded successfully", goal_str);
                     } else {
@@ -116,7 +116,7 @@ pub fn ensure_prolog_initialized() -> PrologResult<()> {
             unsafe {
                 let goal = CString::new(format!("use_module(library({library}))")).unwrap();
                 let term = PL_new_term_ref();
-                if PL_chars_to_term(goal.as_ptr(), term) != 0 {
+                if goal_text_to_term(&goal, term) != 0 {
                     if PL_call(term, std::ptr::null_mut()) != 0 {
                         log::info!("{library} library loaded");
                     } else {
@@ -506,7 +506,7 @@ impl PrologEnvironment {
         let wrapper_c = string_to_c_string(&wrapper)?;
         let term = PL_new_term_ref();
 
-        if PL_chars_to_term(wrapper_c.as_ptr(), term) == 0 {
+        if goal_text_to_term(&wrapper_c, term) == 0 {
             return Err(PrologError::ParseError(format!(
                 "Failed to parse goal: {}",
                 goal
@@ -609,7 +609,7 @@ impl PrologEnvironment {
         let goal_c = string_to_c_string(goal)?;
         let term = PL_new_term_ref();
 
-        if PL_chars_to_term(goal_c.as_ptr(), term) == 0 {
+        if goal_text_to_term(&goal_c, term) == 0 {
             return Err(PrologError::ParseError(format!(
                 "Failed to parse goal: {}",
                 goal
@@ -675,7 +675,7 @@ impl PrologEnvironment {
         let goal_c = string_to_c_string(goal)?;
         let term = PL_new_term_ref();
 
-        if PL_chars_to_term(goal_c.as_ptr(), term) == 0 {
+        if goal_text_to_term(&goal_c, term) == 0 {
             return Err(PrologError::ParseError(format!(
                 "Failed to parse goal: {}",
                 goal

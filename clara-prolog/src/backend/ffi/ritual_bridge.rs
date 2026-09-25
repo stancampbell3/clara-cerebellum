@@ -15,6 +15,7 @@
 //! `clara-ritual/src/adhoc.rs` for the shared, testable logic.
 
 use super::bindings::*;
+use super::conversion::unify_text_utf8;
 use clara_ritual::envelope::Routing;
 use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
@@ -37,7 +38,7 @@ unsafe fn unify_string(t: term_t, s: &str) -> c_int {
             return 0;
         }
     };
-    PL_unify_string_chars(t, c_str.as_ptr())
+    unify_text_utf8(t, PL_STRING, c_str.as_ptr())
 }
 
 fn parse_publish_options(options_str: &str) -> Result<(Option<String>, Option<u64>, Routing), String> {

@@ -188,6 +188,14 @@ extern "C" {
     /// Put a string into term
     pub fn PL_put_string_chars(t: term_t, chars: *const c_char) -> c_int;
 
+    /// Put text into term with an explicit type (PL_ATOM, PL_STRING, ...) and encoding (REP_UTF8, ...).
+    /// `len` is a byte count, or (size_t)-1 for NUL-terminated text. Unlike PL_put_atom_chars / PL_put_string_chars, which read
+    /// ISO-8859-1, this reads UTF-8 when `REP_UTF8` is set.
+    pub fn PL_put_chars(t: term_t, flags: c_int, len: usize, chars: *const c_char) -> c_int;
+
+    /// Unify a term with text, with the same flags as `PL_put_chars` (the encoding-aware counterpart of PL_unify_*_chars).
+    pub fn PL_unify_chars(t: term_t, flags: c_int, len: usize, chars: *const c_char) -> c_int;
+
     /// Put nil (empty list) into term
     pub fn PL_put_nil(l: term_t) -> c_int;
 
@@ -376,8 +384,11 @@ extern "C" {
     // Direct Goal Calling
     // =========================================================================
 
-    /// Parse a goal from C string into term
+    /// Parse a goal from C string into term (reads ISO-8859-1: non-ASCII UTF-8 text is mangled; prefer PL_put_term_from_chars)
     pub fn PL_chars_to_term(chars: *const c_char, term: term_t) -> c_int;
+
+    /// Parse text into a term with an explicit encoding (`REP_UTF8`). `len` is a byte count or (size_t)-1 for NUL-terminated.
+    pub fn PL_put_term_from_chars(t: term_t, flags: c_int, len: usize, chars: *const c_char) -> c_int;
 
     /// Call a goal (single solution)
     pub fn PL_call(t: term_t, m: module_t) -> c_int;

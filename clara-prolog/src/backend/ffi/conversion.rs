@@ -140,11 +140,11 @@ pub unsafe fn term_to_json(t: term_t) -> PrologResult<serde_json::Value> {
             }
         }
         PL_STRING => {
+            // PL_get_string reads only narrow (ISO-8859-1) strings and fails on one holding, say, an em dash. PL_get_chars with
+            // REP_UTF8 converts any string to UTF-8, the same extraction the atom branches use.
             let mut s: *mut c_char = std::ptr::null_mut();
-            let mut len: usize = 0;
-            if PL_get_string(t, &mut s, &mut len) != 0 && !s.is_null() {
-                let slice = std::slice::from_raw_parts(s as *const u8, len);
-                let string = String::from_utf8_lossy(slice).into_owned();
+            if PL_get_chars(t, &mut s, CVT_STRING | BUF_STACK | REP_UTF8) != 0 && !s.is_null() {
+                let string = CStr::from_ptr(s).to_string_lossy().into_owned();
                 Ok(serde_json::Value::String(string))
             } else {
                 Err(PrologError::ConversionError(
@@ -261,6 +261,37 @@ pub fn string_to_c_string(s: &str) -> PrologResult<CString> {
     CString::new(s).map_err(|e| PrologError::ConversionError(format!("CString error: {}", e)))
 }
 
+/// `len` argument of the `*_chars` text APIs meaning "the text is NUL-terminated".
+const PL_NUL_TERMINATED: usize = usize::MAX;
+
+// Text entering Prolog must be read as UTF-8. PL_chars_to_term, PL_put_atom_chars, PL_put_string_chars, PL_unify_string_chars and
+// PL_unify_atom_chars all read ISO-8859-1, so every non-ASCII character arrived as one character per UTF-8 byte (an em dash became
+// three characters, and came back out double-encoded). These wrappers pass REP_UTF8 through the encoding-aware entry points.
+
+/// Parse `text` (UTF-8) into the term `t`. Returns 0 on a syntax error, like PL_chars_to_term.
+///
+/// # Safety
+/// `t` must be a valid term reference on the current engine.
+pub unsafe fn goal_text_to_term(text: &CStr, t: term_t) -> c_int {
+    PL_put_term_from_chars(t, REP_UTF8, PL_NUL_TERMINATED, text.as_ptr())
+}
+
+/// Put UTF-8 `text` into `t` as an atom (`PL_ATOM`) or string (`PL_STRING`).
+///
+/// # Safety
+/// `t` must be a valid term reference on the current engine.
+pub unsafe fn put_text_utf8(t: term_t, kind: c_int, text: &CStr) -> c_int {
+    PL_put_chars(t, kind | REP_UTF8, PL_NUL_TERMINATED, text.as_ptr())
+}
+
+/// Unify `t` with the NUL-terminated UTF-8 text at `text` as an atom (`PL_ATOM`) or string (`PL_STRING`).
+///
+/// # Safety
+/// `t` must be a valid term reference and `text` a valid NUL-terminated C string.
+pub unsafe fn unify_text_utf8(t: term_t, kind: c_int, text: *const c_char) -> c_int {
+    PL_unify_chars(t, kind | REP_UTF8, PL_NUL_TERMINATED, text)
+}
+
 /// Safely convert a C string to a Rust string
 ///
 /// # Safety
@@ -281,7 +312,7 @@ pub unsafe fn json_to_term(value: &serde_json::Value, t: term_t) -> PrologResult
         serde_json::Value::Null => {
             // Represent null as the atom 'null'
             let null_atom = string_to_c_string("null")?;
-            if PL_put_atom_chars(t, null_atom.as_ptr()) == 0 {
+            if put_text_utf8(t, PL_ATOM, &null_atom) == 0 {
                 return Err(PrologError::ConversionError(
                     "Failed to put null atom".to_string(),
                 ));
@@ -290,7 +321,7 @@ pub unsafe fn json_to_term(value: &serde_json::Value, t: term_t) -> PrologResult
         serde_json::Value::Bool(b) => {
             let atom_str = if *b { "true" } else { "false" };
             let c_str = string_to_c_string(atom_str)?;
-            if PL_put_atom_chars(t, c_str.as_ptr()) == 0 {
+            if put_text_utf8(t, PL_ATOM, &c_str) == 0 {
                 return Err(PrologError::ConversionError(
                     "Failed to put bool atom".to_string(),
                 ));
@@ -313,7 +344,7 @@ pub unsafe fn json_to_term(value: &serde_json::Value, t: term_t) -> PrologResult
         }
         serde_json::Value::String(s) => {
             let c_str = string_to_c_string(s)?;
-            if PL_put_string_chars(t, c_str.as_ptr()) == 0 {
+            if put_text_utf8(t, PL_STRING, &c_str) == 0 {
                 return Err(PrologError::ConversionError(
                     "Failed to put string".to_string(),
                 ));
@@ -343,7 +374,7 @@ pub unsafe fn json_to_term(value: &serde_json::Value, t: term_t) -> PrologResult
                 let val_term = PL_new_term_ref();
 
                 let key_c = string_to_c_string(key)?;
-                PL_put_atom_chars(key_term, key_c.as_ptr());
+                put_text_utf8(key_term, PL_ATOM, &key_c);
                 json_to_term(val, val_term)?;
 
                 // Create -(Key, Value) compound

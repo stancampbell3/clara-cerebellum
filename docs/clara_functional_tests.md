@@ -70,6 +70,11 @@ the shared Clara voice exists; an LLM judge for answer quality; a nightly wrappe
 ## Findings from the first runs
 
 - Router gaps listed above (encoded as strict expected-failures).
-- **Mojibake in replies**: a reply contained a double-encoded em dash ("Ã¢Â\x80Â\x94"). Earlier Ego and example outputs showed the same garbling, so text is being
-  mis-decoded somewhere between the model and the API; not yet located.
+- **Mojibake in replies (FIXED 2026-09-25, uncommitted)**: a reply contained a double-encoded em dash ("Ã¢Â\x80Â\x94"). Root cause: in Dis's Prolog FFI
+  (`clara-prolog/src/backend/ffi`), every text-in call read ISO-8859-1 (`PL_chars_to_term` for goals and clauses, `PL_put_atom_chars` / `PL_put_string_chars`,
+  `PL_unify_string_chars` / `PL_unify_atom_chars` for LLM replies and Coire events), so each UTF-8 byte became its own character (an em dash was 3 characters;
+  `atom_length` counted bytes). Fixed by routing all of them through `PL_put_term_from_chars` / `PL_put_chars` / `PL_unify_chars` with `REP_UTF8`
+  (`goal_text_to_term`, `put_text_utf8`, `unify_text_utf8` in `conversion.rs`). Correct text then produced wide strings, which exposed `PL_get_string` (narrow
+  only) in the string-to-JSON path; that now uses `PL_get_chars` with `REP_UTF8`. Tests: 3 in `prolog_integration_tests.rs` and a functional regression
+  (`test_non_ascii_text_is_not_corrupted_on_the_way_out`). Not checked: the CLIPS side of the boundary.
 - A deliberation and a brainstorm row went to `failed` shortly after their session was deleted by test teardown, so delivery tests must keep the session open.

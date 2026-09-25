@@ -7,6 +7,7 @@
 //! - `coire_count(+SessionId, -Count)` — count pending events
 
 use super::bindings::*;
+use super::conversion::unify_text_utf8;
 use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use uuid::Uuid;
@@ -88,7 +89,7 @@ pub extern "C" fn pl_coire_poll(t_session: term_t, t_events: term_t) -> c_int {
                 }
             };
             unsafe {
-                if PL_unify_string_chars(t_events, c_str.as_ptr()) != 0 {
+                if unify_text_utf8(t_events, PL_STRING, c_str.as_ptr()) != 0 {
                     1
                 } else {
                     log::error!("coire_poll/2: unification failed");
@@ -135,7 +136,7 @@ pub extern "C" fn pl_coire_poll_inbound(t_session: term_t, t_events: term_t) -> 
                 }
             };
             unsafe {
-                if PL_unify_string_chars(t_events, c_str.as_ptr()) != 0 {
+                if unify_text_utf8(t_events, PL_STRING, c_str.as_ptr()) != 0 {
                     1
                 } else {
                     log::error!("coire_poll_inbound/2: unification failed");
@@ -190,7 +191,7 @@ pub extern "C" fn pl_coire_poll_ritual(t_session: term_t, t_events: term_t) -> c
                 }
             };
             unsafe {
-                if PL_unify_string_chars(t_events, c_str.as_ptr()) != 0 {
+                if unify_text_utf8(t_events, PL_STRING, c_str.as_ptr()) != 0 {
                     1
                 } else {
                     log::error!("coire_poll_ritual/2: unification failed");
@@ -217,7 +218,7 @@ pub extern "C" fn pl_caws_uuid(t_uuid: term_t) -> c_int {
         }
     };
     unsafe {
-        if PL_unify_atom_chars(t_uuid, c_str.as_ptr()) != 0 {
+        if unify_text_utf8(t_uuid, PL_ATOM, c_str.as_ptr()) != 0 {
             1
         } else {
             log::error!("caws_uuid/1: unification failed");

@@ -1007,3 +1007,41 @@ fn test_overlay_exports_include_the_promoted_and_core_predicates() {
     }
     assert!(!exports.iter().any(|e| e == "sdp_read/3"), "internal helpers are not exports");
 }
+
+// ---------------------------------------------------------------------------
+// Non-ASCII text must cross the Rust/Prolog boundary as UTF-8 (found 2026-09-25:
+// an LLM reply's em dash came back as "â\u{80}\u{94}" because text entering Prolog
+// was read as ISO-8859-1, one character per UTF-8 byte).
+// ---------------------------------------------------------------------------
+
+const SAMPLE: &str = "a\u{2014}b caf\u{e9} \u{65e5}\u{672c} \u{1F419}";
+
+/// A goal that contains non-ASCII text is parsed as UTF-8: the atom has 13 characters, not 23 bytes.
+#[test]
+fn test_goal_text_is_read_as_utf8() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    let result = env
+        .query_with_bindings(&format!("atom_length('{}', N)", SAMPLE))
+        .expect("query failed");
+    assert!(result.contains("13"), "atom_length should count characters, got: {}", result);
+    assert!(!result.contains("23"), "atom_length counted UTF-8 bytes: {}", result);
+}
+
+/// Non-ASCII text in a goal comes back out unchanged (no double encoding).
+#[test]
+fn test_goal_text_round_trips_unchanged() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    let result = env
+        .query_with_bindings(&format!("X = \"{}\"", SAMPLE))
+        .expect("query failed");
+    assert!(result.contains(SAMPLE), "text was altered on the way through: {}", result);
+}
+
+/// A clause asserted from text keeps its non-ASCII characters.
+#[test]
+fn test_asserted_text_round_trips_unchanged() {
+    let env = PrologEnvironment::new().expect("Failed to create environment");
+    env.assertz(&format!("moji_fact('{}')", SAMPLE)).expect("assert failed");
+    let result = env.query_with_bindings("moji_fact(X)").expect("query failed");
+    assert!(result.contains(SAMPLE), "asserted text was altered: {}", result);
+}

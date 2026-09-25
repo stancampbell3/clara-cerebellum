@@ -7,6 +7,7 @@
 //! when multiple crates (clara-clips, clara-prolog) are linked together.
 
 use super::bindings::*;
+use super::conversion::unify_text_utf8;
 use clara_toolbox::ffi::{evaluate_json_string, free_c_string};
 use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
@@ -61,7 +62,7 @@ pub extern "C" fn pl_clara_evaluate(t0: term_t, t1: term_t) -> c_int {
         }
 
         // Unify result with second argument
-        let success = PL_unify_string_chars(t1, result_ptr);
+        let success = unify_text_utf8(t1, PL_STRING, result_ptr);
 
         // Free the result string
         free_c_string(result_ptr);
