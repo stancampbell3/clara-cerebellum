@@ -147,6 +147,21 @@ pub struct PersistenceConfig {
     /// ceiling.
     #[serde(default = "default_deduction_max_deadline_seconds")]
     pub deduction_max_deadline_seconds: u64,
+    /// How long after a Ritual is terminated before Dis deletes its Kafka topic,
+    /// in seconds. The grace lets participants notice the terminated state on
+    /// their next poll and detach first. Default: 600. 0 disables the topic
+    /// reaper entirely (topics then persist until removed by hand).
+    #[serde(default = "default_ritual_topic_grace_seconds")]
+    pub ritual_topic_grace_seconds: u64,
+    /// How often the topic reaper runs, in seconds. Default: 300. Ignored when
+    /// `ritual_topic_grace_seconds` is 0.
+    #[serde(default = "default_ritual_topic_sweep_interval_seconds")]
+    pub ritual_topic_sweep_interval_seconds: u64,
+    /// Also delete `{domain}.ritual.{uuid}` topics that no Ritual in the
+    /// registry owns (wiped store, memory-only restart), once seen on two
+    /// consecutive sweeps. Default: true.
+    #[serde(default = "default_ritual_topic_reap_orphans")]
+    pub ritual_topic_reap_orphans: bool,
 }
 
 fn default_evaluate_cache_ttl_seconds() -> u64 { 14400 }
@@ -154,6 +169,9 @@ fn default_deduction_entry_ttl_seconds() -> u64 { 3600 }
 fn default_deduction_entry_sweep_interval_seconds() -> u64 { 300 }
 fn default_deduction_default_deadline_seconds() -> u64 { 3600 }
 fn default_deduction_max_deadline_seconds() -> u64 { 14400 }
+fn default_ritual_topic_grace_seconds() -> u64 { 600 }
+fn default_ritual_topic_sweep_interval_seconds() -> u64 { 300 }
+fn default_ritual_topic_reap_orphans() -> bool { true }
 
 /// Observability configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

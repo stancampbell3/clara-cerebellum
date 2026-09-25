@@ -1,7 +1,7 @@
 # Ground state: a known baseline for Edgequake and the stack around it
 
 *Status: built, tested and run live 2026-09-24. Baseline v1 (13 design documents, 67 MB) is captured, curated and verified; a full reset-and-restore cycle was run on
-`assistant.general` and `verify` passed 14/14. The G1 workspace-slug change is committed but NOT yet deployed (clara-api rebuild pending).*
+`assistant.general` and `verify` passed 14/14. G1 (analysts name their workspace by slug) is deployed and verified live 2026-09-25, strict mode on. `pack`/`unpack`/`mirror` added.*
 
 ## Why
 
@@ -59,6 +59,9 @@ the Postgres layer exists: `restore` brings the workspace back byte for byte. Us
     scripts/ground_state.sh seed    --from DIR
     scripts/ground_state.sh verify  --baseline DIR
     scripts/ground_state.sh curate  --baseline DIR --keep-users a,b --empty table1,table2
+    scripts/ground_state.sh pack    --baseline DIR [--out DIR]      # <name>.tar.zst + .sha256 + .json
+    scripts/ground_state.sh unpack  --from PACK --to DIR             # checksum verified before extracting
+    scripts/ground_state.sh mirror  --pack PACK --to host:/path      # rsync, then sha256sum -c on the far host
     scripts/ground_state.sh queue   status | expire-stuck --older-than 6h | archive --to DIR | export --to DIR | reset-coupled --to DIR | promote ...
 
 `curate` makes a *captured* baseline a clean one (a capture records whatever accumulated: 65 users, 43 draft/terminated ritual configs, topics that say
@@ -95,7 +98,21 @@ A queue row holds a landed reply and its citations; the crawled, LLM-validated p
 (`none` now means "the assistant's workspace by slug", not "whatever the tool defaults to") pass `workspace_slug`, and the Rust `edgequake` tool resolves it through
 `GET /tenants/{t}/workspaces/by-slug/{slug}` (cached per process, so it survives a workspace being dropped and recreated).
 `EDGEQUAKE_REQUIRE_EXPLICIT_WORKSPACE=true` (compose, clara-api; default **false**) makes a call that names no workspace an error and ignores
-`EDGEQUAKE_DEFAULT_WORKSPACE`. **Rollout:** rebuild clara-api, verify the Clara acceptance question, then set the flag to `true` and remove the default from `docker/.env`.
+`EDGEQUAKE_DEFAULT_WORKSPACE`. **Rolled out 2026-09-25:** the flag now defaults to `true` in compose and `EDGEQUAKE_DEFAULT_WORKSPACE` is gone from `docker/.env`, so an unnamed-workspace call fails loudly.
+While verifying, a pre-existing bug surfaced: `progressive_research.pl` passed a *list* as the tool's `context` (a String), so tier b failed with "invalid type: sequence"; the option was removed (`tests/test_progressive_edgequake_call.py` guards it).
+
+## Who cleans up Kafka (decided 2026-09-25)
+
+Dis owns a Ritual's topic and deletes it; participants clean up their own state.
+- **Dis** (`RitualRegistry::reap_topics`, a `ritual-topic-reaper` thread): deletes the topic of a Ritual terminated more than `ritual_topic_grace_seconds` ago (default 600), and, with `ritual_topic_reap_orphans` (default true), `{domain}.ritual.{uuid}` topics the registry does not know, once seen on two consecutive sweeps. Never touches active Rituals or non-ritual topics. Sweeps every `ritual_topic_sweep_interval_seconds` (300); grace 0 disables it.
+- **FieryPit** (`goat/app/participant_reaper.py`, every `RITUAL_PARTICIPANT_REAP_INTERVAL_SECONDS`, default 60, 0 disables): polls Dis for each joined Ritual and, on `terminated` or 404, leaves it (stops the consumer, which leaves its group, and frees the evaluator slot). A Dis outage is "unknown" and does nothing.
+- Consumer groups are created by the participants' consumers and expire on the broker once empty; Dis does not manage them.
+- Live 2026-09-25: the first sweep after deploy deleted 300 terminated rituals' topics, 0 errors. `ground_state_kafka.py reset` remains the manual override.
+
+## Packing a baseline
+
+`pack` writes `<name>.tar.zst` (zstd; baseline_v1 is 25 MB) beside a SHA-256 sidecar and a JSON summary. `unpack` refuses an archive with no sidecar or a mismatched digest, and refuses to overwrite an existing directory.
+`mirror` copies the three files to another host and verifies there. limbic and pineal share `/mnt/moonpool`, so that copy is already visible to both; `mirror` is for an off-site or GitLab-LFS-side copy (git-lfs is not installed, so committing the blob is not set up).
 
 ## Tests
 

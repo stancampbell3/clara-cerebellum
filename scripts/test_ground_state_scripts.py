@@ -167,3 +167,30 @@ def test_verify_ignores_ephemeral_topics_a_live_ritual_owns():
     assert live_only["ok"]  # both belong to live Rituals (permanent residents, e.g. the composed analysts)
     orphaned = gk.verify(K(), base, live_rituals=[R1])
     assert not orphaned["ok"] and any(c["detail"] == 1 for c in orphaned["checks"] if not c["ok"])
+
+
+def test_pack_unpack_roundtrip_and_tamper(tmp_path):
+    import argparse, shutil
+    import pytest
+    if not shutil.which("zstd"):
+        pytest.skip("zstd not installed")
+    import ground_state as g
+    base = tmp_path / "b1"
+    (base / "documents").mkdir(parents=True)
+    (base / "manifest.json").write_text("{}")
+    (base / "documents" / "a.md").write_text("hello")
+    out = tmp_path / "out"
+    g.cmd_pack(argparse.Namespace(baseline=str(base), out=str(out)))
+    pack = out / "b1.tar.zst"
+    assert pack.exists() and (out / "b1.tar.zst.sha256").exists()
+    dest = tmp_path / "dest"
+    g.cmd_unpack(argparse.Namespace(src=str(pack), to=str(dest)))
+    assert (dest / "b1" / "documents" / "a.md").read_text() == "hello"
+    with pytest.raises(SystemExit):  # refuses to overwrite
+        g.cmd_unpack(argparse.Namespace(src=str(pack), to=str(dest)))
+    with pack.open("ab") as fh:
+        fh.write(b"x")
+    with pytest.raises(SystemExit, match="mismatch"):
+        g.cmd_unpack(argparse.Namespace(src=str(pack), to=str(tmp_path / "d2")))
+    with pytest.raises(SystemExit):  # not a baseline
+        g.cmd_pack(argparse.Namespace(baseline=str(tmp_path), out=None))

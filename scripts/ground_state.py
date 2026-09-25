@@ -19,6 +19,9 @@ A baseline is ONE directory holding every layer, so that "the state we test agai
     ground_state.py seed    --from DIR
     ground_state.py verify  --baseline DIR
     ground_state.py curate  --baseline DIR --keep-users a,b --empty table1,table2
+    ground_state.py pack    --baseline DIR [--out DIR]        # <name>.tar.zst + .sha256 + .json
+    ground_state.py unpack  --from PACK --to DIR               # verifies the checksum first
+    ground_state.py mirror  --pack PACK --to host:/path        # rsync + checksum check on the far side
     ground_state.py queue   <status|expire-stuck|archive|export|reset-coupled|promote ...>
 
 Everything destructive archives first (`--no-archive` must be explicit), names the workspace by slug (default assistant.general), and
@@ -347,6 +350,70 @@ def cmd_curate(args) -> int:
     return r["returncode"]
 
 
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cmd_pack(args) -> int:
+    """Pack a baseline directory into one `<name>.tar.zst` with a SHA-256 sidecar (and a small JSON summary), for storage and mirroring."""
+    base = Path(args.baseline).resolve()
+    if not (base / "manifest.json").exists():
+        raise SystemExit(f"{base} is not a baseline (no manifest.json)")
+    out_dir = Path(args.out) if args.out else base.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pack = out_dir / f"{base.name}.tar.zst"
+    # Numeric owner and sorted names keep the archive reproducible enough to compare; the duckdb/ directory keeps its 0700 mode.
+    _run(["tar", "--zstd", "--sort=name", "--numeric-owner", "-cf", str(pack), "-C", str(base.parent), base.name])
+    digest = _sha256(pack)
+    Path(str(pack) + ".sha256").write_text(f"{digest}  {pack.name}\n")
+    summary = {"pack": pack.name, "sha256": digest, "bytes": pack.stat().st_size}
+    if (base / "baseline.json").exists():
+        summary["baseline"] = json.loads((base / "baseline.json").read_text())
+    Path(str(pack) + ".json").write_text(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_unpack(args) -> int:
+    """Verify a pack against its SHA-256 sidecar, then extract it; refuses to overwrite an existing directory."""
+    pack = Path(args.src).resolve()
+    sidecar = Path(str(pack) + ".sha256")
+    if not sidecar.exists():
+        raise SystemExit(f"no checksum next to {pack.name} ({sidecar.name}); refusing to unpack an unverified archive")
+    want = sidecar.read_text().split()[0]
+    have = _sha256(pack)
+    if have != want:
+        raise SystemExit(f"checksum mismatch for {pack.name}: expected {want[:12]}..., got {have[:12]}...; not unpacking")
+    dest = Path(args.to).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    top = subprocess.run(["tar", "--zstd", "-tf", str(pack)], capture_output=True, text=True, check=True).stdout.split("/")[0]
+    if (dest / top).exists():
+        raise SystemExit(f"{dest / top} already exists; remove it first")
+    _run(["tar", "--zstd", "-xf", str(pack), "-C", str(dest)])
+    print(json.dumps({"unpacked": str(dest / top), "verified_sha256": want}, indent=2))
+    return 0
+
+
+def cmd_mirror(args) -> int:
+    """Copy a pack, its checksum and summary to another host (`host:/path`) and check the checksum THERE."""
+    pack = Path(args.pack).resolve()
+    host, _, path = args.to.partition(":")
+    if not host or not path:
+        raise SystemExit("--to must look like host:/absolute/path")
+    files = [str(pack), str(pack) + ".sha256", str(pack) + ".json"]
+    _run(["ssh", host, "mkdir", "-p", path])
+    _run(["rsync", "-a", "--partial", *files, f"{host}:{path}/"])
+    check = subprocess.run(["ssh", host, f"cd {path} && sha256sum -c {pack.name}.sha256"], capture_output=True, text=True)
+    print(json.dumps({"mirrored_to": args.to, "remote_check": check.stdout.strip() or check.stderr.strip()}, indent=2))
+    return 0 if check.returncode == 0 else 1
+
+
 def cmd_queue(args) -> int:
     r = maintenance(args.rest)
     print(json.dumps(r["result"], indent=2, default=str))
@@ -382,10 +449,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cu.add_argument("--baseline", required=True)
     cu.add_argument("--keep-users", default="")
     cu.add_argument("--empty", default="")
+    pk = sub.add_parser("pack", help="pack a baseline into <name>.tar.zst with a SHA-256 sidecar")
+    pk.add_argument("--baseline", required=True)
+    pk.add_argument("--out", default=None)
+    up = sub.add_parser("unpack", help="verify a pack's checksum, then extract it")
+    up.add_argument("--from", dest="src", required=True)
+    up.add_argument("--to", required=True)
+    mi = sub.add_parser("mirror", help="copy a pack to another host and verify it there")
+    mi.add_argument("--pack", required=True)
+    mi.add_argument("--to", required=True, help="host:/absolute/path")
     q = sub.add_parser("queue")
     q.add_argument("rest", nargs=argparse.REMAINDER)
     args = p.parse_args(argv)
-    fn = {"status": cmd_status, "capture": cmd_capture, "reset": cmd_reset, "restore": cmd_restore, "seed": cmd_seed, "verify": cmd_verify, "queue": cmd_queue, "curate": cmd_curate}[args.cmd]
+    fn = {"status": cmd_status, "capture": cmd_capture, "reset": cmd_reset, "restore": cmd_restore, "seed": cmd_seed, "verify": cmd_verify, "queue": cmd_queue, "curate": cmd_curate, "pack": cmd_pack, "unpack": cmd_unpack, "mirror": cmd_mirror}[args.cmd]
     try:
         return fn(args)
     except (gp.PgError, gk.KafkaError) as exc:

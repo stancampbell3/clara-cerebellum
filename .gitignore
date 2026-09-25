@@ -49,3 +49,4 @@ models/
 
 # our mixing place
 wok/
+__pycache__/

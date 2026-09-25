@@ -51,6 +51,11 @@ deduction_entry_sweep_interval_seconds = 300  # sweep every 5 minutes
 # deadline_ms wins over the default, and the ceiling clamps both. 0 disables.
 deduction_default_deadline_seconds = 3600     # 1 hour when a request sets none
 deduction_max_deadline_seconds = 14400        # 4 hour ceiling on any deadline
+# Kafka topic reaper: Dis deletes a terminated Ritual's topic after this grace
+# (participants notice the terminated state on poll and detach first).
+ritual_topic_grace_seconds = 600              # 10 minutes; 0 disables the reaper
+ritual_topic_sweep_interval_seconds = 300     # sweep every 5 minutes
+ritual_topic_reap_orphans = true              # also delete ritual topics the registry does not know
 
 [observability]
 log_level = "info"

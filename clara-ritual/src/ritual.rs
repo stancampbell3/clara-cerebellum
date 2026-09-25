@@ -40,4 +40,10 @@ pub struct Ritual {
     /// receives the same `performance_id`. Anonymous joins (no key) always
     /// receive a fresh `performance_id` and are not recorded here.
     pub participants: HashMap<String, Uuid>,
+    /// When the Ritual was terminated (epoch ms); `None` while active. Restored
+    /// from the persisted row's `updated_at_ms`, which `terminate` stamps.
+    pub terminated_at_ms: Option<i64>,
+    /// Set once the Kafka topic has been deleted by the topic reaper.
+    /// In-memory only: after a restart one redundant (idempotent) delete is issued.
+    pub topic_reaped: bool,
 }

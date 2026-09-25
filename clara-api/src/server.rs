@@ -147,6 +147,35 @@ pub async fn start_server(
         info!("RitualRegistry: no Coire store configured — rituals will not survive restarts");
     }
 
+    // Ritual topic reaper: Dis owns the Kafka topics it creates, so it deletes a
+    // terminated Ritual's topic after a grace period (and topics no Ritual owns).
+    // A plain thread, not a tokio task: the broker calls block on their own runtime.
+    if config.persistence.ritual_topic_grace_seconds > 0 {
+        let reg      = ritual_registry.clone();
+        let grace    = Duration::from_secs(config.persistence.ritual_topic_grace_seconds);
+        let interval = Duration::from_secs(config.persistence.ritual_topic_sweep_interval_seconds.max(1));
+        let orphans  = config.persistence.ritual_topic_reap_orphans;
+        info!(
+            "Ritual topic reaper: grace={}s interval={}s orphans={}",
+            grace.as_secs(), interval.as_secs(), orphans
+        );
+        std::thread::Builder::new()
+            .name("ritual-topic-reaper".into())
+            .spawn(move || loop {
+                std::thread::sleep(interval);
+                let r = reg.reap_topics(grace, orphans);
+                if r.terminated_topics + r.orphan_topics + r.errors > 0 {
+                    info!(
+                        "Ritual topic reaper: deleted {} terminated + {} orphan topic(s), {} error(s)",
+                        r.terminated_topics, r.orphan_topics, r.errors
+                    );
+                }
+            })
+            .expect("spawn ritual-topic-reaper");
+    } else {
+        info!("Ritual topic reaper: disabled (ritual_topic_grace_seconds=0)");
+    }
+
     // Deduction-entry reaper: evicts terminal-status AppState.deductions
     // entries older than deduction_entry_ttl_seconds — see
     // spawn_deduction_reaper's own doc comment for why this is separate

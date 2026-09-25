@@ -69,6 +69,9 @@ pub fn default_persistence_config() -> PersistenceConfig {
         deduction_entry_sweep_interval_seconds: 300,
         deduction_default_deadline_seconds: 3600,
         deduction_max_deadline_seconds: 14400,
+        ritual_topic_grace_seconds: 600,
+        ritual_topic_sweep_interval_seconds: 300,
+        ritual_topic_reap_orphans: true,
     }
 }
 

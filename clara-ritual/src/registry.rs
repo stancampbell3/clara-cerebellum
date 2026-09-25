@@ -45,6 +45,16 @@ pub struct RitualRegistry {
     broker:     Arc<dyn KafkaBridge>,
     rituals:    Arc<RwLock<HashMap<Uuid, Ritual>>>,
     store:      Option<CoireStore>,
+    /// Orphan topics seen by the previous topic-reap sweep (see `reap_topics`).
+    orphan_candidates: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+/// What one [`RitualRegistry::reap_topics`] sweep did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TopicReapReport {
+    pub terminated_topics: usize,
+    pub orphan_topics:     usize,
+    pub errors:            usize,
 }
 
 impl RitualRegistry {
@@ -54,6 +64,7 @@ impl RitualRegistry {
             broker,
             rituals: Arc::new(RwLock::new(HashMap::new())),
             store: None,
+            orphan_candidates: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -83,6 +94,8 @@ impl RitualRegistry {
                 state: RitualState::Active,
                 topic: topic.clone(),
                 participants: std::collections::HashMap::new(),
+                terminated_at_ms: None,
+                topic_reaped: false,
             },
         );
         if let Some(ref store) = self.store {
@@ -174,14 +187,17 @@ impl RitualRegistry {
         Ok(handle)
     }
 
-    /// Mark a Ritual as terminated. Existing handles continue to work until
-    /// the broker topic is deleted (Phase 5 admin API).
+    /// Mark a Ritual as terminated. Existing handles keep working until the
+    /// topic reaper ([`reap_topics`](Self::reap_topics)) deletes the broker
+    /// topic after its grace period; participants notice the terminated state
+    /// when they poll.
     pub fn terminate(&self, ritual_id: Uuid) -> Result<(), RitualError> {
         let mut guard  = self.rituals.write().unwrap();
         let ritual = guard.get_mut(&ritual_id).ok_or_else(|| {
             RitualError::TopicNotFound(ritual_id.to_string())
         })?;
         ritual.state = RitualState::Terminated;
+        ritual.terminated_at_ms.get_or_insert_with(now_ms);
         if let Some(ref store) = self.store {
             if let Err(e) = store.set_ritual_state(ritual_id, RitualState::Terminated.as_str()) {
                 log::error!(
@@ -192,6 +208,91 @@ impl RitualRegistry {
         }
         log::info!("RitualRegistry: terminated ritual {}", ritual_id);
         Ok(())
+    }
+
+    /// Delete the Kafka topics that no Ritual can use any more. Dis owns this
+    /// (it creates the topics and is the lifecycle authority); participants
+    /// only detach.
+    ///
+    /// 1. A Ritual terminated at least `grace` ago has its topic deleted once.
+    ///    The grace period gives participants time to notice the terminated
+    ///    state and stop before the topic disappears under them.
+    /// 2. With `reap_orphans`, a topic named `{domain}.ritual.{uuid}` whose
+    ///    uuid this registry does not know (wiped store, memory-only Dis) is
+    ///    deleted, but only once it has been seen orphaned on two consecutive
+    ///    sweeps, so a topic created a moment before its registry entry is
+    ///    never caught.
+    ///
+    /// Active Rituals are never touched. Broker failures are logged and
+    /// retried on the next sweep. Blocks on the broker: call from a plain
+    /// thread, not an async task.
+    pub fn reap_topics(&self, grace: std::time::Duration, reap_orphans: bool) -> TopicReapReport {
+        let mut report = TopicReapReport::default();
+        let cutoff = now_ms() - grace.as_millis() as i64;
+        let due: Vec<(Uuid, String)> = self.rituals.read().unwrap()
+            .values()
+            .filter(|r| {
+                r.state == RitualState::Terminated
+                    && !r.topic_reaped
+                    && r.terminated_at_ms.map_or(false, |t| t <= cutoff)
+            })
+            .map(|r| (r.ritual_id, r.topic.clone()))
+            .collect();
+        for (id, topic) in due {
+            match self.broker.delete_topic(&topic) {
+                Ok(()) => {
+                    if let Some(r) = self.rituals.write().unwrap().get_mut(&id) {
+                        r.topic_reaped = true;
+                    }
+                    log::info!("RitualRegistry: reaped topic {} of terminated ritual {}", topic, id);
+                    report.terminated_topics += 1;
+                }
+                Err(e) => {
+                    log::warn!("RitualRegistry: could not delete topic {}: {}", topic, e);
+                    report.errors += 1;
+                }
+            }
+        }
+        if !reap_orphans {
+            return report;
+        }
+        let prefix = match topic_name(&self.dis_domain, Uuid::nil()) {
+            Ok(n) => n.trim_end_matches(&Uuid::nil().to_string()).to_string(),
+            Err(_) => return report,
+        };
+        let topics = match self.broker.list_topics() {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("RitualRegistry: orphan sweep could not list topics: {}", e);
+                report.errors += 1;
+                return report;
+            }
+        };
+        let known: std::collections::HashSet<String> =
+            self.rituals.read().unwrap().values().map(|r| r.topic.clone()).collect();
+        let orphans: std::collections::HashSet<String> = topics.into_iter()
+            .filter(|t| {
+                t.strip_prefix(&prefix).map_or(false, |rest| Uuid::parse_str(rest).is_ok())
+                    && !known.contains(t)
+            })
+            .collect();
+        let mut seen = self.orphan_candidates.lock().unwrap();
+        for t in orphans.iter().filter(|t| seen.contains(*t)) {
+            match self.broker.delete_topic(t) {
+                Ok(()) => {
+                    log::info!("RitualRegistry: reaped orphan topic {} (no such ritual)", t);
+                    report.orphan_topics += 1;
+                }
+                Err(e) => {
+                    log::warn!("RitualRegistry: could not delete orphan topic {}: {}", t, e);
+                    report.errors += 1;
+                }
+            }
+        }
+        // Next sweep's candidates: the orphans seen now that were not just deleted.
+        *seen = orphans;
+        drop(seen);
+        report
     }
 
     pub fn get_status(&self, ritual_id: Uuid) -> Option<RitualState> {
@@ -294,6 +395,7 @@ impl RitualRegistry {
                     );
                 }
             }
+            let state_is_terminated = state == RitualState::Terminated;
             self.rituals.write().unwrap().insert(
                 row.ritual_id,
                 Ritual {
@@ -302,6 +404,8 @@ impl RitualRegistry {
                     state,
                     topic: row.topic,
                     participants,
+                    terminated_at_ms: (state_is_terminated).then_some(row.updated_at_ms),
+                    topic_reaped: false,
                 },
             );
             restored += 1;
@@ -590,5 +694,67 @@ mod tests {
         assert_eq!(store.load_rituals().unwrap().len(), 1);
         let again = make_persistent_registry(&store);
         assert_eq!(again.restore_from_store(), 1);
+    }
+
+    // ── topic reaper ──────────────────────────────────────────────────────────
+
+    fn make_registry_with_broker() -> (RitualRegistry, Arc<InMemoryBroker>) {
+        let broker = Arc::new(InMemoryBroker::new());
+        (RitualRegistry::new("dis.test", broker.clone()), broker)
+    }
+
+    #[test]
+    fn reap_deletes_terminated_topic_only_after_grace() {
+        let (reg, broker) = make_registry_with_broker();
+        let id = reg.create(make_config("r")).unwrap();
+        let topic = topic_name("dis.test", id).unwrap();
+        reg.terminate(id).unwrap();
+        let r = reg.reap_topics(std::time::Duration::from_secs(3600), false);
+        assert_eq!(r, TopicReapReport::default());
+        assert!(broker.list_topics().unwrap().contains(&topic));
+        let r = reg.reap_topics(std::time::Duration::ZERO, false);
+        assert_eq!(r.terminated_topics, 1);
+        assert!(!broker.list_topics().unwrap().contains(&topic));
+        // once only
+        assert_eq!(reg.reap_topics(std::time::Duration::ZERO, false).terminated_topics, 0);
+    }
+
+    #[test]
+    fn reap_never_touches_active_rituals() {
+        let (reg, broker) = make_registry_with_broker();
+        let id = reg.create(make_config("live")).unwrap();
+        let topic = topic_name("dis.test", id).unwrap();
+        for _ in 0..3 {
+            reg.reap_topics(std::time::Duration::ZERO, true);
+        }
+        assert!(broker.list_topics().unwrap().contains(&topic));
+    }
+
+    #[test]
+    fn orphan_topic_needs_two_sweeps_and_ignores_other_topics() {
+        let (reg, broker) = make_registry_with_broker();
+        let orphan = topic_name("dis.test", Uuid::new_v4()).unwrap();
+        broker.ensure_topic(&orphan, 1, 1).unwrap();
+        broker.ensure_topic("dis.test.coire.notes", 1, 1).unwrap();
+        broker.ensure_topic("other.domain.ritual.not-a-uuid", 1, 1).unwrap();
+        let g = std::time::Duration::ZERO;
+        assert_eq!(reg.reap_topics(g, true).orphan_topics, 0);
+        assert!(broker.list_topics().unwrap().contains(&orphan));
+        assert_eq!(reg.reap_topics(g, true).orphan_topics, 1);
+        let left = broker.list_topics().unwrap();
+        assert!(!left.contains(&orphan));
+        assert!(left.contains(&"dis.test.coire.notes".to_string()));
+        assert!(left.contains(&"other.domain.ritual.not-a-uuid".to_string()));
+    }
+
+    #[test]
+    fn orphan_reaping_is_opt_in() {
+        let (reg, broker) = make_registry_with_broker();
+        let orphan = topic_name("dis.test", Uuid::new_v4()).unwrap();
+        broker.ensure_topic(&orphan, 1, 1).unwrap();
+        for _ in 0..3 {
+            reg.reap_topics(std::time::Duration::ZERO, false);
+        }
+        assert!(broker.list_topics().unwrap().contains(&orphan));
     }
 }
