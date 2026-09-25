@@ -25,7 +25,7 @@ Each analyst `.pl` gained `assistant_turn/6` (with `Tier`); `assistant_turn/5` r
 
 1. **Routing corpus** (`test_clara_routing.py`, no LLM): `route/2` from `clara_router.pl` is registered with the live Dis and run over a table of queries. It is the
    routing contract written down. Rows marked **KNOWN GAP** are strict expected-failures: things we expect to work that the rules get wrong today; fixing the
-   router turns them into failures that ask for the marker to be removed. Current gaps: build/write-code requests are not sent to the Ego; any short
+   router turns them into failures that ask for the marker to be removed. Current gaps (build/write-code requests were a gap until 2026-09-25: `build_request/1` now sends an imperative to make software, such as the Godot request, to the Ego): any short
    question-free message is treated as chit-chat (including "Tell me about rituals"); a greeting with a question mark is not chit-chat; the bare word
    "adopt " and the phrase "decide between" trigger deliberation even for factual questions.
 2. **Live paths** (`test_clara_paths.py`): greeting (terse path, no side effects); generic knowledge (tier `local`, no citations, so no Edgequake query);
@@ -106,3 +106,12 @@ Measured 2026-09-25 on "What is the capital of France?" through `progressive`, 8
 the model answers correctly every time, so roughly half of trivial turns pay for Edgequake, a Groq call (rate-limit exposure) or even queue a research crawl. The local-knowledge
 test therefore requires only that the retrieval-free path exists and is clean (1 of 5 sessions). Candidate improvements, none started: a stricter or constrained-decoding
 verdict for the sufficiency check (see memory `constrained_decoding_verdict_model`), a cheap "well-known fact" pre-check, or caching verdicts.
+
+## Incident follow-up: orphaned evaluations (2026-09-25)
+
+A "create a Godot project" request drove the chat evaluator into a 25 minute `write_file` loop while the user had already been told "I couldn't come up with an answer".
+Root cause of the orphaned work: the request-logging middleware was a `BaseHTTPMiddleware`, which hides client disconnects, so `/evaluate`'s cancel-on-disconnect never fired
+(reproduced: a client that hung up after 3 s left the evaluation running; after the fix the log shows "Client disconnected during evaluation ... cancelled successfully").
+Fixes: pure-ASGI `goat/app/request_log.py`; `ToolLoopGuard` (repeated identical call, total calls, wall clock; `TOOL_LOOP_MAX_REPEATS`/`_CALLS`/`_SECONDS`, defaults 2/25/300);
+hung-detector auto-cancel on by default at 900 s (`HUNG_AUTO_CANCEL`, `HUNG_THRESHOLD_SECONDS`); router cue for build requests. Trust model: evaluators keep their configured
+toolbox inside their own workspace and are bounded, not de-fanged; the Ego (Hermes) is the one behind the Superego gate.
