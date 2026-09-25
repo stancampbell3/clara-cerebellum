@@ -271,14 +271,15 @@ def cmd_reset(args) -> int:
         if ws:
             plan["orphans_cleaned"] = gp.clean_orphans(pg_handle(), ws)
     if "dis" in comps:
-        # Terminate first, so the Kafka step below sees them as not live. lildaemon caches its standing Ritual in memory, so it is
-        # restarted afterwards to create a fresh one.
+        # Terminate first, so the Kafka step below sees them as not live.
         plan["dis"] = {"terminated_rituals": len(terminate_dis_rituals())}
-        if container_running(LILDAEMON_CONTAINER):
-            _run(["docker", "restart", LILDAEMON_CONTAINER], stdout=subprocess.DEVNULL)
-            plan["dis"]["lildaemon"] = "restarted"
     if "kafka" in comps:
         plan["kafka"] = gk.reset(gk.Kafka(), DIS_URL, args.all_kafka, dry_run=False)
+    if "dis" in comps and container_running(LILDAEMON_CONTAINER):
+        # lildaemon caches its standing Ritual in memory, so restart it AFTER the topics are gone: what it creates on the way up
+        # (its standing Ritual, the composed analysts) is then never deleted from under it.
+        _run(["docker", "restart", LILDAEMON_CONTAINER], stdout=subprocess.DEVNULL)
+        plan["dis"]["lildaemon"] = "restarted"
     print(json.dumps(plan, indent=2, default=str))
     return 0
 
@@ -333,7 +334,7 @@ def cmd_verify(args) -> int:
     o.pop("_ids")
     checks.append({"layer": "postgres", "check": "no orphaned vector/kv rows from deleted documents", "ok": o["clean"], "detail": o})
     if (base / "kafka.json").exists():
-        kv = gk.verify(gk.Kafka(), json.loads((base / "kafka.json").read_text()))
+        kv = gk.verify(gk.Kafka(), json.loads((base / "kafka.json").read_text()), live_rituals=gk.live_ritual_ids(DIS_URL))
         checks += [{"layer": "kafka", **c} for c in kv["checks"]]
     ok = all(c["ok"] for c in checks)
     print(json.dumps({"ok": ok, "failed": [c for c in checks if not c["ok"]], "checks": len(checks)}, indent=2, default=str))

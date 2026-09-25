@@ -169,13 +169,21 @@ def reset(k: Kafka, dis_url: Optional[str], delete_all: bool, dry_run: bool) -> 
     return {"dry_run": dry_run, "delete_all": delete_all, "topics": len(plan["topics"]), "groups": len(plan["groups"]), "sample": plan["topics"][:5]}
 
 
-def verify(k: Kafka, baseline: Dict, allow_ephemeral: bool = False) -> Dict:
-    have = set(k.topics())
+def verify(k: Kafka, baseline: Dict, allow_ephemeral: bool = False, live_rituals: Optional[Sequence[str]] = None) -> Dict:
+    """Expected topics exist, and no ephemeral topic is left over. When the live Rituals are known (`live_rituals`), a topic a live
+    Ritual owns is not left over: the composed analysts are permanent residents with topics of their own."""
+    topics = k.topics()
+    have = set(topics)
     missing = [t["name"] for t in baseline.get("expected_topics", []) if t["name"] not in have]
-    eph = [t for t in have if is_ephemeral_topic(t, baseline.get("ephemeral_prefixes", EPHEMERAL_PREFIXES))]
+    if live_rituals is not None:
+        eph = plan_reset(topics, [], live_rituals, False)["topics"]  # ephemeral topics no live Ritual owns
+        label = "no ephemeral topics without a live Ritual"
+    else:
+        eph = [t for t in have if is_ephemeral_topic(t, baseline.get("ephemeral_prefixes", EPHEMERAL_PREFIXES))]
+        label = "no ephemeral (ritual/coire) topics left"
     checks = [
         {"check": "expected topics exist", "ok": not missing, "detail": missing},
-        {"check": "no ephemeral (ritual/coire) topics left", "ok": allow_ephemeral or not eph, "detail": len(eph)},
+        {"check": label, "ok": allow_ephemeral or not eph, "detail": len(eph)},
     ]
     return {"ok": all(c["ok"] for c in checks), "checks": checks}
 
@@ -217,7 +225,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     made.append(t["name"])
             out = {"created": made}
         else:
-            out = verify(k, json.loads(Path(args.baseline).read_text(encoding="utf-8")))
+            out = verify(
+                k,
+                json.loads(Path(args.baseline).read_text(encoding="utf-8")),
+                live_rituals=live_ritual_ids(args.dis) if args.dis else None,
+            )
     except (KafkaError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

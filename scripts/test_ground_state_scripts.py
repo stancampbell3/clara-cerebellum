@@ -155,3 +155,15 @@ def test_stale_hash_index_and_entity_vector_predicates_are_scoped_to_the_workspa
     assert f"doc:hash:{WS}:%" in h and "NOT EXISTS" in h and "public.documents" in h
     e = gp._stale_entity_vectors_sql(WS)
     assert "v.document_id IS NULL" in e and f"{WS}::" in e and "NOT EXISTS" in e and gp.GRAPH in e
+
+
+def test_verify_ignores_ephemeral_topics_a_live_ritual_owns():
+    class K:
+        def topics(self):
+            return ["__consumer_offsets", f"dis.local.ritual.{R1}", f"dis.local.ritual.{R2}"]
+
+    base = {"expected_topics": [{"name": "__consumer_offsets"}]}
+    live_only = gk.verify(K(), base, live_rituals=[R1, R2])
+    assert live_only["ok"]  # both belong to live Rituals (permanent residents, e.g. the composed analysts)
+    orphaned = gk.verify(K(), base, live_rituals=[R1])
+    assert not orphaned["ok"] and any(c["detail"] == 1 for c in orphaned["checks"] if not c["ok"])
