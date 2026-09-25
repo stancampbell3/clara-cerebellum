@@ -101,9 +101,28 @@
 ;;;
 ;;; The event is stored as:
 ;;;   {"type": "assert", "data": "user_authenticated(alice)"}
+(deffunction coire-json-escape (?s)
+  ;; Escape ?s for use inside a JSON string: backslash, double quote and the control characters that JSON forbids raw (newline, return, tab; the tab is a literal TAB character below because CLIPS reads an unknown escape such as backslash-t as the plain letter). Walks the
+  ;; string one character at a time (str-length / sub-string count characters, not bytes, so UTF-8 text passes through whole).
+  (bind ?out "")
+  (bind ?n (str-length ?s))
+  (bind ?nl (format nil "%n"))
+  (bind ?cr (format nil "%r"))
+  (loop-for-count (?i 1 ?n) do
+    (bind ?c (sub-string ?i ?i ?s))
+    (if (eq ?c "\\") then (bind ?out (str-cat ?out "\\\\"))
+     else (if (eq ?c "\"") then (bind ?out (str-cat ?out "\\\""))
+     else (if (eq ?c ?nl) then (bind ?out (str-cat ?out "\\n"))
+     else (if (eq ?c ?cr) then (bind ?out (str-cat ?out "\\r"))
+     else (if (eq ?c "	") then (bind ?out (str-cat ?out "\\t"))
+     else (bind ?out (str-cat ?out ?c))))))))
+  ?out)
+
 (deffunction coire-publish (?type ?data-str)
+  ;; ?data-str is escaped: a goal or fact containing a double quote, backslash or newline used to yield invalid JSON and the event
+  ;; was silently lost (found 2026-09-25 with (coire-publish-goal "assertz(echoed(\"x\"))")).
   (bind ?payload
-    (str-cat "{\"type\":\"" ?type "\",\"data\":\"" ?data-str "\"}"))
+    (str-cat "{\"type\":\"" ?type "\",\"data\":\"" (coire-json-escape ?data-str) "\"}"))
   (coire-emit ?*coire-session-id* "clips" ?payload))
 
 ;;; (coire-publish-assert ?fact-str)

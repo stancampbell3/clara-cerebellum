@@ -50,7 +50,7 @@ pub enum Term {
 /// "parent(tom, bob)"     →  "(parent tom bob)"
 /// ```
 pub fn prolog_to_clips_fact(s: &str) -> Result<String, String> {
-    let term = PrologParser::new(s.trim()).parse_term()?;
+    let term = PrologParser::new(s.trim()).parse_complete()?;
     Ok(render_clips_fact(&term))
 }
 
@@ -75,7 +75,7 @@ pub fn clips_fact_to_prolog(s: &str) -> Result<String, String> {
 
 /// Parse a Prolog term string into the shared Term AST.
 pub fn parse_prolog_term(s: &str) -> Result<Term, String> {
-    PrologParser::new(s.trim()).parse_term()
+    PrologParser::new(s.trim()).parse_complete()
 }
 
 /// Generate a CLIPS expression that retracts all facts matching the Prolog term.
@@ -87,8 +87,31 @@ pub fn parse_prolog_term(s: &str) -> Result<Term, String> {
 ///   "(do-for-all-facts ((?f foo)) TRUE (retract ?f))"
 /// ```
 pub fn prolog_to_clips_retract(s: &str) -> Result<String, String> {
-    let term = PrologParser::new(s.trim()).parse_term()?;
+    let term = PrologParser::new(s.trim()).parse_complete()?;
     Ok(render_clips_retract(&term))
+}
+
+// ── UTF-8 helpers ─────────────────────────────────────────────────────────────
+//
+// Both parsers walk the input as bytes (their delimiters are all ASCII), so any multi-byte character has to be reassembled whole:
+// pushing `byte as char` turned every UTF-8 byte into its own Latin-1 character (an em dash became three), and byte-class checks like
+// `is_ascii_alphanumeric` stopped a name at its first accented letter and let the rest of the input vanish.
+
+/// The character starting at `pos` (which must be a character boundary) and its length in bytes.
+fn char_at(input: &[u8], pos: usize) -> Option<(char, usize)> {
+    let first = *input.get(pos)?;
+    let len = if first < 0x80 {
+        1
+    } else if first >= 0xF0 {
+        4
+    } else if first >= 0xE0 {
+        3
+    } else {
+        2
+    };
+    let end = (pos + len).min(input.len());
+    let ch = std::str::from_utf8(&input[pos..end]).ok().and_then(|s| s.chars().next()).unwrap_or('\u{FFFD}');
+    Some((ch, end - pos))
 }
 
 // ── Prolog parser ─────────────────────────────────────────────────────────────
@@ -121,6 +144,43 @@ impl PrologParser {
         b
     }
 
+    /// Finish a character whose first byte `next()` has just returned (reads its continuation bytes).
+    fn take_char(&mut self, first: u8) -> char {
+        if first < 0x80 {
+            return first as char;
+        }
+        let start = self.pos - 1;
+        let (ch, len) = char_at(&self.input, start).unwrap_or(('\u{FFFD}', 1));
+        self.pos = start + len;
+        ch
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        char_at(&self.input, self.pos).map(|(c, _)| c)
+    }
+
+    fn advance_char(&mut self) {
+        if let Some((_, len)) = char_at(&self.input, self.pos) {
+            self.pos += len;
+        }
+    }
+
+    /// Parse one term and require that nothing but an optional closing full stop follows it, so trailing text is an error
+    /// instead of being silently dropped.
+    fn parse_complete(&mut self) -> Result<Term, String> {
+        let term = self.parse_term()?;
+        self.skip_ws();
+        if self.peek() == Some(b'.') {
+            self.next();
+            self.skip_ws();
+        }
+        if self.pos < self.input.len() {
+            let rest = String::from_utf8_lossy(&self.input[self.pos..]).into_owned();
+            return Err(format!("unexpected text after the Prolog term: {:?}", rest));
+        }
+        Ok(term)
+    }
+
     fn parse_term(&mut self) -> Result<Term, String> {
         self.skip_ws();
         match self.peek() {
@@ -130,6 +190,12 @@ impl PrologParser {
             Some(b) if b == b'-' || b.is_ascii_digit() => self.parse_number(),
             Some(b) if b.is_ascii_uppercase() || b == b'_' => self.parse_variable(),
             Some(b) if b.is_ascii_lowercase() => self.parse_atom_or_compound(),
+            Some(b) if b >= 0x80 => match self.peek_char() {
+                // Non-ASCII: a capital starts a variable; any other letter (including caseless ones such as CJK) starts an atom.
+                Some(c) if c.is_uppercase() => self.parse_variable(),
+                Some(c) if c.is_alphabetic() => self.parse_atom_or_compound(),
+                other => Err(format!("unexpected character '{}' in Prolog term", other.unwrap_or('\u{FFFD}'))),
+            },
             Some(b) => Err(format!("unexpected character '{}' in Prolog term", b as char)),
             None => Err("unexpected end of Prolog term".into()),
         }
@@ -156,11 +222,11 @@ impl PrologParser {
                     Some(b'\'') => s.push('\''),
                     Some(c) => {
                         s.push('\\');
-                        s.push(c as char);
+                        s.push(self.take_char(c));
                     }
                     None => return Err("unterminated escape in quoted atom".into()),
                 },
-                Some(c) => s.push(c as char),
+                Some(c) => s.push(self.take_char(c)),
             }
         }
         self.maybe_compound(s)
@@ -178,10 +244,10 @@ impl PrologParser {
                     Some(b't') => s.push('\t'),
                     Some(b'"') => s.push('"'),
                     Some(b'\\') => s.push('\\'),
-                    Some(c) => s.push(c as char),
+                    Some(c) => s.push(self.take_char(c)),
                     None => return Err("unterminated escape in string".into()),
                 },
-                Some(c) => s.push(c as char),
+                Some(c) => s.push(self.take_char(c)),
             }
         }
         Ok(Term::Str(s))
@@ -223,8 +289,8 @@ impl PrologParser {
 
     fn parse_variable(&mut self) -> Result<Term, String> {
         let start = self.pos;
-        while self.peek().map_or(false, |b| b.is_ascii_alphanumeric() || b == b'_') {
-            self.next();
+        while self.peek_char().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            self.advance_char();
         }
         let name = std::str::from_utf8(&self.input[start..self.pos])
             .map_err(|e| e.to_string())?
@@ -234,8 +300,8 @@ impl PrologParser {
 
     fn parse_atom_or_compound(&mut self) -> Result<Term, String> {
         let start = self.pos;
-        while self.peek().map_or(false, |b| b.is_ascii_alphanumeric() || b == b'_') {
-            self.next();
+        while self.peek_char().map_or(false, |c| c.is_alphanumeric() || c == '_') {
+            self.advance_char();
         }
         let name = std::str::from_utf8(&self.input[start..self.pos])
             .map_err(|e| e.to_string())?
@@ -312,6 +378,17 @@ impl ClipsParser {
         b
     }
 
+    /// Finish a character whose first byte `next()` has just returned (reads its continuation bytes).
+    fn take_char(&mut self, first: u8) -> char {
+        if first < 0x80 {
+            return first as char;
+        }
+        let start = self.pos - 1;
+        let (ch, len) = char_at(&self.input, start).unwrap_or(('\u{FFFD}', 1));
+        self.pos = start + len;
+        ch
+    }
+
     fn parse_fact(&mut self) -> Result<Term, String> {
         self.skip_ws();
         if self.peek() != Some(b'(') {
@@ -374,7 +451,7 @@ impl ClipsParser {
     fn parse_variable(&mut self) -> Result<Term, String> {
         self.next(); // consume ?
         let start = self.pos;
-        while self.peek().map_or(false, |b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        while self.peek().map_or(false, |b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b >= 0x80) {
             self.next();
         }
         let raw = std::str::from_utf8(&self.input[start..self.pos])
@@ -396,10 +473,10 @@ impl ClipsParser {
                     Some(b't') => s.push('\t'),
                     Some(b'"') => s.push('"'),
                     Some(b'\\') => s.push('\\'),
-                    Some(c) => s.push(c as char),
+                    Some(c) => s.push(self.take_char(c)),
                     None => return Err("unterminated escape in CLIPS string".into()),
                 },
-                Some(c) => s.push(c as char),
+                Some(c) => s.push(self.take_char(c)),
             }
         }
         Ok(Term::Str(s))

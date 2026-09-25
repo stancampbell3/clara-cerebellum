@@ -76,5 +76,33 @@ the shared Clara voice exists; an LLM judge for answer quality; a nightly wrappe
   `atom_length` counted bytes). Fixed by routing all of them through `PL_put_term_from_chars` / `PL_put_chars` / `PL_unify_chars` with `REP_UTF8`
   (`goal_text_to_term`, `put_text_utf8`, `unify_text_utf8` in `conversion.rs`). Correct text then produced wide strings, which exposed `PL_get_string` (narrow
   only) in the string-to-JSON path; that now uses `PL_get_chars` with `REP_UTF8`. Tests: 3 in `prolog_integration_tests.rs` and a functional regression
-  (`test_non_ascii_text_is_not_corrupted_on_the_way_out`). Not checked: the CLIPS side of the boundary.
+  (`test_non_ascii_text_is_not_corrupted_on_the_way_out`). The CLIPS boundary was audited afterwards (below).
 - A deliberation and a brainstorm row went to `failed` shortly after their session was deleted by test teardown, so delivery tests must keep the session open.
+
+## Text-encoding audit of the polyglot boundaries (2026-09-25, follow-up to the mojibake)
+
+Strings cross Python, Rust, Prolog and CLIPS, so each boundary was checked with a known non-ASCII string (em dash, accented letter, CJK, emoji).
+
+| Boundary | Result |
+|---|---|
+| Python <-> Rust HTTP/JSON, Kafka envelopes, DuckDB, container locales (`C.UTF-8` on limbic and pineal) | clean |
+| Rust -> Prolog (goals, clauses, values, LLM replies, Coire events) | **was broken**, fixed (`REP_UTF8` entry points; `PL_get_chars` on the way out) |
+| Prolog sources and library files (`consult_string`, `the_coire.pl`) | clean after the FFI fix |
+| Rust <-> CLIPS (`Eval`, `Build`, routers, facts, `str-length`, `printout`, 5000-character output) | clean; CLIPS counts characters and keeps the bytes |
+| **Prolog <-> CLIPS transpiler** (`clara-cycle/src/transpile.rs`) | **was broken**: read strings byte by byte (mojibake), stopped names at the first accented letter and silently dropped the rest (`cafe(x)` with an accented e became `(caf)`), rejected non-ASCII atoms, ignored any text after the term. Now decodes whole characters, accepts Unicode atoms and variables, and rejects trailing text (one closing full stop is allowed). |
+| **CLIPS `coire-publish`** (`clara-clips/clp-lib/the_coire.clp`) | **was broken, independent of encoding**: built its JSON payload by concatenation without escaping, so a goal or fact containing a double quote, backslash or newline was invalid JSON and the event was silently lost. New `coire-json-escape`. |
+
+Tests added: `clara-cycle/tests/transpile_utf8.rs` (9), `clara-cycle/tests/utf8_deduce_test.rs` (a full Prolog -> CLIPS -> Prolog deduction carrying the text and embedded quotes),
+`clara-clips/tests/utf8_tests.rs` (5). CLIPS gotchas found on the way: `loop-for-count` needs `do`; CLIPS reads an unknown escape such as backslash-t as the plain letter `t`
+(a first version of the escape function turned every `t` into a tab); `upcase` does not change non-ASCII letters (CLIPS behaviour, not corruption).
+
+Still open (left for the transduction / Cobbler editor work, see memory `transduction_revisit_lockdown`): `clara-cycle/src/transduction.rs` sanitizes generated
+names with `is_ascii_alphanumeric`, so non-ASCII names collapse to `_` (two names differing only by accented letters would collide); `coire-emit` failures are still silent.
+
+## Finding: the sufficiency check escalates trivial questions
+
+Measured 2026-09-25 on "What is the capital of France?" through `progressive`, 8 fresh sessions each: 3 `local`, 3 `groq`, 2 `edgequake` (fixed build) and 2 `local`,
+5 `edgequake`, 1 `deferred` (pre-fix build), so the encoding fixes did not cause it. The "is pondering enough?" check is an LLM call and is inconsistent even on a question
+the model answers correctly every time, so roughly half of trivial turns pay for Edgequake, a Groq call (rate-limit exposure) or even queue a research crawl. The local-knowledge
+test therefore requires only that the retrieval-free path exists and is clean (1 of 5 sessions). Candidate improvements, none started: a stricter or constrained-decoding
+verdict for the sufficiency check (see memory `constrained_decoding_verdict_model`), a cheap "well-known fact" pre-check, or caching verdicts.
