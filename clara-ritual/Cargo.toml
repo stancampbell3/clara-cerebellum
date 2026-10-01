@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 clara-coire  = { path = "../clara-coire" }
+clara-metrics = { path = "../clara-metrics" }
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 uuid         = { version = "1", features = ["v4", "serde"] }

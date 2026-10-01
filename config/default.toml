@@ -59,8 +59,6 @@ ritual_topic_reap_orphans = true              # also delete ritual topics the re
 
 [observability]
 log_level = "info"
-metrics_enabled = true
-metrics_port = 9090
 tracing_enabled = true
 tracing_endpoint = "http://localhost:4317"
 

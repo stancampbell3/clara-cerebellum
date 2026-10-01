@@ -16,6 +16,7 @@ libc = "0.2"
 uuid = { version = "1", features = ["v4"] }
 fasttext = "0.7.8"
 clara-coire = { path = "../clara-coire" }
+clara-metrics = { path = "../clara-metrics" }
 demonic-voice = { path = "../demonic-voice" }
 fiery-pit-client = { path = "../fiery-pit-client" }
 reqwest = { version = "0.11", features = ["blocking", "json"] }

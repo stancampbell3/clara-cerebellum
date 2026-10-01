@@ -177,8 +177,6 @@ fn default_ritual_topic_reap_orphans() -> bool { true }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservabilityConfig {
     pub log_level: String,
-    pub metrics_enabled: bool,
-    pub metrics_port: u16,
     pub tracing_enabled: bool,
     pub tracing_endpoint: String,
 }

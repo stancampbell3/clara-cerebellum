@@ -11,6 +11,7 @@ clara-clips       = { path = "../clara-clips", features = ["ffi"] }
 clara-ritual      = { path = "../clara-ritual", features = ["rskafka"] }
 fiery-pit-client  = { path = "../fiery-pit-client" }
 clara-coire = { path = "../clara-coire" }
+clara-metrics = { path = "../clara-metrics" }
 clara-cycle = { path = "../clara-cycle", features = ["ritual"] }
 clara-config = { path = "../clara-config", features = ["toml"] }
 clara-session = { path = "../clara-session" }

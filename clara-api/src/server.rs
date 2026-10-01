@@ -37,6 +37,11 @@ pub async fn start_server(
     let addr = format!("{}:{}", host, port);
     info!("Starting Clara API server on {}", addr);
 
+    // Install the process-wide Prometheus recorder once; GET /metrics renders
+    // this same handle (clara_metrics::exporter), so there's one port for
+    // both the API and its metrics, not a second listener.
+    let prometheus_handle = clara_metrics::init();
+
     info!("Using CLIPS binary at: {}", config.clips.binary_path);
 
     // Register Dis domain ID for evaluate-cache attribution.
@@ -188,6 +193,7 @@ pub async fn start_server(
             deductions.clone(),
             Duration::from_secs(config.persistence.deduction_entry_ttl_seconds),
             Duration::from_secs(config.persistence.deduction_entry_sweep_interval_seconds.max(1)),
+            dis_domain.clone(),
         );
     } else {
         info!("Deduction reaper: disabled (deduction_entry_ttl_seconds=0)");
@@ -213,6 +219,7 @@ pub async fn start_server(
         kafka_bootstrap,
         fiery_pit_token_cache: Arc::new(Mutex::new(None)),
         fiery_pit_registry,
+        prometheus_handle,
     });
 
     // Create and start server
@@ -265,6 +272,7 @@ mod tests {
             kafka_bootstrap: None,
             fiery_pit_token_cache: Arc::new(Mutex::new(None)),
             fiery_pit_registry: Arc::new(FieryPitRegistry::new(Duration::from_secs(90))),
+            prometheus_handle: clara_metrics::init(),
         };
         // Just verify it can be created
         let _cloned = state.clone();

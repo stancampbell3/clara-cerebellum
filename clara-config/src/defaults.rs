@@ -78,8 +78,6 @@ pub fn default_persistence_config() -> PersistenceConfig {
 pub fn default_observability_config() -> ObservabilityConfig {
     ObservabilityConfig {
         log_level: "info".to_string(),
-        metrics_enabled: true,
-        metrics_port: 9090,
         tracing_enabled: true,
         tracing_endpoint: "http://localhost:4317".to_string(),
     }

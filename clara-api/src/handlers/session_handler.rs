@@ -163,6 +163,10 @@ pub struct AppState {
     /// side `partition_nodes_by_target`) or any auto-placement; that's an
     /// explicit, separate follow-up. See `docs/fierypit_registration_plan.md`.
     pub fiery_pit_registry: Arc<FieryPitRegistry>,
+    /// Process-wide Prometheus recorder handle, rendered by `GET /metrics`
+    /// (`clara-metrics::exporter`). Installed once in `start_server`;
+    /// `clara_metrics::init()` is idempotent so test setup can call it again.
+    pub prometheus_handle: clara_metrics::PrometheusHandle,
 }
 
 /// Periodically evicts terminal-status entries from `AppState.deductions`
@@ -192,6 +196,7 @@ pub fn spawn_deduction_reaper(
     deductions: Arc<RwLock<HashMap<Uuid, DeductionEntry>>>,
     ttl: std::time::Duration,
     interval: std::time::Duration,
+    dis_domain: String,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         log::info!(
@@ -201,14 +206,43 @@ pub fn spawn_deduction_reaper(
         );
         loop {
             tokio::time::sleep(interval).await;
+            report_deduction_status_gauge(&deductions, &dis_domain);
             let evicted = reap_deductions(&deductions, ttl);
             if evicted > 0 {
                 log::info!("Deduction reaper: evicted {} completed deduction(s)", evicted);
+                clara_metrics::counters::deduction_reaped(&dis_domain, evicted as u64);
             } else {
                 log::debug!("Deduction reaper: sweep complete, nothing to evict");
             }
         }
     })
+}
+
+/// Recompute the `clara_deduction_status` gauge from the live map, piggybacked
+/// on the reaper's existing sweep tick rather than a separate timer. Zeroes
+/// every known status bucket first so one that just emptied doesn't linger at
+/// its last nonzero value.
+fn report_deduction_status_gauge(
+    deductions: &Arc<RwLock<HashMap<Uuid, DeductionEntry>>>,
+    dis_domain: &str,
+) {
+    let mut counts: HashMap<&'static str, usize> = clara_metrics::gauges::DEDUCTION_STATUSES
+        .iter()
+        .map(|s| (*s, 0usize))
+        .collect();
+    for entry in deductions.read().unwrap().values() {
+        let key = match entry.effective_status() {
+            CycleStatus::Running => "running",
+            CycleStatus::Converged => "converged",
+            CycleStatus::Interrupted => "interrupted",
+            CycleStatus::Expired => "expired",
+            CycleStatus::Error(_) => "error",
+        };
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    for (status, count) in counts {
+        clara_metrics::gauges::deduction_status(dis_domain, status, count);
+    }
 }
 
 /// One sweep pass, factored out of `spawn_deduction_reaper`'s loop so it's

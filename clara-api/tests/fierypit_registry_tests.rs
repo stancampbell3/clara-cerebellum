@@ -35,6 +35,7 @@ fn make_test_state() -> web::Data<AppState> {
         kafka_bootstrap: None,
         fiery_pit_token_cache: Arc::new(Mutex::new(None)),
         fiery_pit_registry: Arc::new(FieryPitRegistry::new(Duration::from_secs(90))),
+        prometheus_handle: clara_metrics::init(),
     })
 }
 

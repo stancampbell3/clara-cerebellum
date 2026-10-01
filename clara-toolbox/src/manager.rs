@@ -45,22 +45,39 @@ impl ToolboxManager {
     /// Execute a tool by name with the given arguments
     pub fn execute_tool(&self, request: &ToolRequest) -> Result<ToolResponse, ToolError> {
         log::debug!("Executing tool: {} with args: {}", request.tool, request.arguments);
+        let start = std::time::Instant::now();
 
-        let tool = self
-            .tools
-            .get(&request.tool)
-            .ok_or_else(|| ToolError::NotFound(request.tool.clone()))?;
+        let tool = match self.tools.get(&request.tool) {
+            Some(tool) => tool,
+            None => {
+                clara_metrics::counters::tool_call(
+                    &request.tool,
+                    clara_metrics::counters::ToolStatus::NotFound,
+                );
+                return Err(ToolError::NotFound(request.tool.clone()));
+            }
+        };
 
-        match tool.execute(request.arguments.clone()) {
+        let response = match tool.execute(request.arguments.clone()) {
             Ok(result) => {
                 log::debug!("Tool {} succeeded", request.tool);
+                clara_metrics::counters::tool_call(
+                    &request.tool,
+                    clara_metrics::counters::ToolStatus::Success,
+                );
                 Ok(ToolResponse::success(result))
             }
             Err(e) => {
                 log::error!("Tool {} failed: {}", request.tool, e);
+                clara_metrics::counters::tool_call(
+                    &request.tool,
+                    clara_metrics::counters::ToolStatus::Error,
+                );
                 Ok(ToolResponse::error(format!("{}", e)))
             }
-        }
+        };
+        clara_metrics::histograms::tool_duration(&request.tool, start.elapsed());
+        response
     }
 
     /// Execute using the default evaluator with the given arguments

@@ -36,6 +36,7 @@ fn create_test_state() -> web::Data<AppState> {
         fiery_pit_registry: Arc::new(clara_api::fierypit_registry::FieryPitRegistry::new(
             std::time::Duration::from_secs(90),
         )),
+        prometheus_handle: clara_metrics::init(),
     })
 }
 

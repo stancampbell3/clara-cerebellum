@@ -115,7 +115,16 @@ impl RitualRegistry {
             }
         }
         log::info!("RitualRegistry: created ritual {}", ritual_id);
+        clara_metrics::counters::ritual_created(&self.dis_domain);
+        clara_metrics::gauges::ritual_active(&self.dis_domain, self.active_count());
         Ok(ritual_id)
+    }
+
+    /// Count of currently `Active` Rituals, for the `clara_ritual_active`
+    /// gauge — recomputed wholesale after each mutation rather than tracked
+    /// incrementally, so it never drifts from the authoritative map.
+    fn active_count(&self) -> usize {
+        self.rituals.read().unwrap().values().filter(|r| r.state == RitualState::Active).count()
     }
 
     /// Join an existing active Ritual and return a `RitualHandle` for the caller's Performance.
@@ -142,9 +151,9 @@ impl RitualRegistry {
         }
 
         // Idempotent: reuse the existing performance_id for this participant key.
-        let performance_id = if let Some(key) = participant_key {
+        let (performance_id, join_outcome) = if let Some(key) = participant_key {
             match ritual.participants.get(key) {
-                Some(existing) => *existing,
+                Some(existing) => (*existing, "idempotent_reuse"),
                 None => {
                     let fresh = Uuid::new_v4();
                     ritual.participants.insert(key.to_string(), fresh);
@@ -160,11 +169,11 @@ impl RitualRegistry {
                             );
                         }
                     }
-                    fresh
+                    (fresh, "new")
                 }
             }
         } else {
-            Uuid::new_v4()
+            (Uuid::new_v4(), "new")
         };
 
         // Seed the consumer offset at the current latest so new handles do not
@@ -184,6 +193,7 @@ impl RitualRegistry {
             "RitualRegistry: joined ritual {} (performance {}, participant={:?})",
             ritual_id, performance_id, participant_key
         );
+        clara_metrics::counters::ritual_joined(&self.dis_domain, join_outcome);
         Ok(handle)
     }
 
@@ -206,7 +216,14 @@ impl RitualRegistry {
                 );
             }
         }
+        // Count while still holding the write guard — self.active_count()
+        // would take a fresh read lock on the same non-reentrant RwLock and
+        // deadlock against the write guard still held here.
+        let active = guard.values().filter(|r| r.state == RitualState::Active).count();
+        drop(guard);
         log::info!("RitualRegistry: terminated ritual {}", ritual_id);
+        clara_metrics::counters::ritual_terminated(&self.dis_domain);
+        clara_metrics::gauges::ritual_active(&self.dis_domain, active);
         Ok(())
     }
 
@@ -246,10 +263,12 @@ impl RitualRegistry {
                     }
                     log::info!("RitualRegistry: reaped topic {} of terminated ritual {}", topic, id);
                     report.terminated_topics += 1;
+                    clara_metrics::counters::ritual_topic_reaped(&self.dis_domain, "terminated");
                 }
                 Err(e) => {
                     log::warn!("RitualRegistry: could not delete topic {}: {}", topic, e);
                     report.errors += 1;
+                    clara_metrics::counters::ritual_topic_reap_error(&self.dis_domain);
                 }
             }
         }
@@ -265,6 +284,7 @@ impl RitualRegistry {
             Err(e) => {
                 log::warn!("RitualRegistry: orphan sweep could not list topics: {}", e);
                 report.errors += 1;
+                clara_metrics::counters::ritual_topic_reap_error(&self.dis_domain);
                 return report;
             }
         };
@@ -282,10 +302,12 @@ impl RitualRegistry {
                 Ok(()) => {
                     log::info!("RitualRegistry: reaped orphan topic {} (no such ritual)", t);
                     report.orphan_topics += 1;
+                    clara_metrics::counters::ritual_topic_reaped(&self.dis_domain, "orphan");
                 }
                 Err(e) => {
                     log::warn!("RitualRegistry: could not delete orphan topic {}: {}", t, e);
                     report.errors += 1;
+                    clara_metrics::counters::ritual_topic_reap_error(&self.dis_domain);
                 }
             }
         }
