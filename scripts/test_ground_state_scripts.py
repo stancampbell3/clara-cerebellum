@@ -1,5 +1,6 @@
 """Pure-logic tests for the ground-state host scripts (no docker, no network): python3 -m pytest scripts/test_ground_state_scripts.py"""
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -194,3 +195,20 @@ def test_pack_unpack_roundtrip_and_tamper(tmp_path):
         g.cmd_unpack(argparse.Namespace(src=str(pack), to=str(tmp_path / "d2")))
     with pytest.raises(SystemExit):  # not a baseline
         g.cmd_pack(argparse.Namespace(baseline=str(tmp_path), out=None))
+
+
+def test_verify_fails_closed_when_the_container_step_returns_no_checks(monkeypatch, capsys, tmp_path):
+    """Seen 2026-09-26: verify reported ok with only 4 of 14 checks because the container step's result had none."""
+    import ground_state as g
+
+    base = tmp_path / "b"
+    base.mkdir()
+    monkeypatch.setattr(g, "gs", lambda argv: {"result": {}, "returncode": 1})
+    monkeypatch.setattr(g, "to_container", lambda p: str(p))
+    monkeypatch.setattr(g, "workspace_id_of", lambda b: "ws")
+    monkeypatch.setattr(g, "pg_handle", lambda: object())
+    monkeypatch.setattr(g.gp, "orphans", lambda pg, ws: {"clean": True, "_ids": []})
+    rc = g.cmd_verify(argparse.Namespace(baseline=str(base)))
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 1 and out["ok"] is False
+    assert any(f["check"] == "the edgequake and assistant checks ran" for f in out["failed"])

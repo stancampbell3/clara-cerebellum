@@ -44,6 +44,13 @@ watch -n 5 "nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,nohe
 
 **Browser:** open the frontdesk, start a **new** session, pick **Clara (composed)** from the ruleset dropdown *before* the first message. Note the time you start.
 
+**Confirm the analyst actually changed, every session** (found 2026-09-26: a whole run used the default `progressive` path because Clara was never selected, and the UI gave no hint). The dropdown's first entry is not necessarily the session's real ruleset, so do not trust what it shows on load. After choosing, all three must be true:
+1. the chat shows the note `Switched to the "Clara (composed)" ruleset.`;
+2. Terminal 2 (or `docker logs docker-lildaemon-1 2>&1 | grep -E "PUT /assistant/sessions.*ruleset"`) shows a `PUT .../ruleset` for your session;
+3. your first message produces a `composed turn routed to the <analyst> analyst` line. **No such line means you are not on Clara: stop and re-select.**
+
+Also: `verify` in step 0 must report **14 checks**. Fewer means part of the check did not run (fixed to fail closed on 2026-09-26; if you see fewer, re-run and tell me).
+
 Expected timings, so you can tell slow from stuck: a plain turn 5 to 10 s; an Edgequake-grounded turn 25 to 35 s; the first turn after a restart may fail once (cold model): just retry. A deliberation or brainstorm acknowledgement is quick, the delivery comes minutes later.
 
 ---

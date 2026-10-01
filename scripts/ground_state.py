@@ -324,8 +324,20 @@ def cmd_seed(args) -> int:
 def cmd_verify(args) -> int:
     base = Path(args.baseline)
     checks: List[Dict[str, Any]] = []
-    content = gs(["verify", "--baseline", to_container(base)])["result"]
+    run = gs(["verify", "--baseline", to_container(base)])
+    content = run["result"] if isinstance(run.get("result"), dict) else {}
     checks += [{"layer": "edgequake+assistant", **c} for c in content.get("checks", [])]
+    if not content.get("checks"):
+        # Fail closed: an empty or failed container step used to add no checks at all, so verify ran only the Postgres and Kafka
+        # checks (4 of 14) and still said ok (seen 2026-09-26).
+        checks.append(
+            {
+                "layer": "edgequake+assistant",
+                "check": "the edgequake and assistant checks ran",
+                "ok": False,
+                "detail": {"returncode": run.get("returncode"), "result": run.get("result")},
+            }
+        )
     ws = workspace_id_of(base)
     pg = pg_handle()
     want = json.loads((base / "pg" / "manifest.json").read_text())["counts"] if (base / "pg" / "manifest.json").exists() else None
