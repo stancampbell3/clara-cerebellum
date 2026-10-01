@@ -12,6 +12,8 @@
 <script src="vendor/purify.min.js" defer></script>
 <script src="vendor/viz.js" defer></script>
 <script src="vendor/full.render.js" defer></script>
+<script src="vendor/cytoscape.min.js" defer></script>
+<script src="vendor/topology.js" defer></script>
 <style>
   :root {
     --bg:           #0d0d0d;
@@ -109,6 +111,58 @@
     padding: 0.15rem 0.4rem;
   }
   #research-bell[hidden] { display: none; }
+
+  #topology-toggle {
+    background: none;
+    border: none;
+    color: var(--bone);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 0.15rem 0.4rem;
+  }
+  #topology-toggle:hover { color: var(--ember); }
+
+  /* ── Live topology panel ─────────────────────────────────────────────── */
+
+  #topology-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(480px, 90vw);
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+  }
+  #topology-panel[hidden] { display: none; }
+
+  #topology-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-head);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-size: 0.85rem;
+    color: var(--ember);
+  }
+  #topology-close {
+    background: none;
+    border: none;
+    color: var(--ash);
+    font-size: 1rem;
+    cursor: pointer;
+  }
+  #topology-close:hover { color: var(--ember); }
+
+  #topology-graph {
+    flex: 1;
+    background: var(--bg);
+  }
 
   #research-badge-count {
     position: absolute;
@@ -836,8 +890,17 @@
     🔔<span id="research-badge-count" hidden>0</span>
   </button>
   <div id="research-panel" hidden></div>
+  <button id="topology-toggle" title="Live ritual/evaluator topology">🕸</button>
   <span id="status-badge">connecting…</span>
 </header>
+
+<div id="topology-panel" hidden>
+  <div id="topology-panel-header">
+    <span>Live Topology</span>
+    <button id="topology-close" title="Close">✕</button>
+  </div>
+  <div id="topology-graph"></div>
+</div>
 
 <div id="messages-container">
   <img id="minos-bg" src="minos_collat/minos_rest.png" alt="" aria-hidden="true">
@@ -876,8 +939,16 @@
   const researchCount = document.getElementById('research-badge-count');
   const researchPanel = document.getElementById('research-panel');
   const inProgressStrip = document.getElementById('in-progress-strip');
+  const topologyToggle = document.getElementById('topology-toggle');
+  const topologyPanel  = document.getElementById('topology-panel');
+  const topologyClose  = document.getElementById('topology-close');
+  const topologyGraph  = document.getElementById('topology-graph');
 
   let ws;
+  // Created lazily on first open (not at page load): Cytoscape needs a
+  // visible, non-zero-size container to lay out correctly, and the panel
+  // starts hidden.
+  let topologyView = null;
   let pendingResearch = loadPendingResearch(); // [{request_id, kind, query, reply, citation_count}], undelivered alerts
   let thinkingEl       = null;
   let agentName        = 'Clara';
@@ -1085,6 +1156,8 @@
           renderResearchQueue();
         }
         appendNote(data.text);
+      } else if (data.type === 'topology') {
+        if (topologyView) topologyView.update(data.nodes, data.edges);
       }
     };
 
@@ -1365,6 +1438,28 @@
 
   researchBell.addEventListener('click', () => {
     researchPanel.hidden = !researchPanel.hidden;
+  });
+
+  // ── Live topology panel ──────────────────────────────────────────────────
+
+  function openTopologyPanel() {
+    topologyPanel.hidden = false;
+    if (!topologyView) {
+      topologyView = new window.ClaraTopology.TopologyView(topologyGraph);
+    } else {
+      // The container had zero size while hidden — Cytoscape needs an
+      // explicit resize once it's visible again, or the graph renders blank.
+      topologyView.cy.resize();
+      topologyView.cy.fit();
+    }
+  }
+
+  topologyToggle.addEventListener('click', () => {
+    if (topologyPanel.hidden) openTopologyPanel();
+    else topologyPanel.hidden = true;
+  });
+  topologyClose.addEventListener('click', () => {
+    topologyPanel.hidden = true;
   });
 
   // ── In-progress indicator ────────────────────────────────────────────────

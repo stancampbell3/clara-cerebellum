@@ -1,6 +1,7 @@
 mod assistant_client;
 mod config;
 mod state;
+mod topology_client;
 mod ws;
 
 use std::sync::Arc;
@@ -177,6 +178,7 @@ fn main() -> std::io::Result<()> {
     let state = web::Data::new(AppState {
         http,
         fiery_pit_url: cfg.paths.fiery_pit_url.clone(),
+        dis_base_url: cfg.paths.dis_base_url.clone(),
         config: Arc::new(cfg.clone()),
     });
 

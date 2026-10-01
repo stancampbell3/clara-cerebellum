@@ -11,6 +11,8 @@ port = 8088
 # (goat/app/assistant/) this frontend talks to. In Docker, service names
 # resolve via the clara-net bridge network.
 fiery_pit_url = "http://lildaemon:6666"
+# clara-api (Dis) — the topology view's ritual poller.
+dis_base_url  = "http://clara-api:8080"
 static_path   = "/app/static"
 
 [log]

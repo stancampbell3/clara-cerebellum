@@ -11,6 +11,7 @@ interface = "0.0.0.0"
 # For local dev, run lildaemon on the host (or point at whichever
 # instance's port is reachable) and override with FRONTDESK_CONFIG.
 fiery_pit_url = "http://localhost:6666"
+dis_base_url  = "http://localhost:8080"
 static_path   = "/mnt/vastness/home/stanc/Development/clara-cerebrum/clara-frontdesk-poc/static"
 
 [log]

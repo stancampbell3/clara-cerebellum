@@ -7,13 +7,14 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use actix_web_actors::ws;
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::assistant_client::{
     ack_pending_research, create_session, list_pending_research, list_rulesets, resolve_escalation,
     send, set_session_ruleset, EscalationOutcome, PendingResearchInfo, RulesetInfo, SendResponse,
 };
 use crate::state::AppState;
+use crate::topology_client::{list_participants, list_rituals};
 
 /// Poll interval for GET /assistant/sessions/{id}/pending-research — how
 /// often a "research update" alert can appear after a deferred_query
@@ -21,6 +22,12 @@ use crate::state::AppState;
 /// PENDING_RESEARCH_POLL_INTERVAL_SECONDS (how often IT advances a
 /// request's state) — this just checks for anything already marked ready.
 const PENDING_RESEARCH_TICK: Duration = Duration::from_secs(5);
+
+/// Poll interval for the live topology view (Dis's ritual list + this
+/// FieryPit's own evaluator liveness). Independent of Prometheus's own
+/// scrape interval — this is a structural snapshot for a human looking at
+/// the graph live, not a metrics pipeline.
+const TOPOLOGY_TICK: Duration = Duration::from_secs(5);
 
 #[derive(Deserialize)]
 pub struct WsQuery {
@@ -86,6 +93,14 @@ struct EscalationResolved {
 #[rtype(result = "()")]
 struct PendingResearchTick {
     outcome: Result<Vec<PendingResearchInfo>, String>,
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct TopologyTick {
+    /// The full `{"type":"topology", "nodes":[...], "edges":[...]}` frame,
+    /// already assembled in the blocking poll — the handler just forwards it.
+    outcome: Result<Value, String>,
 }
 
 // ─── Actor ───────────────────────────────────────────────────────────────────
@@ -183,6 +198,27 @@ impl Actor for FrontDeskActor {
                     Err(e) => Err(format!("internal fault: {}", e)),
                 };
                 addr.do_send(PendingResearchTick { outcome });
+            });
+        });
+
+        ctx.run_interval(TOPOLOGY_TICK, |act, ctx| {
+            let http: Client = act.state.http.clone();
+            let dis_base_url = act.state.dis_base_url.clone();
+            let fiery_pit_url = act.state.fiery_pit_url.clone();
+            let token = act.token.clone();
+            let addr = ctx.address();
+
+            actix::spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    poll_topology(&http, &dis_base_url, &fiery_pit_url, &token)
+                })
+                .await;
+                let outcome = match result {
+                    Ok(Ok(snapshot)) => Ok(snapshot),
+                    Ok(Err(e)) => Err(e),
+                    Err(e) => Err(format!("internal fault: {}", e)),
+                };
+                addr.do_send(TopologyTick { outcome });
             });
         });
     }
@@ -524,6 +560,19 @@ impl Handler<PendingResearchTick> for FrontDeskActor {
     }
 }
 
+impl Handler<TopologyTick> for FrontDeskActor {
+    type Result = ();
+
+    fn handle(&mut self, tick: TopologyTick, ctx: &mut Self::Context) {
+        match tick.outcome {
+            Ok(snapshot) => ctx.text(snapshot.to_string()),
+            // Not fatal — the graph just keeps showing its last snapshot
+            // until the next tick succeeds (mirrors PendingResearchTick).
+            Err(e) => log::warn!("topology poll failed: {}", e),
+        }
+    }
+}
+
 impl Handler<TurnResult> for FrontDeskActor {
     type Result = ();
 
@@ -594,6 +643,56 @@ fn run_turn(
         Ok(resp) => Ok((session_id, resp)),
         Err(e) => Err((session_id, e)),
     }
+}
+
+/// Assemble one `{"type":"topology", ...}` snapshot frame: every active
+/// Ritual from Dis, plus this FieryPit's own evaluator liveness, joined
+/// purely on `ritual_id` (see topology_client's module doc for why no other
+/// join key is attempted). A failed participants call is logged and treated
+/// as "no participants" rather than failing the whole tick — Dis's ritual
+/// list is still useful on its own, e.g. while this FieryPit is between
+/// restarts.
+fn poll_topology(
+    http: &Client,
+    dis_base_url: &str,
+    fiery_pit_url: &str,
+    token: &str,
+) -> Result<Value, String> {
+    let rituals = list_rituals(http, dis_base_url).map_err(|e| e.to_string())?;
+    let participants = list_participants(http, fiery_pit_url, token).unwrap_or_else(|e| {
+        log::debug!("topology: list_participants failed (showing rituals only): {}", e);
+        Vec::new()
+    });
+
+    let mut nodes: Vec<Value> = rituals
+        .iter()
+        .map(|r| {
+            json!({
+                "id": format!("ritual:{}", r.ritual_id),
+                "kind": "ritual",
+                "label": r.name,
+                "state": r.state,
+            })
+        })
+        .collect();
+
+    let mut edges: Vec<Value> = Vec::new();
+    for p in &participants {
+        let node_id = format!("evaluator:{}:{}", p.ritual_id, p.node_id);
+        nodes.push(json!({
+            "id": node_id,
+            "kind": "evaluator",
+            "label": p.evaluator_name.clone().unwrap_or_else(|| p.node_id.clone()),
+            "state": p.state,
+            "icon_alias": p.evaluator_name,
+        }));
+        let ritual_node_id = format!("ritual:{}", p.ritual_id);
+        if rituals.iter().any(|r| r.ritual_id == p.ritual_id) {
+            edges.push(json!({ "source": ritual_node_id, "target": node_id }));
+        }
+    }
+
+    Ok(json!({ "type": "topology", "nodes": nodes, "edges": edges }))
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────

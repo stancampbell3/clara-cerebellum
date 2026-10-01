@@ -32,6 +32,10 @@ pub struct PathsConfig {
     /// REST API (goat/app/assistant/) this frontend now talks to.
     pub fiery_pit_url: String,
     pub static_path: String,
+    /// Dis (clara-api)'s base URL — used by the topology view's ritual
+    /// poller (GET /ritual). Unauthenticated, same "trusted caller on the
+    /// LAN" posture as every other Dis endpoint.
+    pub dis_base_url: String,
 }
 
 pub fn load_config() -> FrontDeskConfig {
