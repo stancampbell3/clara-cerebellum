@@ -1,6 +1,6 @@
 # Monitoring: Prometheus + Grafana for the Clara stack
 
-*Status: Phases 1-5 built and live-verified 2026-10-01. Phase 6 (a live Cytoscape topology view in clara-frontdesk-poc) is not yet built.*
+*Status: Phases 1-6 built and live-verified 2026-10-01 — Prometheus/Grafana (Phases 1-5) and the clara-frontdesk-poc live topology view (Phase 6).*
 
 ## Why
 
@@ -81,6 +81,27 @@ Four dashboards, "Clara" folder: **Ritual Overview**, **Deduction / Research-tas
 hand-built here — import the community node_exporter dashboard (grafana.com ID 1860) once, per
 Grafana instance, via the UI.
 
+## Live topology view (Phase 6)
+
+`clara-frontdesk-poc` has a toggleable live graph (header button, top right) of active Rituals and
+their evaluators — a Cytoscape.js panel fed by a `"topology"` WS frame pushed every 5s, built from:
+
+- Dis's `GET /ritual` — active Ritual nodes.
+- lildaemon's `GET /ritual/participants` (new) — this FieryPit's own live `RitualParticipant`s,
+  joined to their Ritual purely on `ritual_id` (the one identifier both APIs agree on; Dis's
+  `participant_key` and lildaemon's `node_id` are different identity spaces, not cross-referenced).
+
+Evaluator nodes reuse Cobbler's `lild_*.svg` icons (vendored into `static/vendor/icons/`) and its
+`ICON_ALIASES`/fallback-on-404 technique, ported to vanilla JS (`static/vendor/topology.js` —
+Cytoscape itself needs no build step either, vendored the same way as `marked`/`highlight`/
+`purify`/`viz`). Complements, doesn't replace, the Evaluator Liveness dashboard: same
+`ParticipantState` vocabulary (`starting`/`idle`/`busy`/`error`/`stopped`), structural (who/where,
+right now) view instead of time-series.
+
+Only this one FieryPit's evaluators are shown — a multi-FieryPit topology would need either a
+config list of known FieryPit URLs or discovery via Dis's `GET /fierypits` registry, neither of
+which this first cut does.
+
 ## Known gaps / deferred
 
 - **Per-call ritual/caller attribution** on `clara-toolbox`'s `ToolRequest` (would let tool metrics
@@ -92,9 +113,8 @@ Grafana instance, via the UI.
   checkout is git-connected the same way limbic's is.
 - **`seat_launcher` on pineal** (Hermes seat manager, Unix-socket-only) has no `/metrics` endpoint
   yet — would need a small new loopback-bound TCP listener to be scrapable.
-- **Phase 6**: a live Cytoscape.js topology view inside `clara-frontdesk-poc` (rituals/evaluators as
-  a graph, reusing Cobbler's `lild_*.svg` evaluator icons) — not built yet. Complements, doesn't
-  replace, Grafana: same metrics/state vocabulary, different (structural, not time-series) view.
+- **The topology view only shows one FieryPit** (`fiery_pit_url` from frontdesk-poc's own config) —
+  see above.
 - Per-state coloring on the Evaluator Liveness dashboard's state-timeline panel is a first cut
   (rows distinguished by label, not yet by per-state color) — a Grafana field-override follow-up,
   not a data gap.
