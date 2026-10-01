@@ -1,0 +1,96 @@
+{
+  "uid": "clara-evaluator-liveness",
+  "title": "Clara: Evaluator Liveness",
+  "tags": ["clara"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Evaluator State Timeline",
+      "type": "state-timeline",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "One row per evaluator/state. A colored segment means that evaluator was in that state for that time range (fierypit_evaluator_state_info == 1). Per-state color coding (idle=green, busy=blue, error=red, stopped=gray) is a follow-up — this first cut distinguishes evaluators by row label only.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fierypit_evaluator_state_info == 1",
+          "legendFormat": "{{fierypit}}/{{evaluator}} - {{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "color": "transparent", "index": 0 } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": { "showValue": "never", "mergeValues": true, "rowHeight": 0.9 }
+    },
+    {
+      "id": 2,
+      "title": "Evaluator Up/Down",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        { "refId": "A", "format": "table", "instant": true, "expr": "fierypit_evaluator_up" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "down", "color": "red" }, "1": { "text": "up", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 3,
+      "title": "Heartbeat Staleness (seconds since last transition, worst first)",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "instant": true,
+          "expr": "sort_desc(time() - fierypit_evaluator_last_heartbeat_timestamp_seconds)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 4,
+      "title": "Hung Evaluations (5m rate)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fierypit_hung_evaluations_total[5m])) by (fierypit)", "legendFormat": "{{fierypit}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 5,
+      "title": "Evaluations Active by Status",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 17 },
+      "targets": [
+        { "refId": "A", "expr": "fierypit_evaluations_active", "legendFormat": "{{fierypit}} {{status}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "uid": "clara-tool-usage",
+  "title": "Clara: Tool Usage",
+  "tags": ["clara"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "clara-toolbox (Rust/CLIPS/Prolog) call rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(clara_tool_calls_total[5m])) by (tool, status)", "legendFormat": "{{tool}} ({{status}})" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 2,
+      "title": "Python toolbox call rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fierypit_python_tool_calls_total[5m])) by (tool, status)", "legendFormat": "{{tool}} ({{status}})" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 3,
+      "title": "Hermes agent tool call rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fierypit_hermes_tool_calls_total[5m])) by (tool, status)", "legendFormat": "{{tool}} ({{status}})" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 4,
+      "title": "Ego Gate Verdicts",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(fierypit_ego_gate_verdicts_total[5m])) by (verdict)", "legendFormat": "{{verdict}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 5,
+      "title": "Tool Error Rate (worst first)",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "instant": true,
+          "expr": "sort_desc(\n  (sum(rate(clara_tool_calls_total{status=\"error\"}[15m])) by (tool) or sum(rate(fierypit_python_tool_calls_total{status=\"error\"}[15m])) by (tool) or sum(rate(fierypit_hermes_tool_calls_total{status=\"error\"}[15m])) by (tool))\n  /\n  (sum(rate(clara_tool_calls_total[15m])) by (tool) or sum(rate(fierypit_python_tool_calls_total[15m])) by (tool) or sum(rate(fierypit_hermes_tool_calls_total[15m])) by (tool))\n)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit" }, "overrides": [] },
+      "options": { "showHeader": true }
+    }
+  ]
+}

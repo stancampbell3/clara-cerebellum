@@ -1,0 +1,45 @@
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: clara-api
+    static_configs:
+      - targets: ["limbic:8080"]
+        labels:
+          host: limbic
+
+  - job_name: fierypit
+    static_configs:
+      - targets: ["limbic:6666"]
+        labels:
+          host: limbic
+          fierypit: limbic-main
+      - targets: ["limbic:6667"]
+        labels:
+          host: limbic
+          fierypit: limbic-ego
+      # Host-networked Prometheus on pineal reaches pineal's own FieryPits
+      # via localhost — no bridge, no cross-host hop.
+      - targets: ["localhost:6666"]
+        labels:
+          host: pineal
+          fierypit: pineal-remote
+      - targets: ["localhost:6667"]
+        labels:
+          host: pineal
+          fierypit: pineal-ego
+
+  - job_name: node
+    static_configs:
+      - targets: ["limbic:9100"]
+        labels:
+          host: limbic
+      - targets: ["localhost:9100"]
+        labels:
+          host: pineal
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
