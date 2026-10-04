@@ -31,7 +31,7 @@ services:
       - "0.0.0.0:6667:6666"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "limbic:${LIMBIC_IP:-10.0.0.192}"
+      - "limbic:${LIMBIC_IP:-192.168.1.68}"
     environment:
       - CEREBELLUM_URL=http://limbic:8080
       - DIS_BASE_URL=http://limbic:8080

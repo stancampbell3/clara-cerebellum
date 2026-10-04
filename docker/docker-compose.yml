@@ -36,7 +36,7 @@ services:
       # EXTERNAL's advertised host must be reachable from wherever a client
       # connects with this address in hand — "localhost" only works for
       # processes on this same host. Set KAFKA_EXTERNAL_ADVERTISED_HOST to
-      # this host's LAN IP/hostname (e.g. "limbic" or "10.0.0.192") for a
+      # this host's LAN IP/hostname (e.g. "limbic" or "192.168.1.68") for a
       # remote FieryPit's KAFKA_BOOTSTRAP to actually resolve.
       - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka:9092,EXTERNAL://${KAFKA_EXTERNAL_ADVERTISED_HOST:-localhost}:9094
       - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
@@ -93,7 +93,7 @@ services:
       - FIERYPIT_REGISTRATION_TTL_SECONDS=${FIERYPIT_REGISTRATION_TTL_SECONDS:-90}
       # Edgequake RAG API, used by the `edgequake` tool (clara-toolbox) that
       # backs the_cow.pl/the_cow.clp for Prolog/CLIPS.
-      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://10.0.0.192:8082}
+      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://192.168.1.68:8082}
       - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
       # Optional tenant/workspace scoping (X-Tenant-ID/X-Workspace-ID headers).
       # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
@@ -270,7 +270,7 @@ services:
       - OCHECHO_SERVER=http://host.docker.internal:1932
       - OCHECHO_TOKEN=${OCHECHO_TOKEN}
       # Edgequake RAG API, used by goat/mcp/edgequake (LLM tool-calling side).
-      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://10.0.0.192:8082}
+      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://192.168.1.68:8082}
       - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
       # Optional tenant/workspace scoping (X-Tenant-ID/X-Workspace-ID headers).
       # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
