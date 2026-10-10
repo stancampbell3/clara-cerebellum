@@ -49,6 +49,10 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       # No third-party credentials and no shared-resource access on this FieryPit.
       - EDGEQUAKE_BASE_URL=
+      # Scrape-time label (fierypit_info); Prometheus's own `fierypit` label comes from prometheus.yml.
+      - FIERYPIT_INSTANCE=pineal-ego
+      # This FieryPit hosts Ego seats, not the assistant: no composed-analyst warm-up (it would build a duplicate family in Dis).
+      - ASSISTANT_COMPOSED_WARM=0
       - EDGEQUAKE_API_KEY=
       - GROQ_API_KEY=
       - GITHUB_TOKEN=
