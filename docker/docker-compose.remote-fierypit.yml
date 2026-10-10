@@ -50,7 +50,7 @@ services:
     network_mode: host
     environment:
       # Dis (clara-api) on the remote host this FieryPit is joining —
-      # e.g. http://limbic:8080 or http://192.168.1.68:8080. No sensible
+      # e.g. http://limbic:8080 or an IP. No sensible
       # default; required.
       - CEREBELLUM_URL=${DIS_BASE_URL:?set DIS_BASE_URL to the Dis host's address, e.g. http://limbic:8080}
       - DIS_BASE_URL=${DIS_BASE_URL:?set DIS_BASE_URL to the Dis host's address, e.g. http://limbic:8080}

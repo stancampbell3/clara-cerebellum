@@ -31,6 +31,7 @@ services:
       - "0.0.0.0:6667:6666"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # Docker cannot read the host /etc/hosts, so this needs an IP: set LIMBIC_IP in .env.
       - "limbic:${LIMBIC_IP:-192.168.1.68}"
     environment:
       - CEREBELLUM_URL=http://limbic:8080

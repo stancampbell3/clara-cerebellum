@@ -77,6 +77,9 @@ services:
     image: clara-api:latest
     ports:
       - "0.0.0.0:8080:8080"
+    extra_hosts:
+      # Containers do not read the host /etc/hosts; Edgequake runs on this host.
+      - "limbic:host-gateway"
     environment:
       - RUST_LOG=info
       - JWT_SECRET=${JWT_SECRET}
@@ -93,7 +96,7 @@ services:
       - FIERYPIT_REGISTRATION_TTL_SECONDS=${FIERYPIT_REGISTRATION_TTL_SECONDS:-90}
       # Edgequake RAG API, used by the `edgequake` tool (clara-toolbox) that
       # backs the_cow.pl/the_cow.clp for Prolog/CLIPS.
-      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://192.168.1.68:8082}
+      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://limbic:8082}
       - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
       # Optional tenant/workspace scoping (X-Tenant-ID/X-Workspace-ID headers).
       # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.
@@ -196,6 +199,8 @@ services:
       - "0.0.0.0:6666:6666"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      # Containers do not read the host /etc/hosts; Edgequake et al. run on this host.
+      - "limbic:host-gateway"
     environment:
       # Scrape-time label distinguishing this FieryPit's metrics from the
       # other three (limbic-ego, pineal-remote, pineal-ego).
@@ -270,7 +275,7 @@ services:
       - OCHECHO_SERVER=http://host.docker.internal:1932
       - OCHECHO_TOKEN=${OCHECHO_TOKEN}
       # Edgequake RAG API, used by goat/mcp/edgequake (LLM tool-calling side).
-      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://192.168.1.68:8082}
+      - EDGEQUAKE_BASE_URL=${EDGEQUAKE_BASE_URL:-http://limbic:8082}
       - EDGEQUAKE_API_KEY=${EDGEQUAKE_API_KEY}
       # Optional tenant/workspace scoping (X-Tenant-ID/X-Workspace-ID headers).
       # Unset = no scoping, Edgequake falls back to its own default tenant/workspace.

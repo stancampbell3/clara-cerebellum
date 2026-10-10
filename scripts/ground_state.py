@@ -107,7 +107,7 @@ def lildaemon_module(module: str, args: Sequence[str], env_extra: Optional[Dict[
     env = load_env()
     slug = env.get("ASSISTANT_WORKSPACE_SLUG") or DEFAULT_SLUG
     run_env = {
-        "EDGEQUAKE_BASE_URL": env.get("EDGEQUAKE_BASE_URL", "http://192.168.1.68:8082"),
+        "EDGEQUAKE_BASE_URL": env.get("EDGEQUAKE_BASE_URL", "http://limbic:8082"),
         "EDGEQUAKE_API_KEY": env.get("EDGEQUAKE_API_KEY", ""),
         "EDGEQUAKE_DEFAULT_TENANT": env.get("EDGEQUAKE_DEFAULT_TENANT", ""),
         "ASSISTANT_WORKSPACE_SLUG": slug,

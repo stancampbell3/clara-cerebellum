@@ -126,7 +126,7 @@ impl ToolboxManager {
         // "no scoping", which lets Edgequake fall back to its own default
         // tenant/workspace (correct for the current single-tenant setup).
         let edgequake_url = std::env::var("EDGEQUAKE_BASE_URL")
-            .unwrap_or_else(|_| "http://192.168.1.68:8082".to_string());
+            .unwrap_or_else(|_| "http://limbic:8082".to_string());
         let edgequake_api_key = std::env::var("EDGEQUAKE_API_KEY").ok();
         // docker-compose's `${VAR:-}` idiom sets an unset var to an empty
         // string rather than leaving it absent, so `.ok()` alone would read
