@@ -49,6 +49,8 @@ services:
     # instead of a bridge-specific rule.
     network_mode: host
     environment:
+      # Scrape-time label (fierypit_info); Prometheus's own `fierypit` label comes from prometheus.yml.
+      - FIERYPIT_INSTANCE=pineal-remote
       # Dis (clara-api) on the remote host this FieryPit is joining —
       # e.g. http://limbic:8080 or an IP. No sensible
       # default; required.
