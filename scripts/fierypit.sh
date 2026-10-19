@@ -23,4 +23,10 @@
 #   ln -sf ./fierypit.sh fierypit
 # Then use exactly like ./clara: ./fierypit up -d, ./fierypit ps,
 # ./fierypit logs -f, ./fierypit down, etc.
-docker compose -f clara-cerebellum/docker/docker-compose.remote-fierypit.yml --env-file clara-cerebellum/docker/remote-fierypit.env $@
+# -p pins the Compose project name. Without it the name defaults to the
+# compose file's directory ("docker"), which diverges from any FieryPit
+# started from another directory (e.g. ~/fierypit on pineal): Compose then
+# sees no existing project, starts a second same-service container on the
+# same host-network port 6666, and the loser's shutdown deregisters the
+# winner's FieryPit ID from Dis. Seen live 2026-10-19 on pineal.
+docker compose -p fierypit -f clara-cerebellum/docker/docker-compose.remote-fierypit.yml --env-file clara-cerebellum/docker/remote-fierypit.env "$@"
