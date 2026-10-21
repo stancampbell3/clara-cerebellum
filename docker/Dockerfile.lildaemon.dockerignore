@@ -30,3 +30,11 @@ lildaemon/.git/
 lildaemon/.env
 lildaemon/.env.*
 lildaemon/**/.env
+
+# Scratch/reference trees that are not runtime code. `wok/` is gitignored apart from a few READMEs, so
+# checkouts carry whatever has piled up there (pineal's held a 1.5 GB tarball, which made its image 4.6 GB
+# against ~1.4 GB); the rest are generated or client-side build output.
+lildaemon/wok/
+lildaemon/graphify-out/
+lildaemon/goat/graphify-out/
+lildaemon/lildaemon-client/build/
