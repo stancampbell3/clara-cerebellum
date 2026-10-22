@@ -266,6 +266,14 @@ services:
       # 1 = host the Ego's reviewing Superego HERE (this FieryPit's model) instead of beside the Ego. A reviewer
       # should not share a host with the agent it reviews, and a large model here can review a small one there.
       - EGO_SUPEREGO_LOCAL=${EGO_SUPEREGO_LOCAL:-}
+      # Assistants MCP server (goat/mcp/assistants; lildaemon/docs/assistants_mcp.md): the terse/progressive/
+      # deliberative/id/clara assistants as MCP tools at http://lildaemon:8766/mcp. Off unless ENABLED is 1, and it
+      # will not start without TOKENS ("client_id:token,client_id:token"; put the real value in docker/.env, never here).
+      # Reachable only on clara-net: the port is deliberately not published.
+      - ASSISTANTS_MCP_ENABLED=${ASSISTANTS_MCP_ENABLED:-}
+      - ASSISTANTS_MCP_TOKENS=${ASSISTANTS_MCP_TOKENS:-}
+      - ASSISTANTS_MCP_HOST=${ASSISTANTS_MCP_HOST:-0.0.0.0}
+      - ASSISTANTS_MCP_PORT=${ASSISTANTS_MCP_PORT:-8766}
       - GOOGLE_CUSTOM_SEARCH_API_KEY=${GOOGLE_CUSTOM_SEARCH_API_KEY}
       - GOOGLE_CUSTOM_SEARCH_CX=${GOOGLE_CUSTOM_SEARCH_CX}
       # Ochecho TTS (goat.mcp.ochecho, used by the clara_mind_splinter evaluator's
