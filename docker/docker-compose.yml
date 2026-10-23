@@ -82,6 +82,8 @@ services:
       - "limbic:host-gateway"
     environment:
       - RUST_LOG=info
+      # Optional OTLP/HTTP log export, e.g. http://pineal:3100/otlp (Loki's native endpoint). Blank = off.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - JWT_SECRET=${JWT_SECRET}
       - FIERYPIT_URL=http://lildaemon:6666
       - KAFKA_BOOTSTRAP=kafka:9092
@@ -205,6 +207,8 @@ services:
       # Scrape-time label distinguishing this FieryPit's metrics from the
       # other three (limbic-ego, pineal-remote, pineal-ego).
       - FIERYPIT_INSTANCE=limbic-main
+      # Optional OTLP/HTTP log export, e.g. http://pineal:3100/otlp (Loki's native endpoint). Blank = off.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - CEREBELLUM_URL=http://clara-api:8080
       # Dis (clara-api) ritual endpoints — used by DisClient when activating rituals.
       - DIS_BASE_URL=http://clara-api:8080

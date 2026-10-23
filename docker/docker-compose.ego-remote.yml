@@ -55,6 +55,8 @@ services:
       - ASSISTANT_REAP_ENABLED=0
       # Scrape-time label (fierypit_info); Prometheus's own `fierypit` label comes from prometheus.yml.
       - FIERYPIT_INSTANCE=pineal-ego
+      # Optional OTLP/HTTP log export, e.g. http://pineal:3100/otlp (Loki's native endpoint). Blank = off.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       # This FieryPit hosts Ego seats, not the assistant: no composed-analyst warm-up (it would build a duplicate family in Dis).
       - ASSISTANT_COMPOSED_WARM=0
       - EDGEQUAKE_API_KEY=

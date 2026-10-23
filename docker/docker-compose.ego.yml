@@ -40,6 +40,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - FIERYPIT_INSTANCE=limbic-ego
+      # Optional OTLP/HTTP log export, e.g. http://pineal:3100/otlp (Loki's native endpoint). Blank = off.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - CEREBELLUM_URL=http://clara-api:8080
       - DIS_BASE_URL=http://clara-api:8080
       - LILDAEMON_JWT_SECRET=${LILDAEMON_JWT_SECRET}

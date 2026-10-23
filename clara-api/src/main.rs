@@ -3,14 +3,14 @@ use clara_config::ConfigLoader;
 use clara_ritual::{InMemoryBroker, KafkaBridge, RsKafkaClient};
 use std::sync::Arc;
 
+mod telemetry;
+
 fn main() -> std::io::Result<()> {
     // Load .env file if present (silently ignored if missing)
     let _ = dotenvy::dotenv();
 
     // Initialize logging
-    env_logger::Builder::from_default_env()
-        .format_timestamp_millis()
-        .init();
+    let otel_provider = telemetry::init_logging();
 
     log::info!("Starting Clara Cerebrum API Server");
 
@@ -80,7 +80,9 @@ fn main() -> std::io::Result<()> {
         .expect("Failed to initialize ritual bridge");
 
     // Start the async runtime and server
-    actix_web::rt::System::new().block_on(async {
+    let result = actix_web::rt::System::new().block_on(async {
         start_server("0.0.0.0", 8080, ritual_broker, config).await
-    })
+    });
+    telemetry::shutdown(otel_provider);
+    result
 }
