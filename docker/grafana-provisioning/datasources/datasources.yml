@@ -8,3 +8,12 @@ datasources:
     url: http://localhost:9090
     isDefault: true
     editable: true
+
+  # Loki runs on this same host (published on 3100); Grafana is host-networked.
+  # Receives OTLP logs from Dis and the FieryPits at /otlp.
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://localhost:3100
+    editable: true
