@@ -188,6 +188,34 @@ services:
     networks:
       - clara-net
 
+  # GitLab MCP (community server; GitLab CE has no native MCP-permission tokens).
+  # Port 3002 inside, published on 8767. Clients authenticate per-request with
+  # their own GitLab PAT, so no token lives in this file.
+  gitlab-mcp:
+    image: zereight050/gitlab-mcp@sha256:8008092d0544d4ff801ec3b6e65e89e2063ad84831a25a5c930a69aaae7656c5
+    ports:
+      - "0.0.0.0:8767:3002"
+    environment:
+      - HOST=0.0.0.0
+      - STREAMABLE_HTTP=true
+      # No server-side token: each client sends its own PAT (Authorization: Bearer).
+      - REMOTE_AUTHORIZATION=true
+      - GITLAB_API_URL=http://limbic:8929/api/v4
+      - GITLAB_PERMISSION_MODE=modify
+      # DNS-rebinding guard: Host headers clients use to reach this (limbic from pineal).
+      - MCP_ALLOWED_HOSTS=limbic,limbic:8767,localhost,localhost:8767,127.0.0.1:8767
+    extra_hosts:
+      - "limbic:host-gateway"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(3002,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - clara-net
+
   lildaemon:
     build:
       context: ../..
